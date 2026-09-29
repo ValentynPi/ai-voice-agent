@@ -26,11 +26,11 @@
     </header>
 
     <p class="pipeline" aria-label="Request path">
-      <span>Browser speech</span>
-      <span>Sol</span>
+      <span>Microphone</span>
+      <span>Realtime</span>
       <span>Security</span>
       <span>Tools</span>
-      <span>Spoken reply</span>
+      <span>Marin</span>
     </p>
 
     <main class="stage">
@@ -52,14 +52,15 @@
             </select>
           </label>
         </div>
-        <p class="hint" id="hint">Uses the Web Speech API in Chrome or Edge. No API key required. Typing works too, and replies are spoken.</p>
+        <p class="hint" id="hint">OpenAI Realtime speaks with the marin voice. If Realtime cannot connect, the desk falls back to browser speech. Typing works too.</p>
+        <audio id="remoteAudio" autoplay playsinline></audio>
         <p class="call-meta" id="callMeta"></p>
       </section>
 
       <section class="transcript-panel">
         <header class="panel-head">
           <h2>Live transcript</h2>
-          <span id="modeBadge">Rules</span>
+          <span id="modeBadge">Realtime</span>
         </header>
         <ol id="transcript" aria-live="polite"></ol>
         <form id="composer">
