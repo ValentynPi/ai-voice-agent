@@ -19,6 +19,7 @@ const textInput = document.querySelector("#text");
 const langSelect = document.querySelector("#lang");
 const modeBadge = document.querySelector("#modeBadge");
 const chips = document.querySelector("#chips");
+const remoteAudio = document.querySelector("#remoteAudio");
 
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
@@ -29,11 +30,14 @@ let micSuppressed = false;
 let busy = false;
 let lastUtterance = "";
 let heartbeat = null;
+let realtime = null;
+const handledToolCalls = new Set();
 
 langSelect.value = localStorage.getItem("sol-lang") || "en";
 langSelect.addEventListener("change", () => {
   localStorage.setItem("sol-lang", langSelect.value);
   if (recognition) recognition.lang = recognitionLang();
+  sendSessionLanguage();
 });
 
 for (const chip of CHIPS) {
@@ -91,7 +95,7 @@ function ensureRecognition() {
     }
   };
   rec.onend = () => {
-    if (callActive && !micSuppressed) startMic();
+    if (callActive && !micSuppressed && !realtime) startMic();
   };
   recognition = rec;
   return rec;
@@ -99,7 +103,7 @@ function ensureRecognition() {
 
 function startMic() {
   const rec = ensureRecognition();
-  if (!rec || !callActive || micSuppressed) return;
+  if (!rec || !callActive || micSuppressed || realtime) return;
   rec.lang = recognitionLang();
   try { rec.start(); } catch { /* already started */ }
 }
@@ -107,6 +111,120 @@ function startMic() {
 function stopMic() {
   if (!recognition) return;
   try { recognition.stop(); } catch { /* already stopped */ }
+}
+
+function sendEvent(event) {
+  if (!realtime || realtime.dc.readyState !== "open") return false;
+  realtime.dc.send(JSON.stringify(event));
+  return true;
+}
+
+function sendSessionLanguage() {
+  if (!realtime?.session) return;
+  const instructions = realtime.session.instructions
+    .replace(
+      langSelect.value === "es" ? "Reply in English." : "Reply in Spanish.",
+      langSelect.value === "es" ? "Reply in Spanish." : "Reply in English.",
+    );
+  sendEvent({
+    type: "session.update",
+    session: {
+      type: "realtime",
+      instructions,
+      audio: realtime.session.audio,
+      tools: realtime.session.tools,
+      tool_choice: "auto",
+      output_modalities: ["audio"],
+    },
+  });
+}
+
+async function connectRealtime() {
+  const tokenResponse = await fetch("/api/realtime/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callId, lang: langSelect.value }),
+  });
+  if (!tokenResponse.ok) return false;
+  const token = await tokenResponse.json();
+  if (!token.value) return false;
+
+  const pc = new RTCPeerConnection();
+  const dc = pc.createDataChannel("oai-events");
+  realtime = { pc, dc, mic: null, session: token.session, model: token.model, voice: token.voice, updated: false };
+  modeBadge.textContent = token.voice ? `Realtime · ${token.voice}` : "Realtime";
+
+  pc.addEventListener("track", (event) => {
+    const stream = event.streams[0] || new MediaStream([event.track]);
+    remoteAudio.srcObject = stream;
+    remoteAudio.play().catch(() => {
+      hintEl.textContent = "Tap the page if the browser blocked marin audio.";
+    });
+    setPhase("speaking", "Speaking");
+  });
+
+  const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+  realtime.mic = mic;
+  for (const track of mic.getAudioTracks()) pc.addTrack(track, mic);
+
+  dc.addEventListener("open", () => {
+    realtime.updated = true;
+    sendSessionLanguage();
+    setPhase("listening", "Listening");
+  });
+  dc.addEventListener("message", (event) => {
+    try {
+      handleRealtimeEvent(JSON.parse(event.data));
+    } catch { /* ignore malformed events */ }
+  });
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await waitForIce(pc);
+  const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
+    method: "POST",
+    body: pc.localDescription?.sdp || offer.sdp,
+    headers: {
+      Authorization: `Bearer ${token.value}`,
+      "Content-Type": "application/sdp",
+    },
+  });
+  if (!sdpResponse.ok) throw new Error("Realtime call was rejected");
+  const answer = await sdpResponse.text();
+  if (!answer.startsWith("v=")) throw new Error("Realtime did not return an SDP answer");
+  await pc.setRemoteDescription({ type: "answer", sdp: answer });
+  hintEl.textContent = `OpenAI Realtime is connected. Sol speaks with the ${token.voice || "marin"} voice.`;
+  return true;
+}
+
+function waitForIce(pc) {
+  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, 2500);
+    function done() {
+      clearTimeout(timer);
+      pc.removeEventListener("icegatheringstatechange", onState);
+      resolve();
+    }
+    function onState() {
+      if (pc.iceGatheringState === "complete") done();
+    }
+    pc.addEventListener("icegatheringstatechange", onState);
+  });
+}
+
+function closeRealtime() {
+  const current = realtime;
+  realtime = null;
+  if (!current) return;
+  try { current.dc.close(); } catch { /* already closed */ }
+  try { current.pc.close(); } catch { /* already closed */ }
+  current.mic?.getTracks().forEach((track) => track.stop());
+  if (remoteAudio) {
+    remoteAudio.pause();
+    remoteAudio.srcObject = null;
+  }
+  handledToolCalls.clear();
 }
 
 async function startCall() {
@@ -124,14 +242,29 @@ async function startCall() {
     callBtn.textContent = "End call";
     callBtn.classList.add("live");
     callMeta.textContent = callId;
-    setPhase("listening", "Listening");
-    hintEl.textContent = SpeechRec
-      ? "Speak naturally. Sol pauses the mic while answering so it does not hear itself."
-      : "This browser has no speech recognition. Type instead — replies are still spoken if speech synthesis exists.";
+    setPhase("thinking", "Connecting");
     heartbeat = setInterval(() => {
       if (callId) fetch(`/api/calls/${callId}/heartbeat`, { method: "POST" });
     }, 5000);
-    startMic();
+
+    let connected = false;
+    try {
+      connected = await connectRealtime();
+    } catch (error) {
+      closeRealtime();
+      hintEl.textContent = `${error.message || "Realtime failed"}. Using browser speech instead.`;
+    }
+    if (!connected) {
+      closeRealtime();
+      modeBadge.textContent = "Rules";
+      setPhase("listening", "Listening");
+      if (!hintEl.textContent.includes("browser speech") && !hintEl.textContent.includes("Microphone")) {
+        hintEl.textContent = SpeechRec
+          ? "Realtime is unavailable, so this call uses browser speech. Typing still works."
+          : "Realtime is unavailable and this browser has no speech recognition. Type instead.";
+      }
+      startMic();
+    }
   } finally {
     starting = false;
   }
@@ -142,6 +275,7 @@ async function endCall() {
   micSuppressed = false;
   stopMic();
   window.speechSynthesis?.cancel();
+  closeRealtime();
   if (heartbeat) clearInterval(heartbeat);
   const id = callId;
   callId = null;
@@ -156,6 +290,7 @@ async function endCall() {
 
 window.addEventListener("pagehide", () => {
   if (callId) navigator.sendBeacon?.(`/api/calls/${callId}/end`);
+  closeRealtime();
 });
 
 function addBubble(role, text, extras = {}) {
@@ -177,6 +312,7 @@ function addBubble(role, text, extras = {}) {
   if (tags.childElementCount) item.append(tags);
   transcript.append(item);
   transcript.scrollTop = transcript.scrollHeight;
+  return item;
 }
 
 function tag(label, tone) {
@@ -200,7 +336,60 @@ async function submit(raw) {
   try {
     if (!callActive) await startCall();
     if (!callId) return;
+    if (realtime) await submitRealtimeText(text);
+    else await submitFallback(text);
+  } finally {
+    textInput.disabled = false;
+    busy = false;
+  }
+}
 
+async function submitRealtimeText(text) {
+  try {
+    const response = await fetch("/api/realtime/utterance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Request failed");
+    addBubble("user", text, { security: payload.security?.decision });
+    interimEl.textContent = "";
+    if (payload.blocked) {
+      addBubble("assistant", payload.reply, { security: "deny" });
+      speakRefusal(payload.reply);
+      return;
+    }
+    const sent = sendEvent({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text }],
+      },
+    });
+    if (!sent) throw new Error("Realtime channel is not open");
+    sendEvent({ type: "response.create" });
+    setPhase("thinking", "Thinking");
+  } catch (error) {
+    addBubble("assistant", error.message || "Something went wrong.");
+  }
+}
+
+function speakRefusal(reply) {
+  const sent = sendEvent({
+    type: "response.create",
+    response: {
+      tool_choice: "none",
+      instructions: `Say exactly this and nothing else: ${reply}`,
+    },
+  });
+  if (!sent) speak(reply, langSelect.value);
+  else setPhase("speaking", "Speaking");
+}
+
+async function submitFallback(text) {
+  try {
     micSuppressed = true;
     stopMic();
     interimEl.textContent = "";
@@ -223,14 +412,141 @@ async function submit(raw) {
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
   } finally {
-    textInput.disabled = false;
-    busy = false;
     micSuppressed = false;
-    if (callActive) {
+    if (callActive && !realtime) {
       setPhase("listening", "Listening");
       startMic();
     }
   }
+}
+
+function userTranscript(event) {
+  if (
+    event.type !== "conversation.item.input_audio_transcription.completed"
+    && event.type !== "conversation.item.input_audio_transcription.done"
+  ) return "";
+  return String(event.transcript || "").trim();
+}
+
+function assistantTranscript(event) {
+  if (
+    event.type !== "response.output_audio_transcript.done"
+    && event.type !== "response.audio_transcript.done"
+  ) return "";
+  return String(event.transcript || "").trim();
+}
+
+function functionCallFrom(event) {
+  if (event.type === "response.function_call_arguments.done" && event.name && event.call_id) {
+    return { name: event.name, callId: event.call_id, arguments: event.arguments };
+  }
+  const item = event.item;
+  if (event.type === "response.output_item.done" && item?.type === "function_call" && item.name && item.call_id) {
+    return { name: item.name, callId: item.call_id, arguments: item.arguments };
+  }
+  return null;
+}
+
+async function handleRealtimeEvent(event) {
+  if (event.type === "input_audio_buffer.speech_started") {
+    interimEl.textContent = "";
+    setPhase("listening", "Listening");
+  }
+  if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
+    interimEl.textContent = `${interimEl.textContent}${event.delta}`;
+  }
+  if (event.type === "response.created") setPhase("thinking", "Thinking");
+  if (event.type === "response.output_audio.delta" || event.type === "response.audio.delta") {
+    setPhase("speaking", "Speaking");
+  }
+  if (event.type === "response.done") {
+    if (callActive) setPhase("listening", "Listening");
+  }
+
+  const spoken = userTranscript(event);
+  if (spoken) {
+    interimEl.textContent = "";
+    await onCallerAudio(spoken, event.item_id);
+  }
+
+  const reply = assistantTranscript(event);
+  if (reply) await onAssistantAudio(reply);
+
+  const toolCall = functionCallFrom(event);
+  if (toolCall) await onToolCall(toolCall);
+}
+
+async function onCallerAudio(text, itemId) {
+  if (!callId || text === lastUtterance) return;
+  lastUtterance = text;
+  setTimeout(() => {
+    if (lastUtterance === text) lastUtterance = "";
+  }, 1500);
+  const response = await fetch("/api/realtime/utterance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
+  });
+  const payload = await response.json();
+  if (!response.ok) return;
+  addBubble("user", text, { security: payload.security?.decision });
+  if (payload.blocked) {
+    if (itemId) sendEvent({ type: "conversation.item.delete", item_id: itemId });
+    sendEvent({ type: "response.cancel" });
+    addBubble("assistant", payload.reply, { security: "deny" });
+    speakRefusal(payload.reply);
+    return;
+  }
+  sendEvent({ type: "response.create" });
+}
+
+async function onAssistantAudio(text) {
+  const last = transcript.lastElementChild;
+  if (last?.classList.contains("assistant") && last.querySelector("p")?.textContent === text) return;
+  const tools = realtime?.tools || [];
+  if (realtime) realtime.tools = [];
+  addBubble("assistant", text, { tools });
+  if (callId) {
+    await fetch("/api/realtime/utterance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callId, role: "assistant", text }),
+    });
+  }
+}
+
+async function onToolCall(toolCall) {
+  if (handledToolCalls.has(toolCall.callId)) return;
+  handledToolCalls.add(toolCall.callId);
+  setPhase("thinking", "Thinking");
+  const response = await fetch("/api/realtime/tool", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      callId,
+      name: toolCall.name,
+      arguments: typeof toolCall.arguments === "string" ? toolCall.arguments : JSON.stringify(toolCall.arguments || {}),
+    }),
+  });
+  const outcome = await response.json();
+  if (realtime) {
+    realtime.tools = realtime.tools || [];
+    realtime.tools.push({
+      name: outcome.name || toolCall.name,
+      decision: outcome.decision,
+      ok: outcome.ok,
+    });
+  }
+  const output = outcome.ok ? outcome.result : { error: outcome.result?.error || outcome.error || "denied" };
+  sendEvent({
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: toolCall.callId,
+      output: JSON.stringify(output),
+    },
+  });
+  sendEvent({ type: "response.create" });
 }
 
 function speak(text, lang) {

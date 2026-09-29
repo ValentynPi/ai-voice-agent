@@ -105,12 +105,18 @@ test("live Castellón weather is spoken from the tool", { timeout: 20000 }, asyn
 test("openai path cannot run a tool outside the allowlist", async () => {
   resetStore();
   const previousKey = process.env.OPENAI_API_KEY;
+  const previousModel = process.env.OPENAI_MODEL;
   const previousFetch = global.fetch;
   process.env.OPENAI_API_KEY = "test-key";
+  delete process.env.OPENAI_MODEL;
   let calls = 0;
-  global.fetch = async (url) => {
+  global.fetch = async (url, init) => {
     calls += 1;
     assert.match(String(url), /api\.openai\.com/);
+    const body = JSON.parse(init.body);
+    assert.equal(body.model, "gpt-5.1");
+    assert.equal(body.temperature, undefined);
+    assert.ok(body.tools.some((tool) => tool.function?.name === "get_weather"));
     const payload = calls === 1
       ? {
           choices: [{
@@ -143,5 +149,7 @@ test("openai path cannot run a tool outside the allowlist", async () => {
     global.fetch = previousFetch;
     if (previousKey == null) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousKey;
+    if (previousModel == null) delete process.env.OPENAI_MODEL;
+    else process.env.OPENAI_MODEL = previousModel;
   }
 });

@@ -2,7 +2,7 @@
   "name": "ai-voice-agent",
   "version": "1.0.0",
   "private": true,
-  "description": "Demo AI voice receptionist for Maison Sol in Castellón de la Plana. Browser speech, in-process tools, no Twilio.",
+  "description": "Demo AI voice receptionist for Maison Sol in Castellón de la Plana. OpenAI Realtime voice marin, in-process tools, no Twilio.",
   "type": "module",
   "engines": {
     "node": ">=20"

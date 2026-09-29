@@ -65,7 +65,12 @@ function setOnline(online) {
 
 function render(data) {
   statStatus.textContent = data.status === "online" ? "Online" : "Offline";
-  engine.textContent = data.openai ? `OpenAI · ${data.model}` : "Keyword planner";
+  engine.textContent = data.openai
+    ? `OpenAI · ${data.model} · ${data.voice || "marin"}`
+    : "Keyword planner";
+  engine.title = data.openai
+    ? `Chat ${data.model}. Realtime ${data.realtimeModel}. Voice ${data.voice}.`
+    : "";
   statActive.textContent = String(data.activeCalls);
   statToday.textContent = String(data.callsToday);
   statDenies.textContent = String(data.denies);

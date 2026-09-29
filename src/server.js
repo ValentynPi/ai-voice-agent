@@ -3,8 +3,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { handleTurn } from "./agent.js";
+import { mintRealtimeClientSecret, recordRealtimeUtterance, runRealtimeTool } from "./realtime.js";
 import { buildState } from "./state.js";
-import { endCall, startCall, sweepCalls, touchCall } from "./store.js";
+import { endCall, getCall, startCall, sweepCalls, touchCall } from "./store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -55,6 +56,50 @@ app.post("/api/calls/:id/end", (req, res) => {
   res.json({ ok: true, call });
 });
 
+app.post("/api/realtime/token", async (req, res, next) => {
+  try {
+    const { callId, lang } = req.body || {};
+    if (!callId) return res.status(400).json({ error: "callId is required" });
+    const call = getCall(callId);
+    if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
+    const secret = await mintRealtimeClientSecret({ lang });
+    res.json({ ...secret, callId });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/realtime/utterance", (req, res, next) => {
+  try {
+    const { callId, role, text, lang } = req.body || {};
+    if (!callId) return res.status(400).json({ error: "callId is required" });
+    if (role !== "user" && role !== "assistant") return res.status(400).json({ error: "role is required" });
+    res.json(recordRealtimeUtterance({ callId, role, text, lang }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/realtime/tool", async (req, res, next) => {
+  try {
+    const { callId, name, args, arguments: rawArgs } = req.body || {};
+    if (!callId) return res.status(400).json({ error: "callId is required" });
+    if (!name) return res.status(400).json({ error: "name is required" });
+    let parsed = args;
+    if (parsed == null && typeof rawArgs === "string") {
+      try {
+        parsed = JSON.parse(rawArgs);
+      } catch {
+        parsed = {};
+      }
+    }
+    const outcome = await runRealtimeTool({ callId, name, args: parsed });
+    res.json(outcome);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/chat", async (req, res, next) => {
   try {
     const { callId, text, lang } = req.body || {};
@@ -89,8 +134,9 @@ app.use((error, req, res, next) => {
     return res.status(400).json({ error: "Invalid JSON" });
   }
   const status = error.status || 500;
-  if (status >= 500) console.error(error);
-  res.status(status).json({ error: status >= 500 ? "Something went wrong" : error.message });
+  if (status >= 500 && !error.expose) console.error(error);
+  const message = error.expose || status < 500 ? error.message : "Something went wrong";
+  res.status(status).json({ error: message });
 });
 
 async function seedDemo() {
