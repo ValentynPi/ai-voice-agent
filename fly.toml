@@ -1,6 +1,6 @@
 # Change `app` if ai-voice-agent is already taken on Fly.io.
-app = "ai-voice-agent"
-primary_region = "mad"
+app = "ai-voice-agent-valmax"
+primary_region = "cdg"
 
 [build]
 
