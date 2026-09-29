@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maison Sol · Ops dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,640&family=Outfit:wght@360;480;560&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/app.css" />
+  </head>
+  <body class="dash">
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="mark" aria-hidden="true">Sol</span>
+        <span>
+          <strong>Maison Sol</strong>
+          <em>Ops console · voice agent</em>
+        </span>
+      </a>
+      <nav class="topnav">
+        <span class="status-pill" id="statusPill"><i></i> Online</span>
+        <a href="/">Voice desk</a>
+      </nav>
+    </header>
+
+    <main class="dash-main">
+      <section class="stats" aria-label="Metrics">
+        <article class="stat">
+          <span>Status</span>
+          <strong id="statStatus">Online</strong>
+          <em id="engine">Keyword planner</em>
+        </article>
+        <article class="stat">
+          <span>Active calls</span>
+          <strong id="statActive">0</strong>
+          <em id="statActiveHint">This process</em>
+        </article>
+        <article class="stat">
+          <span>Calls today</span>
+          <strong id="statToday">0</strong>
+          <em>Includes the seeded demo</em>
+        </article>
+        <article class="stat">
+          <span>Security denies</span>
+          <strong id="statDenies">0</strong>
+          <em id="statTools">0 tool calls</em>
+        </article>
+      </section>
+
+      <section class="split">
+        <article class="panel" aria-labelledby="conv-heading">
+          <header class="panel-head">
+            <h2 id="conv-heading">Current conversation</h2>
+            <span id="convMeta">Waiting</span>
+          </header>
+          <ol id="conv" class="conv"></ol>
+        </article>
+        <article class="panel" aria-labelledby="sec-heading">
+          <header class="panel-head">
+            <h2 id="sec-heading">Security</h2>
+            <span>Prompt check · tool allowlist</span>
+          </header>
+          <ol id="security" class="feed"></ol>
+        </article>
+      </section>
+
+      <section class="panel tools-wrap" aria-labelledby="tools-heading">
+        <header class="panel-head">
+          <h2 id="tools-heading">MCP tools</h2>
+          <span>In-process handlers. Only the allowlist can run.</span>
+        </header>
+        <div class="tool-grid" id="toolGrid"></div>
+      </section>
+    </main>
+    <footer class="foot">Mock orders, CRM, and database · Castellón weather is the only live external source · <span id="updated">connecting</span></footer>
+    <script src="/js/dashboard.js" defer></script>
+  </body>
+</html>

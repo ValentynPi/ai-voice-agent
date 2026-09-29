@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maison Sol · AI receptionist</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,640&family=Outfit:wght@360;480;560&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/app.css" />
+  </head>
+  <body class="voice">
+    <div class="atmosphere" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="mark" aria-hidden="true">Sol</span>
+        <span>
+          <strong>Maison Sol</strong>
+          <em>AI receptionist · Castellón de la Plana</em>
+        </span>
+      </a>
+      <nav class="topnav">
+        <a href="/dashboard">Ops dashboard</a>
+      </nav>
+    </header>
+
+    <p class="pipeline" aria-label="Request path">
+      <span>Browser speech</span>
+      <span>Sol</span>
+      <span>Security</span>
+      <span>Tools</span>
+      <span>Spoken reply</span>
+    </p>
+
+    <main class="stage">
+      <section class="call-panel" aria-labelledby="call-heading">
+        <h1 id="call-heading">Voice desk</h1>
+        <div class="orb-wrap" id="orb" data-state="idle">
+          <div class="orb-ring"></div>
+          <div class="orb"></div>
+        </div>
+        <p class="phase" id="phase">Ready when you are</p>
+        <p class="interim" id="interim" aria-live="polite"></p>
+        <div class="controls">
+          <button class="btn primary" id="callBtn" type="button">Start call</button>
+          <label class="lang">
+            Language
+            <select id="lang">
+              <option value="en">English</option>
+              <option value="es">Español</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint" id="hint">Uses the Web Speech API in Chrome or Edge. No API key required. Typing works too, and replies are spoken.</p>
+        <p class="call-meta" id="callMeta"></p>
+      </section>
+
+      <section class="transcript-panel">
+        <header class="panel-head">
+          <h2>Live transcript</h2>
+          <span id="modeBadge">Rules</span>
+        </header>
+        <ol id="transcript" aria-live="polite"></ol>
+        <form id="composer">
+          <label class="sr-only" for="text">Message</label>
+          <input id="text" name="text" autocomplete="off" placeholder="Or type — Sol will speak the reply" />
+          <button class="btn" type="submit">Send</button>
+        </form>
+        <ul class="chips" id="chips"></ul>
+      </section>
+    </main>
+
+    <footer class="foot">Demo only · fictional salon records · live weather from Open-Meteo · no Twilio, no Intercom, no real customers</footer>
+    <script src="/js/voice.js" defer></script>
+  </body>
+</html>
