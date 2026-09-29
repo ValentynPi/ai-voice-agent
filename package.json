@@ -1,0 +1,18 @@
+{
+  "name": "ai-voice-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo AI voice receptionist for Maison Sol in Castellón de la Plana. Browser speech, in-process tools, no Twilio.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test --test-concurrency=1"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
