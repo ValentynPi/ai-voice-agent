@@ -3,9 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { handleTurn } from "./agent.js";
-import { mintRealtimeClientSecret, recordRealtimeUtterance, runRealtimeTool } from "./realtime.js";
+import { mintRealtimeClientSecret, realtimeToolSpecs, recordRealtimeUtterance, runRealtimeTool } from "./realtime.js";
 import { buildState } from "./state.js";
 import { endCall, getCall, startCall, sweepCalls, touchCall } from "./store.js";
+import { initDatabase } from "./db.js";
+import { toolCatalogInfo } from "./tools/catalog.js";
+import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -32,7 +35,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "32kb" }));
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, service: "ai-voice-agent", status: "online" });
+  res.json({ ok: true, service: "ai-voice-agent", status: "online", database: "sqlite" });
 });
 
 app.get("/api/state", (req, res) => {
@@ -100,6 +103,41 @@ app.post("/api/realtime/tool", async (req, res, next) => {
   }
 });
 
+app.get("/api/tools", (req, res) => {
+  res.json({
+    tools: listToolCatalog(),
+    realtime: realtimeToolSpecs(),
+    storage: toolCatalogInfo(),
+  });
+});
+
+app.post("/api/tools", (req, res, next) => {
+  try {
+    createCustomTool(req.body || {});
+    res.status(201).json({ tools: listToolCatalog(), storage: toolCatalogInfo() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/tools/:name", (req, res, next) => {
+  try {
+    updateTool(req.params.name, req.body || {});
+    res.json({ tools: listToolCatalog(), storage: toolCatalogInfo() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/tools/:name", (req, res, next) => {
+  try {
+    removeCustomTool(req.params.name);
+    res.json({ ok: true, tools: listToolCatalog(), storage: toolCatalogInfo() });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/chat", async (req, res, next) => {
   try {
     const { callId, text, lang } = req.body || {};
@@ -162,6 +200,7 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 
 if (isMain) {
   loadEnv();
+  initDatabase();
   const timer = setInterval(() => sweepCalls(), 5000);
   timer.unref();
   seedDemo()

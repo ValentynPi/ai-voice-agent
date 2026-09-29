@@ -149,6 +149,33 @@ function appointmentsSentence(result, lang) {
   return `Upcoming appointments: ${bits.join(". ")}.`;
 }
 
+function bookingSentence(result, lang) {
+  if (!result.booked) {
+    if (result.customers) {
+      return lang === "es"
+        ? `No encuentro a esa persona. En el libro están ${result.customers.join(", ")}.`
+        : `I cannot find that client. The book has ${result.customers.join(", ")}.`;
+    }
+    if (result.services) {
+      return lang === "es"
+        ? `No encuentro ese servicio. Tenemos ${result.services.join(", ")}.`
+        : `I cannot find that service. We have ${result.services.join(", ")}.`;
+    }
+    return lang === "es"
+      ? `No he podido reservar. ${result.error || ""}`.trim()
+      : `I could not book that. ${result.error || ""}`.trim();
+  }
+  const when = lang === "es"
+    ? `${speakDate(result.appointment.date, lang)} a las ${result.appointment.time}`
+    : `${speakDate(result.appointment.date, lang)} at ${result.appointment.time}`;
+  const withStylist = result.appointment.stylist ? ` with ${result.appointment.stylist}` : "";
+  const conStylist = result.appointment.stylist ? ` con ${result.appointment.stylist}` : "";
+  if (lang === "es") {
+    return `He reservado ${result.appointment.service} para ${result.appointment.customer} el ${when}${conStylist}. El pedido ${result.order.id} queda pendiente.`;
+  }
+  return `Booked ${result.appointment.service} for ${result.appointment.customer} on ${when}${withStylist}. Order ${result.order.id} is pending.`;
+}
+
 function ordersListSentence(result, lang) {
   const orders = result.orders || [];
   if (!orders.length) {
@@ -191,6 +218,7 @@ export function speakToolResult(name, payload, lang, userText) {
   if (name === "query_services") return servicesSentence(result, lang);
   if (name === "query_staff") return staffSentence(result, lang);
   if (name === "query_hours") return hoursSentence(result, lang);
+  if (name === "book_appointment") return bookingSentence(result, lang);
   return lang === "es" ? "Hecho." : "Done.";
 }
 

@@ -10,6 +10,9 @@ primary_region = "cdg"
   OPENAI_MODEL = "gpt-5.1"
   OPENAI_REALTIME_MODEL = "gpt-realtime-2.1"
   OPENAI_VOICE = "marin"
+  # DATABASE_PATH defaults to /app/data/maison-sol.sqlite in the image.
+  # That disk is ephemeral. Attach a volume and set DATABASE_PATH=/data/maison-sol.sqlite
+  # before relying on it. See the README.
 
 [http_service]
   internal_port = 3000

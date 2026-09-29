@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
+import { resetDatabase } from "../src/db.js";
 import { resetResolvedModels } from "../src/models.js";
-import { buildRealtimeSession } from "../src/realtime.js";
+import { buildRealtimeSession, greetingEvent } from "../src/realtime.js";
 import { app } from "../src/server.js";
 import { resetStore } from "../src/store.js";
+
+test.beforeEach(() => {
+  resetDatabase();
+});
 
 async function withServer(fn) {
   resetStore();
@@ -25,8 +31,29 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.equal(session.audio.output.voice, "marin");
   assert.equal(session.audio.input.turn_detection.create_response, false);
   assert.ok(session.tools.some((tool) => tool.name === "get_weather" && tool.type === "function"));
+  assert.ok(session.tools.some((tool) => tool.name === "book_appointment"));
   assert.match(session.instructions, /Maison Sol/);
   assert.doesNotMatch(JSON.stringify(session), /sk-/);
+});
+
+test("greeting asks marin to speak first in the selected language", () => {
+  const english = greetingEvent("en");
+  assert.equal(english.type, "response.create");
+  assert.equal(english.response.tool_choice, "none");
+  assert.deepEqual(english.response.output_modalities, ["audio"]);
+  assert.match(english.response.instructions, /Speak in English only/);
+  assert.match(english.response.instructions, /Hello, this is Sol at Maison Sol in Castellón/);
+  const spanish = greetingEvent("es");
+  assert.match(spanish.response.instructions, /Speak in Spanish only/);
+  assert.match(spanish.response.instructions, /Hola, soy Sol/);
+});
+
+test("voice desk greets through realtime and does not use browser speech", () => {
+  const source = fs.readFileSync(new URL("../public/js/voice.js", import.meta.url), "utf8");
+  assert.match(source, /token\.greeting/);
+  assert.match(source, /maybeSendGreeting/);
+  assert.match(source, /marin is unavailable/);
+  assert.doesNotMatch(source, /speechSynthesis/);
 });
 
 test("realtime token endpoint asks for a key before it mints a secret", async () => {
@@ -101,6 +128,9 @@ test("realtime token falls back when the first model id is rejected", async () =
       assert.equal(body.model, "gpt-realtime-2.1");
       assert.equal(body.voice, "marin");
       assert.equal(body.session.audio.output.voice, "marin");
+      assert.equal(body.greeting.type, "response.create");
+      assert.match(body.greeting.response.instructions, /Speak in English only/);
+      assert.equal(body.greeting.response.tool_choice, "none");
       assert.deepEqual(seen, ["gpt-5.1", "gpt-realtime-2.1"]);
       assert.doesNotMatch(JSON.stringify(body), /test-key/);
 

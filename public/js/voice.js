@@ -32,12 +32,18 @@ let lastUtterance = "";
 let heartbeat = null;
 let realtime = null;
 const handledToolCalls = new Set();
+let channelOpen = false;
+let sessionReady = false;
+let greetingSent = false;
+let greetingHeardAudio = false;
+let micHeldForGreeting = false;
+let greetingTimer = 0;
 
 langSelect.value = localStorage.getItem("sol-lang") || "en";
 langSelect.addEventListener("change", () => {
   localStorage.setItem("sol-lang", langSelect.value);
   if (recognition) recognition.lang = recognitionLang();
-  sendSessionLanguage();
+  if (realtime) sendSessionLanguage();
 });
 
 for (const chip of CHIPS) {
@@ -119,24 +125,109 @@ function sendEvent(event) {
   return true;
 }
 
-function sendSessionLanguage() {
-  if (!realtime?.session) return;
-  const instructions = realtime.session.instructions
-    .replace(
-      langSelect.value === "es" ? "Reply in English." : "Reply in Spanish.",
-      langSelect.value === "es" ? "Reply in Spanish." : "Reply in English.",
-    );
-  sendEvent({
+function instructionsForLang(instructions) {
+  const english = "Reply in English.";
+  const spanish = "Reply in Spanish.";
+  const next = langSelect.value === "es" ? spanish : english;
+  if (!instructions) return next;
+  if (instructions.includes(english) || instructions.includes(spanish)) {
+    return instructions.replaceAll(english, next).replaceAll(spanish, next);
+  }
+  return `${instructions} ${next}`;
+}
+
+function sessionAudio() {
+  const audio = { ...(realtime.session?.audio || {}) };
+  audio.output = { ...(audio.output || {}), voice: realtime.voice || "marin" };
+  return audio;
+}
+
+function pushSession(tools) {
+  if (!realtime?.session) return false;
+  return sendEvent({
     type: "session.update",
     session: {
       type: "realtime",
-      instructions,
-      audio: realtime.session.audio,
-      tools: realtime.session.tools,
+      instructions: instructionsForLang(realtime.session.instructions),
+      audio: sessionAudio(),
+      tools: tools || realtime.session.tools,
       tool_choice: "auto",
       output_modalities: ["audio"],
     },
   });
+}
+
+function sendSessionLanguage() {
+  if (!realtime?.session) return;
+  fetch("/api/tools")
+    .then((response) => (response.ok ? response.json() : null))
+    .then((body) => {
+      if (!realtime) return;
+      if (Array.isArray(body?.realtime)) realtime.session.tools = body.realtime;
+      pushSession(realtime.session.tools);
+    })
+    .catch(() => pushSession(realtime.session?.tools));
+}
+
+function resetGreetingState() {
+  channelOpen = false;
+  sessionReady = false;
+  greetingSent = false;
+  greetingHeardAudio = false;
+  micHeldForGreeting = false;
+  if (greetingTimer) clearTimeout(greetingTimer);
+  greetingTimer = 0;
+}
+
+function holdMicForGreeting() {
+  micHeldForGreeting = true;
+  realtime?.mic?.getAudioTracks().forEach((track) => {
+    track.enabled = false;
+  });
+}
+
+function releaseGreetingMic() {
+  if (greetingTimer) {
+    clearTimeout(greetingTimer);
+    greetingTimer = 0;
+  }
+  if (!micHeldForGreeting) return;
+  micHeldForGreeting = false;
+  realtime?.mic?.getAudioTracks().forEach((track) => {
+    track.enabled = true;
+  });
+  if (!callActive || !realtime) return;
+  setPhase("listening", "Listening");
+  if (greetingHeardAudio) {
+    hintEl.textContent = `OpenAI Realtime is connected. Sol speaks with the ${realtime.voice || "marin"} voice.`;
+  }
+}
+
+function maybeSendGreeting() {
+  if (!realtime?.greeting) {
+    releaseGreetingMic();
+    return;
+  }
+  if (greetingSent || !channelOpen || !sessionReady) return;
+  if (realtime.dc.readyState !== "open") return;
+  greetingSent = true;
+  holdMicForGreeting();
+  sendEvent(realtime.greeting);
+  if (greetingTimer) clearTimeout(greetingTimer);
+  greetingTimer = setTimeout(() => releaseGreetingMic(), 12000);
+  setPhase("speaking", "Speaking");
+  hintEl.textContent = `Sol is greeting you with the ${realtime.voice || "marin"} voice.`;
+}
+
+function scheduleGreetingFallback() {
+  if (greetingSent) return;
+  if (greetingTimer) clearTimeout(greetingTimer);
+  greetingTimer = setTimeout(() => {
+    greetingTimer = 0;
+    if (greetingSent) return;
+    sessionReady = true;
+    maybeSendGreeting();
+  }, 500);
 }
 
 async function connectRealtime() {
@@ -151,8 +242,18 @@ async function connectRealtime() {
 
   const pc = new RTCPeerConnection();
   const dc = pc.createDataChannel("oai-events");
-  realtime = { pc, dc, mic: null, session: token.session, model: token.model, voice: token.voice, updated: false };
-  modeBadge.textContent = token.voice ? `Realtime · ${token.voice}` : "Realtime";
+  resetGreetingState();
+  realtime = {
+    pc,
+    dc,
+    mic: null,
+    session: token.session,
+    model: token.model,
+    voice: token.voice || "marin",
+    greeting: token.greeting,
+    updated: false,
+  };
+  modeBadge.textContent = `Realtime · ${realtime.voice}`;
 
   pc.addEventListener("track", (event) => {
     const stream = event.streams[0] || new MediaStream([event.track]);
@@ -163,14 +264,21 @@ async function connectRealtime() {
     setPhase("speaking", "Speaking");
   });
 
-  const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const mic = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
   realtime.mic = mic;
-  for (const track of mic.getAudioTracks()) pc.addTrack(track, mic);
+  holdMicForGreeting();
+  for (const track of mic.getAudioTracks()) {
+    track.enabled = false;
+    pc.addTrack(track, mic);
+  }
 
   dc.addEventListener("open", () => {
+    channelOpen = true;
     realtime.updated = true;
-    sendSessionLanguage();
-    setPhase("listening", "Listening");
+    maybeSendGreeting();
+    scheduleGreetingFallback();
   });
   dc.addEventListener("message", (event) => {
     try {
@@ -193,7 +301,7 @@ async function connectRealtime() {
   const answer = await sdpResponse.text();
   if (!answer.startsWith("v=")) throw new Error("Realtime did not return an SDP answer");
   await pc.setRemoteDescription({ type: "answer", sdp: answer });
-  hintEl.textContent = `OpenAI Realtime is connected. Sol speaks with the ${token.voice || "marin"} voice.`;
+  hintEl.textContent = `Connecting the ${token.voice || "marin"} voice. Sol will speak first.`;
   return true;
 }
 
@@ -214,6 +322,7 @@ function waitForIce(pc) {
 }
 
 function closeRealtime() {
+  resetGreetingState();
   const current = realtime;
   realtime = null;
   if (!current) return;
@@ -248,22 +357,21 @@ async function startCall() {
     }, 5000);
 
     let connected = false;
+    let failure = "OpenAI Realtime voice marin is unavailable. Sol will not use a browser voice. You can still type and read the reply.";
     try {
       connected = await connectRealtime();
     } catch (error) {
       closeRealtime();
-      hintEl.textContent = `${error.message || "Realtime failed"}. Using browser speech instead.`;
+      const micBlocked = /NotAllowedError|Permission|not-allowed|denied/i.test(`${error.name || ""} ${error.message || ""}`);
+      failure = micBlocked
+        ? "Microphone blocked. Marin needs the microphone and will not fall back to a browser voice. You can still type and read the reply."
+        : `OpenAI Realtime voice marin is unavailable (${error.message || "connection failed"}). Sol will not use a browser voice. You can still type and read the reply.`;
     }
     if (!connected) {
       closeRealtime();
-      modeBadge.textContent = "Rules";
-      setPhase("listening", "Listening");
-      if (!hintEl.textContent.includes("browser speech") && !hintEl.textContent.includes("Microphone")) {
-        hintEl.textContent = SpeechRec
-          ? "Realtime is unavailable, so this call uses browser speech. Typing still works."
-          : "Realtime is unavailable and this browser has no speech recognition. Type instead.";
-      }
-      startMic();
+      modeBadge.textContent = "Marin unavailable";
+      setPhase("idle", "Voice unavailable");
+      hintEl.textContent = failure;
     }
   } finally {
     starting = false;
@@ -274,7 +382,6 @@ async function endCall() {
   callActive = false;
   micSuppressed = false;
   stopMic();
-  window.speechSynthesis?.cancel();
   closeRealtime();
   if (heartbeat) clearInterval(heartbeat);
   const id = callId;
@@ -380,12 +487,13 @@ function speakRefusal(reply) {
   const sent = sendEvent({
     type: "response.create",
     response: {
+      output_modalities: ["audio"],
       tool_choice: "none",
       instructions: `Say exactly this and nothing else: ${reply}`,
     },
   });
-  if (!sent) speak(reply, langSelect.value);
-  else setPhase("speaking", "Speaking");
+  if (sent) setPhase("speaking", "Speaking");
+  else hintEl.textContent = "OpenAI Realtime voice marin is unavailable, so that refusal was not spoken.";
 }
 
 async function submitFallback(text) {
@@ -402,21 +510,21 @@ async function submitFallback(text) {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Request failed");
-    modeBadge.textContent = payload.mode === "openai" ? "OpenAI" : "Rules";
     addBubble("assistant", payload.reply, {
       tools: payload.tools,
       security: payload.security?.decision,
     });
-    setPhase("speaking", "Speaking");
-    await speak(payload.reply, payload.lang || langSelect.value);
+    if (realtime) setPhase("speaking", "Speaking");
+    else {
+      modeBadge.textContent = "Marin unavailable";
+      setPhase("idle", "Voice unavailable");
+      hintEl.textContent = "OpenAI Realtime voice marin is unavailable. Sol will not use a browser voice. You can still type and read the reply.";
+    }
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
   } finally {
     micSuppressed = false;
-    if (callActive && !realtime) {
-      setPhase("listening", "Listening");
-      startMic();
-    }
+    if (callActive && realtime) setPhase("listening", "Listening");
   }
 }
 
@@ -448,19 +556,45 @@ function functionCallFrom(event) {
 }
 
 async function handleRealtimeEvent(event) {
-  if (event.type === "input_audio_buffer.speech_started") {
+  if (event.type === "session.created" || event.type === "session.updated") {
+    sessionReady = true;
+    maybeSendGreeting();
+  }
+  if (event.type === "error") {
+    const message = event.error?.message || event.message || "Realtime error";
+    hintEl.textContent = `Realtime error: ${message}. Sol is not using a browser voice.`;
+    if (micHeldForGreeting) releaseGreetingMic();
+  }
+  if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting) {
     interimEl.textContent = "";
     setPhase("listening", "Listening");
   }
   if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
     interimEl.textContent = `${interimEl.textContent}${event.delta}`;
   }
-  if (event.type === "response.created") setPhase("thinking", "Thinking");
-  if (event.type === "response.output_audio.delta" || event.type === "response.audio.delta") {
+  if (
+    event.type === "output_audio_buffer.started"
+    || event.type === "response.output_audio.delta"
+    || event.type === "response.audio.delta"
+    || event.type === "response.output_audio_transcript.delta"
+  ) {
+    if (greetingSent) greetingHeardAudio = true;
     setPhase("speaking", "Speaking");
   }
+  if (
+    (event.type === "output_audio_buffer.stopped" || event.type === "response.output_audio.done")
+    && greetingHeardAudio
+  ) {
+    releaseGreetingMic();
+  }
+  if (event.type === "response.created" && !micHeldForGreeting) setPhase("thinking", "Thinking");
   if (event.type === "response.done") {
-    if (callActive) setPhase("listening", "Listening");
+    const status = event.response?.status;
+    if (micHeldForGreeting && greetingSent && (greetingHeardAudio || status === "completed" || !status)) {
+      releaseGreetingMic();
+    } else if (callActive && !micHeldForGreeting) {
+      setPhase("listening", "Listening");
+    }
   }
 
   const spoken = userTranscript(event);
@@ -548,38 +682,3 @@ async function onToolCall(toolCall) {
   });
   sendEvent({ type: "response.create" });
 }
-
-function speak(text, lang) {
-  return new Promise((resolve) => {
-    if (!window.speechSynthesis) return resolve();
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearInterval(kick);
-      resolve();
-    };
-    const timer = setTimeout(finish, Math.min(45000, 1800 + text.length * 70));
-    const kick = setInterval(() => {
-      if (window.speechSynthesis.speaking) window.speechSynthesis.resume();
-    }, 400);
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = lang === "es" ? "es-ES" : "en-US";
-    utterance.rate = 1.02;
-    const voice = pickVoice(utterance.lang);
-    if (voice) utterance.voice = voice;
-    utterance.onend = finish;
-    utterance.onerror = finish;
-    window.setTimeout(() => window.speechSynthesis.speak(utterance), 40);
-  });
-}
-
-function pickVoice(lang) {
-  const voices = window.speechSynthesis.getVoices();
-  const prefix = lang.toLowerCase().slice(0, 2);
-  return voices.find((voice) => voice.lang.toLowerCase().startsWith(prefix)) || null;
-}
-
-window.speechSynthesis?.addEventListener("voiceschanged", () => {});

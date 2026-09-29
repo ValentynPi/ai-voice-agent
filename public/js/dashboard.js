@@ -36,7 +36,12 @@ const conv = document.querySelector("#conv");
 const convMeta = document.querySelector("#convMeta");
 const security = document.querySelector("#security");
 const toolGrid = document.querySelector("#toolGrid");
+const toolEditor = document.querySelector("#toolEditor");
+const toolEditorStatus = document.querySelector("#toolEditorStatus");
+const toolStorage = document.querySelector("#toolStorage");
+const newTool = document.querySelector("#newTool");
 const updated = document.querySelector("#updated");
+let toolSignature = "";
 
 async function poll() {
   try {
@@ -80,6 +85,12 @@ function render(data) {
   renderConversation(data.conversation);
   renderSecurity(data.securityEvents || []);
   renderTools(data);
+  if (data.toolStorage?.note) toolStorage.textContent = data.toolStorage.note;
+  const toolsSig = JSON.stringify(data.tools || []);
+  if (toolsSig !== toolSignature && !editorBusy()) {
+    toolSignature = toolsSig;
+    renderToolEditor(data.tools || []);
+  }
 }
 
 function renderConversation(conversation) {
@@ -164,7 +175,7 @@ function renderTools(data) {
     names.className = "names";
     for (const tool of (data.tools || []).filter((tool) => tool.group === group.id)) {
       const chip = document.createElement("span");
-      chip.className = "tag";
+      chip.className = tool.enabled === false ? "tag off" : "tag";
       chip.textContent = tool.name;
       names.append(chip);
     }
@@ -228,6 +239,169 @@ function logItem(log) {
   row.append(strong, span, pre);
   return row;
 }
+
+function editorBusy() {
+  const active = document.activeElement;
+  return Boolean(active && (toolEditor.contains(active) || newTool.contains(active)));
+}
+
+function renderToolEditor(tools) {
+  toolEditor.replaceChildren();
+  for (const tool of tools) {
+    toolEditor.append(toolRow(tool));
+  }
+}
+
+function toolRow(tool) {
+  const row = document.createElement("article");
+  row.className = tool.enabled === false ? "tool-row off" : "tool-row";
+  const header = document.createElement("header");
+  const title = document.createElement("h3");
+  title.textContent = tool.name;
+  const meta = document.createElement("span");
+  meta.className = "tag";
+  meta.textContent = `${tool.group} · ${tool.builtin ? "built-in" : "mock"}`;
+  header.append(title, meta);
+
+  const schema = document.createElement("p");
+  schema.className = "schema";
+  schema.textContent = tool.parameterSummary || "no parameters";
+
+  const description = document.createElement("textarea");
+  description.rows = 3;
+  description.maxLength = 800;
+  description.value = tool.description || "";
+  description.setAttribute("aria-label", `Instructions for ${tool.name}`);
+
+  const actions = document.createElement("div");
+  actions.className = "tool-actions";
+  const toggleLabel = document.createElement("label");
+  toggleLabel.className = "toggle";
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.checked = tool.enabled !== false;
+  toggle.addEventListener("change", () => saveTool(tool.name, { enabled: toggle.checked }));
+  toggleLabel.append(toggle, document.createTextNode(toggle.checked ? "Enabled" : "Disabled"));
+  toggle.addEventListener("change", () => {
+    toggleLabel.lastChild.textContent = toggle.checked ? "Enabled" : "Disabled";
+  });
+
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn";
+  save.textContent = "Save instructions";
+
+  actions.append(toggleLabel, save);
+
+  let mockBox = null;
+  if (!tool.builtin) {
+    mockBox = document.createElement("textarea");
+    mockBox.rows = 4;
+    mockBox.value = JSON.stringify(tool.mock || {}, null, 2);
+    mockBox.setAttribute("aria-label", `Mock JSON for ${tool.name}`);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => deleteTool(tool.name));
+    actions.append(remove);
+  }
+  save.addEventListener("click", () => {
+    const patch = { description: description.value };
+    if (mockBox) {
+      try {
+        patch.mock = JSON.parse(mockBox.value);
+      } catch {
+        toolEditorStatus.textContent = "Mock JSON is not valid.";
+        return;
+      }
+    }
+    saveTool(tool.name, patch);
+  });
+
+  row.append(header, schema, description);
+  if (mockBox) row.append(mockBox);
+  row.append(actions);
+  return row;
+}
+
+async function saveTool(name, patch) {
+  toolEditorStatus.textContent = "Saving…";
+  try {
+    const response = await fetch(`/api/tools/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not save the tool");
+    toolEditorStatus.textContent = "Saved. The next Realtime session uses this catalog.";
+    await refreshTools();
+  } catch (error) {
+    toolEditorStatus.textContent = error.message || "Could not save the tool";
+  }
+}
+
+async function deleteTool(name) {
+  toolEditorStatus.textContent = "Removing…";
+  try {
+    const response = await fetch(`/api/tools/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not remove the tool");
+    toolEditorStatus.textContent = "Removed. The next Realtime session uses this catalog.";
+    await refreshTools();
+  } catch (error) {
+    toolEditorStatus.textContent = error.message || "Could not remove the tool";
+  }
+}
+
+async function refreshTools() {
+  const response = await fetch("/api/state");
+  if (!response.ok) return;
+  const data = await response.json();
+  latest = data;
+  signature = JSON.stringify(data);
+  toolSignature = JSON.stringify(data.tools || []);
+  render(data);
+  renderToolEditor(data.tools || []);
+}
+
+newTool.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = new FormData(newTool);
+  let mock;
+  try {
+    mock = JSON.parse(String(form.get("mock") || "{}"));
+  } catch {
+    toolEditorStatus.textContent = "Mock JSON is not valid.";
+    return;
+  }
+  const fields = String(form.get("fields") || "")
+    .split(",")
+    .map((field) => field.trim())
+    .filter(Boolean);
+  toolEditorStatus.textContent = "Adding…";
+  try {
+    const response = await fetch("/api/tools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: String(form.get("name") || "").trim(),
+        group: form.get("group"),
+        description: String(form.get("description") || "").trim(),
+        fields,
+        mock,
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not add the tool");
+    newTool.reset();
+    toolEditorStatus.textContent = "Added. The next Realtime session can call this mock tool.";
+    await refreshTools();
+  } catch (error) {
+    toolEditorStatus.textContent = error.message || "Could not add the tool";
+  }
+});
 
 function note(text) {
   const item = document.createElement("li");
