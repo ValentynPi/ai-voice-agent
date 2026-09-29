@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resetDatabase } from "../src/db.js";
 import { handleTurn, planTools } from "../src/agent.js";
 import { resetStore, startCall, getSnapshot } from "../src/store.js";
 import { executeTool } from "../src/tools/registry.js";
 import { mapPayload, __clearWeatherCache, getWeather } from "../src/tools/weather.js";
+
+test.beforeEach(() => {
+  resetDatabase();
+});
 
 test("plans weather, forecast, orders, crm, and hours", () => {
   assert.deepEqual(planTools("What's the weather in Castellon?"), [{ name: "get_weather", args: {} }]);

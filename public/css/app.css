@@ -226,6 +226,7 @@ button { cursor: pointer; }
 }
 .tag.bad, .pill.bad { color: var(--deny); border-color: rgba(224, 139, 120, 0.45); }
 .tag.ok, .pill.ok { color: var(--ok); border-color: rgba(143, 191, 154, 0.4); }
+.tag.off { opacity: 0.55; text-decoration: line-through; }
 .empty { color: var(--muted); margin: 8px; }
 
 #composer { display: flex; gap: 8px; margin-top: 12px; }
@@ -305,6 +306,35 @@ button { cursor: pointer; }
 }
 .record strong, .log-item strong { font-family: Outfit, sans-serif; font-weight: 560; }
 .record span, .log-item span { color: var(--muted); }
+.tool-admin { min-height: 0; }
+.tool-editor { display: flex; flex-direction: column; gap: 12px; }
+.tool-row, .new-tool {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+.tool-row.off { opacity: 0.78; }
+.tool-row header, .tool-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.tool-row h3, .new-tool h3 { margin: 0; font-family: "Fraunces", serif; font-size: 20px; }
+.schema { color: var(--muted); font-size: 12px; margin: 0; }
+.tool-admin label, .new-tool label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.tool-row textarea, .tool-row input[type="text"], .new-tool textarea, .new-tool input, .new-tool select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 14px;
+  color: var(--cream);
+}
+.toggle { display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: normal; font-size: 14px; color: var(--cream); }
+.new-tool { margin-top: 14px; }
+.tool-admin .hint { min-height: 1.2em; }
+
 pre.snippet {
   margin: 6px 0 0;
   max-height: 140px;

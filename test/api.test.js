@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resetDatabase } from "../src/db.js";
 import { app } from "../src/server.js";
 import { resetStore } from "../src/store.js";
+
+test.beforeEach(() => {
+  resetDatabase();
+});
 
 async function withServer(fn) {
   resetStore();
@@ -19,7 +24,9 @@ test("pages and health respond", async () => {
   await withServer(async (base) => {
     const health = await fetch(`${base}/api/health`);
     assert.equal(health.status, 200);
-    assert.equal((await health.json()).status, "online");
+    const healthBody = await health.json();
+    assert.equal(healthBody.status, "online");
+    assert.equal(healthBody.database, "sqlite");
 
     const home = await fetch(`${base}/`);
     assert.equal(home.status, 200);

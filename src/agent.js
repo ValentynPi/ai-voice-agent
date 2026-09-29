@@ -3,8 +3,8 @@ import { chatCandidates, noteChatModel } from "./models.js";
 import { receptionistInstructions } from "./realtime.js";
 import { screenInput, sanitizeText } from "./security.js";
 import { appendMessage, getCall, recordSecurity, touchCall } from "./store.js";
-import { CUSTOMER_KEYS } from "./tools/demo-data.js";
-import { executeTool, openaiToolSpecs } from "./tools/registry.js";
+import { listCustomers } from "./db.js";
+import { executeTool, isToolEnabled, openaiToolSpecs } from "./tools/registry.js";
 
 export function detectLang(text) {
   return detect(text);
@@ -22,6 +22,7 @@ function norm(value) {
 }
 
 function add(planned, name, args) {
+  if (!isToolEnabled(name)) return;
   if (planned.length >= 3) return;
   if (planned.some((item) => item.name === name)) return;
   planned.push({ name, args });
@@ -68,10 +69,21 @@ export function planTools(text) {
 }
 
 function matchCustomer(normalized) {
-  const ranked = CUSTOMER_KEYS.flatMap((person) => person.keys.map((key) => ({ name: person.name, key: norm(key) })))
+  const ranked = listCustomers()
+    .flatMap((person) => {
+      const full = norm(person.name);
+      return [
+        { name: person.name, key: full },
+        { name: person.name, key: full.split(" ")[0] },
+      ];
+    })
     .sort((a, b) => b.key.length - a.key.length);
-  const hit = ranked.find((person) => new RegExp(`\\b${person.key}\\b`).test(normalized));
+  const hit = ranked.find((person) => person.key && new RegExp(`\\b${escapeRegExp(person.key)}\\b`).test(normalized));
   return hit?.name || null;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function chatBody(model, messages) {

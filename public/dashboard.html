@@ -69,12 +69,45 @@
       <section class="panel tools-wrap" aria-labelledby="tools-heading">
         <header class="panel-head">
           <h2 id="tools-heading">MCP tools</h2>
-          <span>In-process handlers. Only the allowlist can run.</span>
+          <span>Live calls. Only enabled tools are offered to Sol.</span>
         </header>
         <div class="tool-grid" id="toolGrid"></div>
       </section>
+
+      <section class="panel tool-admin" aria-labelledby="editor-heading">
+        <header class="panel-head">
+          <h2 id="editor-heading">Edit tools</h2>
+          <span id="toolStorage">Saved in SQLite for this process</span>
+        </header>
+        <p class="hint" id="toolEditorStatus" role="status"></p>
+        <div id="toolEditor" class="tool-editor"></div>
+        <form id="newTool" class="new-tool">
+          <h3>Add a mock tool</h3>
+          <p class="desc">Orders, CRM, or salon records only. Weather stays on the Open-Meteo handlers.</p>
+          <label>Name
+            <input name="name" required pattern="[a-z][a-z0-9_]{1,40}" placeholder="lookup_note" autocomplete="off" />
+          </label>
+          <label>Group
+            <select name="group">
+              <option value="orders">Orders</option>
+              <option value="crm" selected>CRM</option>
+              <option value="database">Salon database</option>
+            </select>
+          </label>
+          <label>Instructions the agent sees
+            <textarea name="description" required maxlength="800" placeholder="Look up a fictional note the desk added."></textarea>
+          </label>
+          <label>Parameter names, comma-separated
+            <input name="fields" placeholder="name, note" autocomplete="off" />
+          </label>
+          <label>Mock JSON result
+            <textarea name="mock" rows="4">{"ok":true,"message":"Mock salon note."}</textarea>
+          </label>
+          <button class="btn primary" type="submit">Add tool</button>
+        </form>
+      </section>
     </main>
-    <footer class="foot">Mock orders, CRM, and database · Castellón weather is the only live external source · <span id="updated">connecting</span></footer>
+    <footer class="foot">SQLite salon records · call logs stay in memory · Castellón weather is the only live external source · <span id="updated">connecting</span></footer>
     <script src="/js/dashboard.js" defer></script>
   </body>
 </html>

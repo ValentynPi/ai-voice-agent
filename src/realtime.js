@@ -33,6 +33,26 @@ export function realtimeToolSpecs() {
   }));
 }
 
+const GREETINGS = {
+  en: "Hello, this is Sol at Maison Sol in Castellón. I'm happy to speak your language if you'd prefer. How can I help with appointments, services, or the weather?",
+  es: "Hola, soy Sol, la recepción de Maison Sol en Castellón. Si prefieres, hablo en tu idioma. ¿En qué te ayudo con citas, servicios o el tiempo?",
+};
+
+export function greetingEvent(lang) {
+  const spanish = lang === "es";
+  const line = spanish ? GREETINGS.es : GREETINGS.en;
+  const language = spanish ? "Spanish" : "English";
+  return {
+    type: "response.create",
+    response: {
+      output_modalities: ["audio"],
+      tool_choice: "none",
+      input: [],
+      instructions: `The call just connected. The caller has not spoken. Speak in ${language} only. Say exactly the following, then stop and wait. Do not call tools.\n\n${line}`,
+    },
+  };
+}
+
 export function buildRealtimeSession(model, lang) {
   return {
     type: "realtime",
@@ -121,6 +141,7 @@ export async function mintRealtimeClientSecret({ lang, fetchImpl = fetch } = {})
           model,
           voice: voiceName(),
           session,
+          greeting: greetingEvent(lang),
         };
       }
       lastDetail = raw.slice(0, 240);
