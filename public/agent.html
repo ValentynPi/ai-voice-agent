@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent · Voice Desk</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560&family=Outfit:wght@360;480;560&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/app.css" />
+    <link rel="stylesheet" href="/css/shell.css" />
+  </head>
+  <body class="app-shell" data-nav="agents">
+    <aside class="sidebar">
+      <a class="brand" href="/">
+        <span class="mark" aria-hidden="true">V</span>
+        <span>
+          <strong>Voice Desk</strong>
+          <em>ValMax · Maison Sol</em>
+        </span>
+      </a>
+      <nav class="side-nav" aria-label="Product">
+        <a href="/agents" data-nav="agents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Agents</a>
+        <a href="/history" data-nav="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>Call History</a>
+        <a href="/knowledge" data-nav="knowledge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v16H7.5A2.5 2.5 0 0 0 5 21.5z"/><path d="M5 5.5A2.5 2.5 0 0 1 7.5 8H20"/></svg>Knowledge Base</a>
+        <a href="/analytics" data-nav="analytics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/></svg>Analytics</a>
+        <a href="/tools" data-nav="tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 6.5 9 12l-5 5 3 3 5-5 5.5-5.5a4 4 0 0 0-3-3z"/></svg>Tools</a>
+        <a href="/phone-numbers" data-nav="phone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h4l1 5-2.5 1.5a12 12 0 0 0 5 5L16 12l5 1v4a2 2 0 0 1-2 2A16 16 0 0 1 5 5a2 2 0 0 1 2-2z"/></svg>Phone Numbers</a>
+        <a href="/settings" data-nav="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6 16.9 7.1M7.1 16.9 5.6 18.4"/></svg>Settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="status-pill" id="statusPill"><i></i> Online</span>
+        <p>Web test calls only. Phone lines are not connected.</p>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="page-head">
+        <div>
+          <p class="kicker"><a href="/agents">Agents</a></p>
+          <h1 id="title">Agent</h1>
+          <p class="lede" id="subtitle">Prompt, greeting, voice, knowledge, and tools for the next test call.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="duplicateBtn" type="button" hidden>Duplicate</button>
+          <button class="btn danger" id="deleteBtn" type="button" hidden>Delete</button>
+          <button class="btn primary" id="saveBtn" type="button">Save</button>
+        </div>
+      </header>
+      <main class="page">
+        <p class="banner" id="banner" hidden></p>
+        <div class="split-page">
+          <form class="editor panel slim" id="agentForm">
+            <label>Name
+              <input id="name" name="name" required maxlength="80" />
+            </label>
+            <label>Description
+              <input id="description" name="description" maxlength="400" />
+            </label>
+            <label>System prompt
+              <textarea class="prompt" id="systemPrompt" name="systemPrompt" required maxlength="8000"></textarea>
+            </label>
+            <div class="fields-2">
+              <label>Greeting, English
+                <textarea id="greetingEn" name="greetingEn" maxlength="1000"></textarea>
+              </label>
+              <label>Greeting, Spanish
+                <textarea id="greetingEs" name="greetingEs" maxlength="1000"></textarea>
+              </label>
+            </div>
+            <div class="fields-2">
+              <label>Voice
+                <select id="voice" name="voice"></select>
+              </label>
+              <label>Language
+                <select id="language" name="language">
+                  <option value="multi">Match the caller</option>
+                  <option value="en">English</option>
+                  <option value="es">Spanish</option>
+                </select>
+              </label>
+            </div>
+            <label>Model notes
+              <textarea id="modelNotes" name="modelNotes" maxlength="500" placeholder="Notes for operators. The speech model still comes from the server."></textarea>
+            </label>
+          </form>
+          <div class="rail">
+            <section class="panel slim">
+              <h2>Test call</h2>
+              <p class="sub">Opens a browser call with this agent's prompt, greeting, voice, tools, and knowledge. Marin speaks first when that voice is selected.</p>
+              <div class="head-actions" style="margin-top: 14px">
+                <a class="btn primary" id="testLink" href="/agents">Test call</a>
+              </div>
+            </section>
+            <section class="panel slim">
+              <h2>Knowledge</h2>
+              <p class="sub">Attached notes are added to the Realtime instructions. <a href="/knowledge">Manage knowledge</a></p>
+              <div class="check-list" id="knowledgeChecks"></div>
+            </section>
+            <section class="panel slim">
+              <h2>Tools</h2>
+              <p class="sub">MCP tools are connected on the Tools page. This agent can use all of the enabled ones, or a subset.</p>
+              <label class="choice"><input type="radio" name="toolMode" value="all" checked /> Use every enabled MCP tool</label>
+              <label class="choice"><input type="radio" name="toolMode" value="custom" /> Only selected tools</label>
+              <div class="check-list" id="toolChecks"></div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script src="/js/shell.js" defer></script>
+    <script type="module" src="/js/agent.js"></script>
+  </body>
+</html>

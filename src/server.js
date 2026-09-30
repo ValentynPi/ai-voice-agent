@@ -3,13 +3,34 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { handleTurn } from "./agent.js";
+import {
+  callAnalytics,
+  createAgent,
+  createKnowledge,
+  deleteAgent,
+  deleteKnowledge,
+  duplicateAgent,
+  getAgent,
+  getDefaultAgent,
+  getHistoryCall,
+  listAgents,
+  listHistory,
+  listKnowledge,
+  requireAgent,
+  saveCallRecord,
+  updateAgent,
+  updateKnowledge,
+  voiceChoices,
+} from "./desk.js";
 import { connectMcp, disconnectMcp, ensureMcp, setMcpToolEnabled } from "./mcp/connection.js";
 import { mintRealtimeClientSecret, realtimeToolSpecs, recordRealtimeUtterance, runRealtimeTool } from "./realtime.js";
 import { buildState } from "./state.js";
-import { endCall, getCall, startCall, sweepCalls, touchCall } from "./store.js";
+import { endCall, getCall, listActivePublicCalls, onCallEnded, startCall, sweepCalls, touchCall } from "./store.js";
 import { initDatabase } from "./db.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
 import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
+
+onCallEnded(saveCallRecord);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -33,7 +54,7 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   next();
 });
-app.use(express.json({ limit: "32kb" }));
+app.use(express.json({ limit: "256kb" }));
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, service: "ai-voice-agent", status: "online", database: "sqlite" });
@@ -43,9 +64,21 @@ app.get("/api/state", (req, res) => {
   res.json(buildState());
 });
 
-app.post("/api/calls", (req, res) => {
-  const call = startCall({ source: "browser" });
-  res.status(201).json({ call });
+app.post("/api/calls", (req, res, next) => {
+  try {
+    const requested = req.body?.agentId;
+    const agent = requested ? requireAgent(requested) : getDefaultAgent();
+    const call = startCall({
+      source: "browser",
+      agentId: agent?.id || null,
+      agentName: agent?.name || null,
+      voice: agent?.voice || null,
+      toolAllow: agent ? agent.enabledTools : null,
+    });
+    res.status(201).json({ call });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/calls/:id/heartbeat", (req, res) => {
@@ -55,9 +88,99 @@ app.post("/api/calls/:id/heartbeat", (req, res) => {
 });
 
 app.post("/api/calls/:id/end", (req, res) => {
-  const call = endCall(req.params.id, "client");
+  const reason = req.body?.status === "failed" ? "failed" : "client";
+  const call = endCall(req.params.id, reason);
   if (!call) return res.status(404).json({ error: "Call not found" });
   res.json({ ok: true, call });
+});
+
+app.get("/api/history", (req, res) => {
+  const agentId = req.query.agentId ? String(req.query.agentId) : "";
+  let calls = listHistory(listActivePublicCalls());
+  if (agentId) calls = calls.filter((call) => call.agentId === agentId);
+  res.json({ calls });
+});
+
+app.get("/api/history/:id", (req, res) => {
+  const call = getHistoryCall(req.params.id, listActivePublicCalls());
+  if (!call) return res.status(404).json({ error: "Call not found" });
+  res.json({ call });
+});
+
+app.get("/api/analytics", (req, res) => {
+  res.json(callAnalytics());
+});
+
+app.get("/api/agents", (req, res) => {
+  res.json({ agents: listAgents(), voices: voiceChoices() });
+});
+
+app.post("/api/agents", (req, res, next) => {
+  try {
+    res.status(201).json({ agent: createAgent(req.body || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/agents/:id", (req, res, next) => {
+  try {
+    res.json({ agent: requireAgent(req.params.id), voices: voiceChoices() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/agents/:id", (req, res, next) => {
+  try {
+    res.json({ agent: updateAgent(req.params.id, req.body || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/agents/:id/duplicate", (req, res, next) => {
+  try {
+    res.status(201).json({ agent: duplicateAgent(req.params.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/agents/:id", (req, res, next) => {
+  try {
+    res.json(deleteAgent(req.params.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/knowledge", (req, res) => {
+  res.json({ knowledge: listKnowledge() });
+});
+
+app.post("/api/knowledge", (req, res, next) => {
+  try {
+    res.status(201).json({ knowledge: createKnowledge(req.body || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/knowledge/:id", (req, res, next) => {
+  try {
+    res.json({ knowledge: updateKnowledge(req.params.id, req.body || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/knowledge/:id", (req, res, next) => {
+  try {
+    res.json(deleteKnowledge(req.params.id));
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/realtime/token", async (req, res, next) => {
@@ -67,7 +190,8 @@ app.post("/api/realtime/token", async (req, res, next) => {
     const call = getCall(callId);
     if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
     await ensureMcp();
-    const secret = await mintRealtimeClientSecret({ lang });
+    const agent = call.agentId ? getAgent(call.agentId) : null;
+    const secret = await mintRealtimeClientSecret({ lang, agent });
     res.json({ ...secret, callId });
   } catch (error) {
     next(error);
@@ -180,8 +304,26 @@ app.post("/api/chat", async (req, res, next) => {
   }
 });
 
-app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(publicDir, "dashboard.html"));
+function sendPage(file) {
+  return (req, res) => res.sendFile(path.join(publicDir, file));
+}
+
+app.get("/", sendPage("index.html"));
+app.get("/dashboard", sendPage("dashboard.html"));
+app.get("/tools", sendPage("dashboard.html"));
+app.get("/agents", sendPage("agents.html"));
+app.get("/agents/new", sendPage("agent.html"));
+app.get("/agents/:id/test", sendPage("test.html"));
+app.get("/agents/:id", sendPage("agent.html"));
+app.get("/history", sendPage("history.html"));
+app.get("/history/:id", sendPage("call.html"));
+app.get("/knowledge", sendPage("knowledge.html"));
+app.get("/analytics", sendPage("analytics.html"));
+app.get("/phone-numbers", sendPage("phone.html"));
+app.get("/settings", sendPage("settings.html"));
+app.get("/call", (req, res) => {
+  const agent = getDefaultAgent();
+  res.redirect(agent ? `/agents/${agent.id}/test` : "/agents");
 });
 
 app.use(express.static(publicDir));
@@ -192,9 +334,9 @@ app.use("/api", (req, res) => {
 
 app.use((req, res) => {
   res.status(404).type("html").send(`<!doctype html>
-<html lang="en"><meta charset="utf-8"><title>Not found · Maison Sol</title>
-<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#100e0c;color:#f3ecdf;font-family:Georgia,serif">
-<p>That page is not on the desk. <a style="color:#e6c27a" href="/">Back to the voice agent</a></p>`);
+<html lang="en"><meta charset="utf-8"><title>Not found · Voice Desk</title>
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#0c0f14;color:#e8eef7;font-family:sans-serif">
+<p>That page is not on the desk. <a style="color:#e6c27a" href="/agents">Back to agents</a></p>`);
 });
 
 app.use((error, req, res, next) => {
@@ -238,8 +380,8 @@ if (isMain) {
     .catch((error) => console.error("Demo seed failed:", error))
     .finally(() => {
       app.listen(PORT, () => {
-        console.log(`Maison Sol voice agent on http://localhost:${PORT}`);
-        console.log(`Dashboard on http://localhost:${PORT}/dashboard`);
+        console.log(`Voice Desk on http://localhost:${PORT}`);
+        console.log(`Agents on http://localhost:${PORT}/agents`);
       });
     });
 }

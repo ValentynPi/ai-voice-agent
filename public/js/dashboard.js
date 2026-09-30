@@ -3,15 +3,6 @@ let signature = "";
 let mcpSignature = "";
 
 const statusPill = document.querySelector("#statusPill");
-const statStatus = document.querySelector("#statStatus");
-const engine = document.querySelector("#engine");
-const statActive = document.querySelector("#statActive");
-const statActiveHint = document.querySelector("#statActiveHint");
-const statToday = document.querySelector("#statToday");
-const statDenies = document.querySelector("#statDenies");
-const statTools = document.querySelector("#statTools");
-const conv = document.querySelector("#conv");
-const convMeta = document.querySelector("#convMeta");
 const security = document.querySelector("#security");
 const mcpStatus = document.querySelector("#mcpStatus");
 const mcpForm = document.querySelector("#mcpForm");
@@ -44,65 +35,14 @@ async function poll() {
 }
 
 function setOnline(online) {
+  if (!statusPill) return;
   statusPill.classList.toggle("offline", !online);
-  statusPill.lastChild.textContent = online ? " Online" : " Offline";
-  if (!online) statStatus.textContent = "Offline";
+  if (statusPill.lastChild) statusPill.lastChild.textContent = online ? " Online" : " Offline";
 }
 
 function render(data) {
-  statStatus.textContent = data.status === "online" ? "Online" : "Offline";
-  engine.textContent = data.openai
-    ? `OpenAI · ${data.model} · ${data.voice || "marin"}`
-    : "Keyword planner";
-  engine.title = data.openai
-    ? `Chat ${data.model}. Realtime ${data.realtimeModel}. Voice ${data.voice}.`
-    : "";
-  statActive.textContent = String(data.activeCalls);
-  statToday.textContent = String(data.callsToday);
-  statDenies.textContent = String(data.denies);
-  statTools.textContent = `${data.toolCallCount} tool calls`;
-  const active = (data.recentCalls || []).filter((call) => call.status === "active");
-  statActiveHint.textContent = active.length ? active.map((call) => call.id).join(", ") : "None live";
-  renderConversation(data.conversation);
   renderSecurity(data.securityEvents || []);
   renderMcp(data.mcp || {}, data.toolCalls || []);
-}
-
-function renderConversation(conversation) {
-  conv.replaceChildren();
-  if (!conversation) {
-    convMeta.textContent = "No calls yet";
-    conv.append(note("Start a call on the voice desk."));
-    return;
-  }
-  const badge = conversation.status === "active" ? "Live" : conversation.source === "seed" ? "Sample" : "Last call";
-  convMeta.textContent = `${badge} · ${conversation.id}`;
-  if (!conversation.messages.length) {
-    conv.append(note("Call open. Waiting for the first thing said."));
-    return;
-  }
-  for (const message of conversation.messages) {
-    const item = document.createElement("li");
-    item.className = `bubble ${message.role === "user" ? "user" : "assistant"}`;
-    const who = document.createElement("span");
-    who.className = "who";
-    who.textContent = message.role === "user" ? "Caller" : "Sol";
-    const body = document.createElement("p");
-    body.textContent = message.text;
-    item.append(who, body);
-    if (message.tools?.length) {
-      const tags = document.createElement("div");
-      tags.className = "tags";
-      for (const tool of message.tools) {
-        const el = document.createElement("span");
-        el.className = `tag ${tool.decision === "deny" || tool.ok === false ? "bad" : "ok"}`;
-        el.textContent = tool.name;
-        tags.append(el);
-      }
-      item.append(tags);
-    }
-    conv.append(item);
-  }
 }
 
 function renderSecurity(events) {

@@ -19,6 +19,10 @@ const modeBadge = document.querySelector("#modeBadge");
 const chips = document.querySelector("#chips");
 const remoteAudio = document.querySelector("#remoteAudio");
 
+const agentFromPath = location.pathname.match(/^\/agents\/([^/]+)\/test$/);
+const pageAgentId = agentFromPath ? decodeURIComponent(agentFromPath[1]) : "";
+let agentLabel = "Sol";
+
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 let callId = null;
@@ -45,6 +49,7 @@ let greetingFallbackWaits = 0;
 let silentGreetingTimer = 0;
 
 langSelect.value = localStorage.getItem("sol-lang") || "en";
+loadAgentChrome();
 langSelect.addEventListener("change", () => {
   localStorage.setItem("sol-lang", langSelect.value);
   if (recognition) recognition.lang = recognitionLang();
@@ -76,6 +81,30 @@ composer.addEventListener("submit", (event) => {
   textInput.value = "";
   submit(text);
 });
+
+async function loadAgentChrome() {
+  if (!pageAgentId) return;
+  try {
+    const response = await fetch(`/api/agents/${encodeURIComponent(pageAgentId)}`);
+    if (!response.ok) return;
+    const body = await response.json();
+    const agent = body.agent;
+    if (!agent) return;
+    agentLabel = agent.name || agentLabel;
+    const heading = document.querySelector("#call-heading");
+    if (heading) heading.textContent = agent.name || "Test call";
+    document.title = `${agent.name || "Test call"} · Voice Desk`;
+    const kicker = document.querySelector("#agentKicker");
+    if (kicker) kicker.textContent = agent.voice ? `Web test call · ${agent.voice}` : "Web test call";
+    if ((agent.language === "en" || agent.language === "es") && !localStorage.getItem("sol-lang")) {
+      langSelect.value = agent.language;
+    }
+    const back = document.querySelector("#backToAgent");
+    if (back) back.href = `/agents/${encodeURIComponent(agent.id)}`;
+  } catch {
+    /* The call can still start with the path id. */
+  }
+}
 
 function recognitionLang() {
   return langSelect.value === "es" ? "es-ES" : "en-US";
@@ -446,12 +475,16 @@ async function startCall() {
   if (callActive || starting) return;
   starting = true;
   try {
-    const response = await fetch("/api/calls", { method: "POST" });
+    const response = await fetch("/api/calls", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pageAgentId ? { agentId: pageAgentId } : {}),
+    });
+    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      hintEl.textContent = "Could not open a call. Is the server running?";
+      hintEl.textContent = payload.error || "Could not open a call. Is the server running?";
       return;
     }
-    const payload = await response.json();
     callId = payload.call.id;
     callActive = true;
     callBtn.textContent = "End call";
@@ -496,9 +529,24 @@ async function endCall() {
   callBtn.classList.remove("live");
   setPhase("idle", "Call ended");
   interimEl.textContent = "";
-  if (id) {
-    navigator.sendBeacon?.(`/api/calls/${id}/end`) || fetch(`/api/calls/${id}/end`, { method: "POST" });
+  if (!id) return;
+  let saved = false;
+  try {
+    const response = await fetch(`/api/calls/${id}/end`, { method: "POST" });
+    saved = response.ok;
+  } catch {
+    saved = false;
   }
+  hintEl.replaceChildren();
+  if (!saved) {
+    hintEl.textContent = "The call ended, but it could not be saved.";
+    return;
+  }
+  hintEl.append(document.createTextNode("Call saved. "));
+  const link = document.createElement("a");
+  link.href = `/history/${encodeURIComponent(id)}`;
+  link.textContent = "Open it in Call History";
+  hintEl.append(link, document.createTextNode("."));
 }
 
 window.addEventListener("pagehide", () => {
@@ -511,7 +559,7 @@ function addBubble(role, text, extras = {}) {
   item.className = `bubble ${role}`;
   const who = document.createElement("span");
   who.className = "who";
-  who.textContent = role === "user" ? "You" : "Sol";
+  who.textContent = role === "user" ? "You" : agentLabel;
   const body = document.createElement("p");
   body.textContent = text;
   item.append(who, body);

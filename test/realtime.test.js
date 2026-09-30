@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import { resetDatabase } from "../src/db.js";
 import { resetResolvedModels } from "../src/models.js";
-import { buildRealtimeSession, greetingEvent } from "../src/realtime.js";
+import { buildRealtimeSession, greetingEvent, selectSessionTools } from "../src/realtime.js";
 import { app } from "../src/server.js";
 import { resetStore } from "../src/store.js";
 
@@ -36,6 +36,33 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.match(session.instructions, /Maison Sol/);
   assert.match(session.instructions, /only the tools provided in this session/);
   assert.doesNotMatch(JSON.stringify(session), /sk-/);
+});
+
+test("agent settings narrow voice, greeting, tools, and knowledge", () => {
+  const agent = {
+    voice: "cedar",
+    language: "es",
+    systemPrompt: "You are North Desk.",
+    greetingEn: "Hello there",
+    greetingEs: "Hola norte",
+    enabledTools: ["get_note"],
+    knowledge: [{ title: "Hours", body: "Closed Monday." }],
+  };
+  const session = buildRealtimeSession("gpt-realtime-2.1", "es", agent);
+  assert.equal(session.audio.output.voice, "cedar");
+  assert.match(session.instructions, /North Desk/);
+  assert.match(session.instructions, /Closed Monday/);
+  assert.match(session.instructions, /Reply in Spanish/);
+  assert.match(session.instructions, /Knowledge base/);
+  const greeting = greetingEvent("es", agent);
+  assert.match(greeting.response.instructions, /Hola norte/);
+  assert.equal(session.tools.some((tool) => tool.name === "get_note"), false);
+  assert.deepEqual(
+    selectSessionTools([{ name: "get_note" }, { name: "salon_lookup" }], agent),
+    [{ name: "get_note" }],
+  );
+  assert.deepEqual(selectSessionTools([{ name: "get_note" }], null), [{ name: "get_note" }]);
+  assert.deepEqual(selectSessionTools([{ name: "get_note" }], { enabledTools: null }), [{ name: "get_note" }]);
 });
 
 test("greeting asks marin to speak first in the selected language", () => {

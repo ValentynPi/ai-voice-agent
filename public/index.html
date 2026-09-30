@@ -3,76 +3,70 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Maison Sol · AI receptionist</title>
+    <title>Voice Desk · ValMax</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,640&family=Outfit:wght@360;480;560&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560&family=Outfit:wght@360;480;560&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/css/app.css" />
+    <link rel="stylesheet" href="/css/shell.css" />
   </head>
-  <body class="voice">
-    <div class="atmosphere" aria-hidden="true"></div>
-    <header class="topbar">
+  <body class="app-shell" data-nav="home">
+    <aside class="sidebar">
       <a class="brand" href="/">
-        <span class="mark" aria-hidden="true">Sol</span>
+        <span class="mark" aria-hidden="true">V</span>
         <span>
-          <strong>Maison Sol</strong>
-          <em>AI receptionist · Castellón de la Plana</em>
+          <strong>Voice Desk</strong>
+          <em>ValMax · Maison Sol</em>
         </span>
       </a>
-      <nav class="topnav">
-        <a href="/dashboard">Ops dashboard</a>
+      <nav class="side-nav" aria-label="Product">
+        <a href="/agents" data-nav="agents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Agents</a>
+        <a href="/history" data-nav="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>Call History</a>
+        <a href="/knowledge" data-nav="knowledge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v16H7.5A2.5 2.5 0 0 0 5 21.5z"/><path d="M5 5.5A2.5 2.5 0 0 1 7.5 8H20"/></svg>Knowledge Base</a>
+        <a href="/analytics" data-nav="analytics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/></svg>Analytics</a>
+        <a href="/tools" data-nav="tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 6.5 9 12l-5 5 3 3 5-5 5.5-5.5a4 4 0 0 0-3-3z"/></svg>Tools</a>
+        <a href="/phone-numbers" data-nav="phone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h4l1 5-2.5 1.5a12 12 0 0 0 5 5L16 12l5 1v4a2 2 0 0 1-2 2A16 16 0 0 1 5 5a2 2 0 0 1 2-2z"/></svg>Phone Numbers</a>
+        <a href="/settings" data-nav="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6 16.9 7.1M7.1 16.9 5.6 18.4"/></svg>Settings</a>
       </nav>
-    </header>
-
-    <p class="pipeline" aria-label="Request path">
-      <span>Microphone</span>
-      <span>Realtime</span>
-      <span>Security</span>
-      <span>Tools</span>
-      <span>Marin</span>
-    </p>
-
-    <main class="stage">
-      <section class="call-panel" aria-labelledby="call-heading">
-        <h1 id="call-heading">Voice desk</h1>
-        <div class="orb-wrap" id="orb" data-state="idle">
-          <div class="orb-ring"></div>
-          <div class="orb"></div>
-        </div>
-        <p class="phase" id="phase">Ready when you are</p>
-        <p class="interim" id="interim" aria-live="polite"></p>
-        <div class="controls">
-          <button class="btn primary" id="callBtn" type="button">Start call</button>
-          <label class="lang">
-            Language
-            <select id="lang">
-              <option value="en">English</option>
-              <option value="es">Español</option>
-            </select>
-          </label>
-        </div>
-        <p class="hint" id="hint">OpenAI Realtime speaks first with the marin voice. If marin cannot connect, Sol will not switch to a browser voice. Typing still works.</p>
-        <audio id="remoteAudio" autoplay playsinline></audio>
-        <p class="call-meta" id="callMeta"></p>
-      </section>
-
-      <section class="transcript-panel">
-        <header class="panel-head">
-          <h2>Live transcript</h2>
-          <span id="modeBadge">Realtime</span>
-        </header>
-        <ol id="transcript" aria-live="polite"></ol>
-        <form id="composer">
-          <label class="sr-only" for="text">Message</label>
-          <input id="text" name="text" autocomplete="off" placeholder="Or type — Sol will speak the reply" />
-          <button class="btn" type="submit">Send</button>
-        </form>
-        <ul class="chips" id="chips"></ul>
-      </section>
-    </main>
-
-    <footer class="foot">Demo only · Sol's tools come from the MCP server on the ops dashboard · no Twilio, no Intercom</footer>
-    <script type="module" src="/js/voice.js"></script>
+      <div class="sidebar-foot">
+        <span class="status-pill" id="statusPill"><i></i> Online</span>
+        <p>Web test calls only. Phone lines are not connected.</p>
+      </div>
+    </aside>
+    <div class="workspace">
+      <main class="page">
+        <section class="hero">
+          <div class="hero-copy">
+            <p class="kicker">ValMax · Voice Desk</p>
+            <h1>Run the front desk from one console.</h1>
+            <p class="lede">Maison Sol is the demo receptionist: OpenAI Realtime, voice marin, and a speak-first greeting. Shape the prompt, attach knowledge, connect tools, then place a web test call. Phone numbers and SIP are the next phase.</p>
+            <div class="head-actions" style="margin-top: 18px">
+              <a class="btn primary" href="/agents/agt_maison_sol/test">Test Maison Sol</a>
+              <a class="btn ghost" href="/agents">All agents</a>
+            </div>
+          </div>
+          <article class="agent-card" id="homeCard">
+            <p class="kicker">Default agent</p>
+            <strong>Maison Sol</strong>
+            <p>Receptionist for the fictional salon in Castellón de la Plana. Greets first with marin, in English or Spanish.</p>
+            <div class="meta-row">
+              <span class="pill">marin</span>
+              <span class="pill">English · Spanish</span>
+            </div>
+            <div class="head-actions">
+              <a class="btn small primary" href="/agents/agt_maison_sol/test">Test call</a>
+              <a class="btn small ghost" href="/agents/agt_maison_sol">Edit agent</a>
+            </div>
+          </article>
+        </section>
+        <ol class="steps">
+          <li><strong>1 · Agent</strong><span>Name, prompt, greeting, voice, and which MCP tools it may call.</span></li>
+          <li><strong>2 · Knowledge</strong><span>Paste the facts it should use. A URL can be saved for a later crawl.</span></li>
+          <li><strong>3 · Test call</strong><span>The browser call speaks first, then lands in call history and analytics.</span></li>
+        </ol>
+      </main>
+    </div>
+    <script src="/js/shell.js" defer></script>
   </body>
 </html>

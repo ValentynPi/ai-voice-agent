@@ -1,6 +1,8 @@
 const MAX_EVENTS = 80;
 const MAX_TOOL_CALLS = 80;
 
+const endedListeners = new Set();
+
 const state = {
   calls: [],
   securityEvents: [],
@@ -8,6 +10,20 @@ const state = {
   callsToday: 0,
   seq: 0,
 };
+
+export function onCallEnded(fn) {
+  endedListeners.add(fn);
+}
+
+function emitEnded(call) {
+  for (const fn of endedListeners) {
+    try {
+      fn(call);
+    } catch (error) {
+      console.error("Failed to store the ended call:", error);
+    }
+  }
+}
 
 function nextId(prefix) {
   state.seq += 1;
@@ -27,7 +43,7 @@ export function resetStore() {
   state.seq = 0;
 }
 
-export function startCall({ source = "browser" } = {}) {
+export function startCall({ source = "browser", agentId = null, agentName = null, voice = null, toolAllow = null } = {}) {
   const call = {
     id: nextId("call"),
     source,
@@ -37,6 +53,11 @@ export function startCall({ source = "browser" } = {}) {
     endReason: null,
     lastSeenAt: Date.now(),
     messages: [],
+    agentId,
+    agentName,
+    voice,
+    lang: null,
+    toolAllow,
   };
   state.calls.push(call);
   state.callsToday += 1;
@@ -60,6 +81,7 @@ export function endCall(callId, reason = "client") {
     call.status = "ended";
     call.endedAt = new Date().toISOString();
     call.endReason = reason;
+    emitEnded(call);
   }
   return publicCall(call);
 }
@@ -71,6 +93,7 @@ export function sweepCalls(maxIdleMs = 20000) {
       call.status = "ended";
       call.endedAt = new Date().toISOString();
       call.endReason = "idle";
+      emitEnded(call);
     }
   }
 }
@@ -134,8 +157,18 @@ function publicCall(call) {
     startedAt: call.startedAt,
     endedAt: call.endedAt,
     endReason: call.endReason,
+    agentId: call.agentId || null,
+    agentName: call.agentName || null,
+    voice: call.voice || null,
+    lang: call.lang || null,
     messages: call.messages.map((message) => ({ ...message, tools: [...message.tools] })),
   };
+}
+
+export function listActivePublicCalls() {
+  return state.calls
+    .filter((call) => call.status === "active" && call.source !== "seed")
+    .map(publicCall);
 }
 
 export function currentConversation() {

@@ -1,3 +1,4 @@
+import { getAgent } from "./desk.js";
 import { composeToolReply, detectLang as detect, forSpeech, refusal } from "./format.js";
 import { chatCandidates, noteChatModel } from "./models.js";
 import { receptionistInstructions } from "./realtime.js";
@@ -109,9 +110,9 @@ async function runPlanned(callId, planned) {
   return results;
 }
 
-async function runOpenAIModel(model, { callId, text, lang, history }) {
+async function runOpenAIModel(model, { callId, text, lang, history, persona }) {
   const messages = [
-    { role: "system", content: receptionistInstructions(lang) },
+    { role: "system", content: receptionistInstructions(lang, persona) },
     ...history,
     { role: "user", content: text },
   ];
@@ -231,6 +232,8 @@ export async function handleTurn({ callId, text, lang }) {
     role: message.role,
     content: message.text,
   }));
+  const persona = call.agentId ? getAgent(call.agentId) : null;
+  if (language === "en" || language === "es") call.lang = language;
   appendMessage(callId, { role: "user", text: clean, tools: [] });
 
   if (screen.decision === "deny") {
@@ -242,7 +245,7 @@ export async function handleTurn({ callId, text, lang }) {
   let outcome;
   if (process.env.OPENAI_API_KEY) {
     try {
-      outcome = await runOpenAI({ callId, text: clean, lang: language, history });
+      outcome = await runOpenAI({ callId, text: clean, lang: language, history, persona });
     } catch (error) {
       console.error("OpenAI failed, using the keyword planner:", error.message);
       const tools = error.partialTools?.length
