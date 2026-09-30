@@ -5,10 +5,15 @@ import { CUSTOMERS, HOURS, ORDERS, SALON, SERVICES, STAFF } from "./tools/demo-d
 
 let db = null;
 let dbPath = null;
-let afterOpen = () => {};
+const readyListeners = new Set();
 
 export function onDatabaseReady(fn) {
-  afterOpen = fn;
+  readyListeners.add(fn);
+  if (db) fn();
+}
+
+function emitDatabaseReady() {
+  for (const fn of readyListeners) fn();
 }
 
 export function configuredDatabasePath() {
@@ -45,7 +50,7 @@ function connect(file) {
   seedIfNeeded(database);
   db = database;
   dbPath = file;
-  afterOpen();
+  emitDatabaseReady();
 }
 
 export function getDb() {
@@ -151,6 +156,23 @@ function migrate(database) {
       enabled INTEGER NOT NULL DEFAULT 1,
       builtin INTEGER NOT NULL DEFAULT 0,
       mock_json TEXT
+    );
+    CREATE TABLE IF NOT EXISTS mcp_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      url TEXT NOT NULL,
+      auth_token TEXT,
+      server_name TEXT,
+      protocol_version TEXT,
+      connected INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS mcp_tools (
+      name TEXT PRIMARY KEY,
+      alias TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL,
+      parameters_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1
     );
   `);
 }
@@ -479,4 +501,99 @@ export function updateToolRow(name, { description, enabled, parameters, mock }) 
 export function deleteToolRow(name) {
   const result = getDb().prepare("DELETE FROM tool_definitions WHERE name = ? AND builtin = 0").run(name);
   return result.changes > 0;
+}
+
+function mapMcpConnection(row) {
+  if (!row) return null;
+  return {
+    url: row.url,
+    authToken: row.auth_token || "",
+    serverName: row.server_name || "",
+    protocolVersion: row.protocol_version || "",
+    connected: Boolean(row.connected),
+    error: row.last_error || "",
+    updatedAt: row.updated_at,
+  };
+}
+
+export function readMcpConnection() {
+  const row = getDb().prepare(`
+    SELECT url, auth_token, server_name, protocol_version, connected, last_error, updated_at
+    FROM mcp_connection WHERE id = 1
+  `).get();
+  return mapMcpConnection(row);
+}
+
+export function saveMcpConnection({ url, authToken, serverName, protocolVersion, connected, error }) {
+  getDb().prepare(`
+    INSERT INTO mcp_connection
+      (id, url, auth_token, server_name, protocol_version, connected, last_error, updated_at)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      url = excluded.url,
+      auth_token = excluded.auth_token,
+      server_name = excluded.server_name,
+      protocol_version = excluded.protocol_version,
+      connected = excluded.connected,
+      last_error = excluded.last_error,
+      updated_at = excluded.updated_at
+  `).run(
+    url,
+    authToken ? authToken : null,
+    serverName || "",
+    protocolVersion || "",
+    connected ? 1 : 0,
+    error || "",
+    new Date().toISOString(),
+  );
+}
+
+function mapMcpTool(row) {
+  return {
+    name: row.name,
+    alias: row.alias,
+    description: row.description,
+    parameters: JSON.parse(row.parameters_json),
+    enabled: Boolean(row.enabled),
+  };
+}
+
+export function listMcpToolRows() {
+  return getDb().prepare(`
+    SELECT name, alias, description, parameters_json, enabled
+    FROM mcp_tools
+    ORDER BY name
+  `).all().map(mapMcpTool);
+}
+
+export function replaceMcpTools(tools) {
+  const previous = new Map(listMcpToolRows().map((tool) => [tool.name, tool.enabled]));
+  const database = getDb();
+  database.exec("BEGIN");
+  try {
+    database.prepare("DELETE FROM mcp_tools").run();
+    const insert = database.prepare(`
+      INSERT INTO mcp_tools (name, alias, description, parameters_json, enabled)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const tool of tools) {
+      const enabled = previous.has(tool.name) ? previous.get(tool.name) : true;
+      insert.run(tool.name, tool.alias, tool.description, JSON.stringify(tool.parameters), enabled ? 1 : 0);
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function setMcpToolEnabledRow(name, enabled) {
+  const result = getDb().prepare(`
+    UPDATE mcp_tools SET enabled = ? WHERE name = ? OR alias = ?
+  `).run(enabled ? 1 : 0, name, name);
+  return result.changes > 0;
+}
+
+export function clearMcpTools() {
+  getDb().prepare("DELETE FROM mcp_tools").run();
 }

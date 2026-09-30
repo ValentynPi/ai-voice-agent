@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { handleTurn } from "./agent.js";
+import { connectMcp, disconnectMcp, ensureMcp, setMcpToolEnabled } from "./mcp/connection.js";
 import { mintRealtimeClientSecret, realtimeToolSpecs, recordRealtimeUtterance, runRealtimeTool } from "./realtime.js";
 import { buildState } from "./state.js";
 import { endCall, getCall, startCall, sweepCalls, touchCall } from "./store.js";
@@ -65,6 +66,7 @@ app.post("/api/realtime/token", async (req, res, next) => {
     if (!callId) return res.status(400).json({ error: "callId is required" });
     const call = getCall(callId);
     if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
+    await ensureMcp();
     const secret = await mintRealtimeClientSecret({ lang });
     res.json({ ...secret, callId });
   } catch (error) {
@@ -98,6 +100,35 @@ app.post("/api/realtime/tool", async (req, res, next) => {
     }
     const outcome = await runRealtimeTool({ callId, name, args: parsed });
     res.json(outcome);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/mcp/connect", async (req, res, next) => {
+  try {
+    const { url, token } = req.body || {};
+    if (!url) return res.status(400).json({ error: "MCP URL is required" });
+    const mcp = await connectMcp({ url, token: token == null ? undefined : token });
+    res.json({ mcp });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/mcp/disconnect", async (req, res, next) => {
+  try {
+    res.json({ mcp: await disconnectMcp() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/mcp/tools/:name", (req, res, next) => {
+  try {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false" });
+    res.json({ mcp: setMcpToolEnabled(req.params.name, enabled) });
   } catch (error) {
     next(error);
   }
