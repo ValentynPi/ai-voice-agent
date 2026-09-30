@@ -30,9 +30,11 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.equal(session.model, "gpt-realtime-2.1");
   assert.equal(session.audio.output.voice, "marin");
   assert.equal(session.audio.input.turn_detection.create_response, false);
-  assert.ok(session.tools.some((tool) => tool.name === "get_weather" && tool.type === "function"));
-  assert.ok(session.tools.some((tool) => tool.name === "book_appointment"));
+  assert.ok(Array.isArray(session.tools));
+  assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
+  assert.equal(session.tools.some((tool) => tool.name === "book_appointment"), false);
   assert.match(session.instructions, /Maison Sol/);
+  assert.match(session.instructions, /only the tools provided in this session/);
   assert.doesNotMatch(JSON.stringify(session), /sk-/);
 });
 
@@ -52,8 +54,14 @@ test("voice desk greets through realtime and does not use browser speech", () =>
   const source = fs.readFileSync(new URL("../public/js/voice.js", import.meta.url), "utf8");
   assert.match(source, /token\.greeting/);
   assert.match(source, /maybeSendGreeting/);
+  assert.match(source, /answerApplied = true/);
+  assert.match(source, /greetingTries/);
+  assert.match(source, /canAttemptGreeting/);
+  assert.match(source, /remoteAudio\.play/);
   assert.match(source, /marin is unavailable/);
   assert.doesNotMatch(source, /speechSynthesis/);
+  const applied = source.indexOf("answerApplied = true");
+  assert.match(source.slice(applied, applied + 500), /maybeSendGreeting\(\)/);
 });
 
 test("realtime token endpoint asks for a key before it mints a secret", async () => {
@@ -99,7 +107,8 @@ test("realtime token falls back when the first model id is rejected", async () =
     const body = JSON.parse(init.body);
     seen.push(body.session.model);
     assert.equal(body.session.audio.output.voice, "marin");
-    assert.ok(body.session.tools.some((tool) => tool.name === "lookup_customer"));
+    assert.ok(Array.isArray(body.session.tools));
+    assert.equal(body.session.tools.some((tool) => tool.name === "lookup_customer"), false);
     if (body.session.model === "gpt-5.1") {
       return new Response(JSON.stringify({ error: { message: "The model gpt-5.1 does not exist" } }), {
         status: 400,

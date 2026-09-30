@@ -334,6 +334,24 @@ button { cursor: pointer; }
 .toggle { display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: normal; font-size: 14px; color: var(--cream); }
 .new-tool { margin-top: 14px; }
 .tool-admin .hint { min-height: 1.2em; }
+.mcp-panel { min-height: 0; }
+.mcp-form { display: grid; gap: 12px; margin: 4px 0 8px; }
+.mcp-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.mcp-form input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 14px;
+  color: var(--cream);
+}
+.mcp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-tools { display: flex; flex-direction: column; gap: 10px; }
+.mcp-sub { margin: 16px 0 8px; font-family: "Fraunces", serif; font-size: 20px; }
+.mcp-panel .hint { min-height: 1.2em; }
 
 pre.snippet {
   margin: 6px 0 0;

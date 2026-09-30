@@ -36,7 +36,10 @@ test("pages and health respond", async () => {
     assert.equal(dashboard.status, 200);
     const html = await dashboard.text();
     assert.match(html, /MCP tools/);
+    assert.match(html, /mcpUrl/);
     assert.match(html, /Security/);
+    assert.doesNotMatch(html, /Add a mock tool/);
+    assert.doesNotMatch(html, /id="toolGrid"/);
   });
 });
 
@@ -63,7 +66,8 @@ test("chat updates dashboard state", async () => {
     assert.match(state.conversation.messages.at(-1).text, /ammonia/i);
     assert.ok(state.toolCalls.some((item) => item.name === "lookup_customer" && item.decision === "allow"));
     assert.ok(state.securityEvents.some((item) => item.decision === "allow" && item.kind === "tool"));
-    assert.ok(state.catalog.orders.some((order) => order.id === "ORD-1042"));
+    assert.equal(state.mcp.connected, false);
+    assert.equal(state.catalog, undefined);
 
     const ended = await fetch(`${base}/api/calls/${call.id}/end`, { method: "POST" });
     assert.equal(ended.status, 200);

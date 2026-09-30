@@ -1,4 +1,5 @@
-import { databaseInfo, getCatalog } from "./db.js";
+import { databaseInfo } from "./db.js";
+import { publicMcp } from "./mcp/connection.js";
 import { chatModel, realtimeModel, voiceName } from "./models.js";
 import { getSnapshot } from "./store.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
@@ -12,9 +13,9 @@ export function buildState() {
     model: openai ? chatModel() : null,
     realtimeModel: openai ? realtimeModel() : null,
     voice: openai ? voiceName() : null,
-    catalog: getCatalog(),
     database: databaseInfo(),
     tools: listToolCatalog(),
     toolStorage: toolCatalogInfo(),
+    mcp: publicMcp(),
   };
 }

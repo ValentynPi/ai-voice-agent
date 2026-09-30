@@ -1,28 +1,6 @@
-const GROUPS = [
-  {
-    id: "weather",
-    title: "Weather",
-    blurb: "Live Open-Meteo forecast for Castellón de la Plana.",
-  },
-  {
-    id: "orders",
-    title: "Orders",
-    blurb: "Fictional salon tickets. Logged when the agent looks one up.",
-  },
-  {
-    id: "crm",
-    title: "CRM",
-    blurb: "Fictional client book and upcoming appointments.",
-  },
-  {
-    id: "database",
-    title: "Database",
-    blurb: "Fictional services, staff, and opening hours.",
-  },
-];
-
 let latest = null;
 let signature = "";
+let mcpSignature = "";
 
 const statusPill = document.querySelector("#statusPill");
 const statStatus = document.querySelector("#statStatus");
@@ -35,13 +13,16 @@ const statTools = document.querySelector("#statTools");
 const conv = document.querySelector("#conv");
 const convMeta = document.querySelector("#convMeta");
 const security = document.querySelector("#security");
-const toolGrid = document.querySelector("#toolGrid");
-const toolEditor = document.querySelector("#toolEditor");
-const toolEditorStatus = document.querySelector("#toolEditorStatus");
-const toolStorage = document.querySelector("#toolStorage");
-const newTool = document.querySelector("#newTool");
+const mcpStatus = document.querySelector("#mcpStatus");
+const mcpForm = document.querySelector("#mcpForm");
+const mcpUrl = document.querySelector("#mcpUrl");
+const mcpToken = document.querySelector("#mcpToken");
+const mcpConnect = document.querySelector("#mcpConnect");
+const mcpDisconnect = document.querySelector("#mcpDisconnect");
+const mcpMessage = document.querySelector("#mcpMessage");
+const mcpTools = document.querySelector("#mcpTools");
+const mcpCalls = document.querySelector("#mcpCalls");
 const updated = document.querySelector("#updated");
-let toolSignature = "";
 
 async function poll() {
   try {
@@ -84,13 +65,7 @@ function render(data) {
   statActiveHint.textContent = active.length ? active.map((call) => call.id).join(", ") : "None live";
   renderConversation(data.conversation);
   renderSecurity(data.securityEvents || []);
-  renderTools(data);
-  if (data.toolStorage?.note) toolStorage.textContent = data.toolStorage.note;
-  const toolsSig = JSON.stringify(data.tools || []);
-  if (toolsSig !== toolSignature && !editorBusy()) {
-    toolSignature = toolsSig;
-    renderToolEditor(data.tools || []);
-  }
+  renderMcp(data.mcp || {}, data.toolCalls || []);
 }
 
 function renderConversation(conversation) {
@@ -158,72 +133,92 @@ function renderSecurity(events) {
   }
 }
 
-function renderTools(data) {
-  toolGrid.replaceChildren();
-  const now = Date.now();
-  for (const group of GROUPS) {
-    const card = document.createElement("article");
-    card.className = "tool-card";
-    const logs = (data.toolCalls || []).filter((call) => call.group === group.id);
-    if (logs[0] && now - new Date(logs[0].at).getTime() < 8000) card.classList.add("fresh");
-    const title = document.createElement("h3");
-    title.textContent = group.title;
-    const blurb = document.createElement("p");
-    blurb.className = "desc";
-    blurb.textContent = group.blurb;
-    const names = document.createElement("div");
-    names.className = "names";
-    for (const tool of (data.tools || []).filter((tool) => tool.group === group.id)) {
-      const chip = document.createElement("span");
-      chip.className = tool.enabled === false ? "tag off" : "tag";
-      chip.textContent = tool.name;
-      names.append(chip);
-    }
-    card.append(title, blurb, names);
-    for (const record of recordsFor(group.id, data.catalog)) card.append(record);
-    const logTitle = document.createElement("p");
-    logTitle.className = "desc";
-    logTitle.textContent = logs.length ? "Recent calls" : "No calls yet";
-    card.append(logTitle);
-    for (const log of logs.slice(0, 3)) card.append(logItem(log));
-    toolGrid.append(card);
-  }
+function mcpBusy() {
+  const active = document.activeElement;
+  return Boolean(active && mcpForm.contains(active));
 }
 
-function recordsFor(group, catalog) {
-  if (!catalog) return [];
-  if (group === "orders") return catalog.orders.map((order) => line(`${order.id} · ${order.customer}`, `${order.status} · ${order.service} · €${order.totalEur}`));
-  if (group === "crm") {
-    return catalog.customers.map((customer) => {
-      const next = customer.nextAppointment
-        ? `${customer.nextAppointment.date} ${customer.nextAppointment.time}`
-        : "no upcoming visit";
-      return line(customer.name, `${customer.loyalty} · ${next}`);
-    });
+function renderMcp(mcp, calls) {
+  const connected = Boolean(mcp.connected);
+  mcpStatus.textContent = connected
+    ? `Connected${mcp.serverName ? ` · ${mcp.serverName}` : ""}`
+    : "Not connected";
+  mcpDisconnect.disabled = !connected && !mcp.url;
+  if (!mcpBusy()) {
+    if (mcp.url && mcpUrl.value !== mcp.url) mcpUrl.value = mcp.url;
+    mcpToken.placeholder = mcp.hasToken
+      ? "Token saved — leave blank to keep it"
+      : "Bearer token if the server requires one";
   }
-  if (group === "database") {
-    const hours = catalog.hours.days
-      .filter((day) => day.open)
-      .map((day) => day.day.slice(0, 3))
-      .join(" ");
-    return [
-      line("Hours", `Tue–Sat 10:00–20:00 · ${hours}`),
-      ...catalog.services.slice(0, 3).map((service) => line(service.name, `€${service.priceEur} · ${service.minutes} min`)),
-      ...catalog.staff.map((person) => line(person.name, person.role)),
-    ];
+  if (mcp.error) mcpMessage.textContent = mcp.error;
+  else if (connected) mcpMessage.textContent = "Enabled tools are offered to Sol on the next call.";
+  else mcpMessage.textContent = "Not connected. Sol will greet, but she has no tools until you connect one.";
+
+  const nextSignature = JSON.stringify(mcp.tools || []);
+  if (nextSignature !== mcpSignature) {
+    mcpSignature = nextSignature;
+    renderMcpTools(mcp.tools || []);
   }
-  return [line("Source", "api.open-meteo.com · no API key")];
+  renderMcpCalls(calls);
 }
 
-function line(title, detail) {
-  const row = document.createElement("div");
-  row.className = "record";
-  const strong = document.createElement("strong");
-  strong.textContent = title;
-  const span = document.createElement("div");
-  span.textContent = detail;
-  row.append(strong, span);
+function renderMcpTools(tools) {
+  mcpTools.replaceChildren();
+  if (!tools.length) {
+    const empty = document.createElement("p");
+    empty.className = "desc";
+    empty.textContent = "No tools discovered yet.";
+    mcpTools.append(empty);
+    return;
+  }
+  for (const tool of tools) mcpTools.append(mcpToolRow(tool));
+}
+
+function mcpToolRow(tool) {
+  const row = document.createElement("article");
+  row.className = tool.enabled === false ? "tool-row off" : "tool-row";
+  const header = document.createElement("header");
+  const title = document.createElement("h3");
+  title.textContent = tool.name;
+  const meta = document.createElement("span");
+  meta.className = "tag";
+  meta.textContent = tool.alias && tool.alias !== tool.name ? tool.alias : "mcp";
+  header.append(title, meta);
+  const schema = document.createElement("p");
+  schema.className = "schema";
+  schema.textContent = tool.parameterSummary || "no parameters";
+  const description = document.createElement("p");
+  description.className = "desc";
+  description.textContent = tool.description || "";
+  const actions = document.createElement("div");
+  actions.className = "tool-actions";
+  const toggleLabel = document.createElement("label");
+  toggleLabel.className = "toggle";
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.checked = tool.enabled !== false;
+  const caption = document.createTextNode(toggle.checked ? "Enabled" : "Disabled");
+  toggle.addEventListener("change", () => {
+    caption.textContent = toggle.checked ? "Enabled" : "Disabled";
+    saveMcpTool(tool.name, toggle.checked, toggle);
+  });
+  toggleLabel.append(toggle, caption);
+  actions.append(toggleLabel);
+  row.append(header, schema, description, actions);
   return row;
+}
+
+function renderMcpCalls(calls) {
+  mcpCalls.replaceChildren();
+  const logs = (calls || []).slice(0, 6);
+  if (!logs.length) {
+    const empty = document.createElement("p");
+    empty.className = "desc";
+    empty.textContent = "No calls yet";
+    mcpCalls.append(empty);
+    return;
+  }
+  for (const log of logs) mcpCalls.append(logItem(log));
 }
 
 function logItem(log) {
@@ -240,166 +235,75 @@ function logItem(log) {
   return row;
 }
 
-function editorBusy() {
-  const active = document.activeElement;
-  return Boolean(active && (toolEditor.contains(active) || newTool.contains(active)));
-}
-
-function renderToolEditor(tools) {
-  toolEditor.replaceChildren();
-  for (const tool of tools) {
-    toolEditor.append(toolRow(tool));
-  }
-}
-
-function toolRow(tool) {
-  const row = document.createElement("article");
-  row.className = tool.enabled === false ? "tool-row off" : "tool-row";
-  const header = document.createElement("header");
-  const title = document.createElement("h3");
-  title.textContent = tool.name;
-  const meta = document.createElement("span");
-  meta.className = "tag";
-  meta.textContent = `${tool.group} · ${tool.builtin ? "built-in" : "mock"}`;
-  header.append(title, meta);
-
-  const schema = document.createElement("p");
-  schema.className = "schema";
-  schema.textContent = tool.parameterSummary || "no parameters";
-
-  const description = document.createElement("textarea");
-  description.rows = 3;
-  description.maxLength = 800;
-  description.value = tool.description || "";
-  description.setAttribute("aria-label", `Instructions for ${tool.name}`);
-
-  const actions = document.createElement("div");
-  actions.className = "tool-actions";
-  const toggleLabel = document.createElement("label");
-  toggleLabel.className = "toggle";
-  const toggle = document.createElement("input");
-  toggle.type = "checkbox";
-  toggle.checked = tool.enabled !== false;
-  toggle.addEventListener("change", () => saveTool(tool.name, { enabled: toggle.checked }));
-  toggleLabel.append(toggle, document.createTextNode(toggle.checked ? "Enabled" : "Disabled"));
-  toggle.addEventListener("change", () => {
-    toggleLabel.lastChild.textContent = toggle.checked ? "Enabled" : "Disabled";
-  });
-
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "btn";
-  save.textContent = "Save instructions";
-
-  actions.append(toggleLabel, save);
-
-  let mockBox = null;
-  if (!tool.builtin) {
-    mockBox = document.createElement("textarea");
-    mockBox.rows = 4;
-    mockBox.value = JSON.stringify(tool.mock || {}, null, 2);
-    mockBox.setAttribute("aria-label", `Mock JSON for ${tool.name}`);
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "btn";
-    remove.textContent = "Remove";
-    remove.addEventListener("click", () => deleteTool(tool.name));
-    actions.append(remove);
-  }
-  save.addEventListener("click", () => {
-    const patch = { description: description.value };
-    if (mockBox) {
-      try {
-        patch.mock = JSON.parse(mockBox.value);
-      } catch {
-        toolEditorStatus.textContent = "Mock JSON is not valid.";
-        return;
-      }
-    }
-    saveTool(tool.name, patch);
-  });
-
-  row.append(header, schema, description);
-  if (mockBox) row.append(mockBox);
-  row.append(actions);
-  return row;
-}
-
-async function saveTool(name, patch) {
-  toolEditorStatus.textContent = "Saving…";
+async function saveMcpTool(name, enabled, toggle) {
+  mcpMessage.textContent = "Saving…";
   try {
-    const response = await fetch(`/api/tools/${encodeURIComponent(name)}`, {
+    const response = await fetch(`/api/mcp/tools/${encodeURIComponent(name)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ enabled }),
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Could not save the tool");
-    toolEditorStatus.textContent = "Saved. The next Realtime session uses this catalog.";
-    await refreshTools();
+    if (!response.ok) throw new Error(body.error || "Could not update the tool");
+    mcpMessage.textContent = enabled
+      ? "Enabled. The next call can use this tool."
+      : "Disabled. The next call will not offer this tool.";
+    await refresh();
   } catch (error) {
-    toolEditorStatus.textContent = error.message || "Could not save the tool";
+    toggle.checked = !enabled;
+    mcpMessage.textContent = error.message || "Could not update the tool";
   }
 }
 
-async function deleteTool(name) {
-  toolEditorStatus.textContent = "Removing…";
-  try {
-    const response = await fetch(`/api/tools/${encodeURIComponent(name)}`, { method: "DELETE" });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Could not remove the tool");
-    toolEditorStatus.textContent = "Removed. The next Realtime session uses this catalog.";
-    await refreshTools();
-  } catch (error) {
-    toolEditorStatus.textContent = error.message || "Could not remove the tool";
-  }
-}
-
-async function refreshTools() {
+async function refresh() {
   const response = await fetch("/api/state");
   if (!response.ok) return;
   const data = await response.json();
   latest = data;
   signature = JSON.stringify(data);
-  toolSignature = JSON.stringify(data.tools || []);
+  mcpSignature = "";
   render(data);
-  renderToolEditor(data.tools || []);
 }
 
-newTool.addEventListener("submit", async (event) => {
+mcpForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = new FormData(newTool);
-  let mock;
+  const url = mcpUrl.value.trim();
+  const token = mcpToken.value.trim();
+  mcpConnect.disabled = true;
+  mcpMessage.textContent = "Connecting…";
   try {
-    mock = JSON.parse(String(form.get("mock") || "{}"));
-  } catch {
-    toolEditorStatus.textContent = "Mock JSON is not valid.";
-    return;
-  }
-  const fields = String(form.get("fields") || "")
-    .split(",")
-    .map((field) => field.trim())
-    .filter(Boolean);
-  toolEditorStatus.textContent = "Adding…";
-  try {
-    const response = await fetch("/api/tools", {
+    const response = await fetch("/api/mcp/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: String(form.get("name") || "").trim(),
-        group: form.get("group"),
-        description: String(form.get("description") || "").trim(),
-        fields,
-        mock,
-      }),
+      body: JSON.stringify(token ? { url, token } : { url }),
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "Could not add the tool");
-    newTool.reset();
-    toolEditorStatus.textContent = "Added. The next Realtime session can call this mock tool.";
-    await refreshTools();
+    if (!response.ok) throw new Error(body.error || "Could not connect");
+    mcpToken.value = "";
+    const count = body.mcp?.tools?.length || 0;
+    mcpMessage.textContent = `Connected. Discovered ${count} tool${count === 1 ? "" : "s"}.`;
+    await refresh();
   } catch (error) {
-    toolEditorStatus.textContent = error.message || "Could not add the tool";
+    mcpMessage.textContent = error.message || "Could not connect";
+  } finally {
+    mcpConnect.disabled = false;
+  }
+});
+
+mcpDisconnect.addEventListener("click", async () => {
+  mcpDisconnect.disabled = true;
+  mcpMessage.textContent = "Disconnecting…";
+  try {
+    const response = await fetch("/api/mcp/disconnect", { method: "POST" });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || "Could not disconnect");
+    mcpToken.value = "";
+    mcpMessage.textContent = "Disconnected. Sol will not call those tools.";
+    await refresh();
+  } catch (error) {
+    mcpMessage.textContent = error.message || "Could not disconnect";
+  } finally {
+    mcpDisconnect.disabled = false;
   }
 });
 

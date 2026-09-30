@@ -125,9 +125,9 @@ test("dashboard can edit the tool catalog stored in sqlite", async () => {
     assert.equal(disabled.status, 200);
 
     const session = buildRealtimeSession("gpt-realtime-2.1", "en");
-    assert.ok(session.tools.some((tool) => tool.name === "lookup_note" && tool.description.includes("desk note")));
+    assert.equal(session.tools.some((tool) => tool.name === "lookup_note"), false);
     assert.equal(session.tools.some((tool) => tool.name === "query_hours"), false);
-    assert.ok(session.tools.some((tool) => tool.name === "get_weather"));
+    assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
 
     const { call } = await fetch(`${base}/api/calls`, { method: "POST" }).then((response) => response.json());
     const outcome = await executeTool({
@@ -145,5 +145,7 @@ test("dashboard can edit the tool catalog stored in sqlite", async () => {
     const removed = await fetch(`${base}/api/tools/lookup_note`, { method: "DELETE" });
     assert.equal(removed.status, 200);
     assert.equal(buildRealtimeSession("gpt-realtime-2.1", "en").tools.some((tool) => tool.name === "lookup_note"), false);
+    const listedAfter = await fetch(`${base}/api/tools`).then((response) => response.json());
+    assert.equal(listedAfter.tools.some((tool) => tool.name === "lookup_note"), false);
   });
 });
