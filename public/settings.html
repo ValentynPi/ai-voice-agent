@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Tools · Voice Desk</title>
+    <title>Settings · Voice Desk</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="/css/app.css" />
     <link rel="stylesheet" href="/css/shell.css" />
   </head>
-  <body class="app-shell" data-nav="tools">
+  <body class="app-shell" data-nav="settings">
     <aside class="sidebar">
       <a class="brand" href="/">
         <span class="mark" aria-hidden="true">V</span>
@@ -37,45 +37,19 @@
     <div class="workspace">
       <header class="page-head">
         <div>
-          <p class="kicker">Build</p>
-          <h1>MCP tools</h1>
-          <p class="lede">Paste a remote MCP server URL. The token stays on the server. Enabled tools can be offered to agents on the next test call.</p>
+          <p class="kicker">Workspace</p>
+          <h1>Settings</h1>
+          <p class="lede">Runtime facts for this server. Secrets stay on the server and are not shown here. Agents override the default voice.</p>
         </div>
       </header>
       <main class="page">
-        <section class="panel mcp-panel" aria-labelledby="mcp-heading">
-          <header class="panel-head">
-            <h2 id="mcp-heading">Connection</h2>
-            <span id="mcpStatus">Not connected</span>
-          </header>
-          <form id="mcpForm" class="mcp-form">
-            <label>MCP server URL
-              <input id="mcpUrl" name="url" type="url" required placeholder="https://example.com/mcp" autocomplete="off" />
-            </label>
-            <label>Auth token, optional
-              <input id="mcpToken" name="token" type="password" placeholder="Bearer token if the server requires one" autocomplete="off" />
-            </label>
-            <div class="mcp-actions">
-              <button class="btn primary" id="mcpConnect" type="submit">Connect</button>
-              <button class="btn" id="mcpDisconnect" type="button">Disconnect</button>
-            </div>
-          </form>
-          <p class="hint" id="mcpMessage" role="status"></p>
-          <div id="mcpTools" class="mcp-tools"></div>
-          <h3 class="mcp-sub">Recent tool calls</h3>
-          <div id="mcpCalls"></div>
-        </section>
-        <section class="panel" aria-labelledby="sec-heading">
-          <header class="panel-head">
-            <h2 id="sec-heading">Security</h2>
-            <span>Prompt check · tool allowlist</span>
-          </header>
-          <ol id="security" class="feed"></ol>
+        <section class="panel slim">
+          <h2>Voice runtime</h2>
+          <dl class="defs" id="settings"></dl>
         </section>
       </main>
-      <p class="foot">The MCP URL and token stay in SQLite. The token is never sent back to this page. <span id="updated">connecting</span></p>
     </div>
     <script src="/js/shell.js" defer></script>
-    <script src="/js/dashboard.js" defer></script>
+    <script type="module" src="/js/settings.js"></script>
   </body>
 </html>

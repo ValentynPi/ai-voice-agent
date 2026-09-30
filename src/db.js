@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  DEFAULT_AGENT_ID,
+  DEFAULT_KB_ID,
+  DEFAULT_SYSTEM_PROMPT,
+  GREETING_EN,
+  GREETING_ES,
+} from "./defaults.js";
 import { CUSTOMERS, HOURS, ORDERS, SALON, SERVICES, STAFF } from "./tools/demo-data.js";
 
 let db = null;
@@ -174,7 +181,101 @@ function migrate(database) {
       parameters_json TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      system_prompt TEXT NOT NULL,
+      greeting_en TEXT NOT NULL DEFAULT '',
+      greeting_es TEXT NOT NULL DEFAULT '',
+      voice TEXT NOT NULL DEFAULT 'marin',
+      language TEXT NOT NULL DEFAULT 'multi',
+      model_notes TEXT NOT NULL DEFAULT '',
+      enabled_tools_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS knowledge_bases (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      source_url TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_knowledge (
+      agent_id TEXT NOT NULL,
+      knowledge_id TEXT NOT NULL,
+      PRIMARY KEY (agent_id, knowledge_id)
+    );
+    CREATE TABLE IF NOT EXISTS call_records (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT,
+      agent_name TEXT,
+      source TEXT,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      transcript_json TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      voice TEXT,
+      language TEXT,
+      end_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_call_records_started ON call_records (started_at);
   `);
+  seedProduct(database);
+}
+
+function salonKnowledge() {
+  const open = HOURS.days.filter((day) => day.open).map((day) => `${day.day} ${day.open}–${day.close}`).join(", ");
+  const closed = HOURS.days.filter((day) => !day.open).map((day) => day.day).join(" and ");
+  const people = STAFF.map((person) => `${person.name} (${person.role}, ${person.days})`).join("; ");
+  const services = SERVICES.map((item) => `${item.name} (${item.minutes} min, ${item.priceEur} euros)`).join("; ");
+  return [
+    `${SALON.name} is a fictional hair salon at ${SALON.address}.`,
+    `Timezone ${SALON.timezone}. Open: ${open}. Closed: ${closed}.`,
+    HOURS.note,
+    `Stylists: ${people}.`,
+    `Services: ${services}.`,
+    "Use tools for customers, appointments, orders, and live weather. Do not invent those records from this note.",
+  ].join(" ");
+}
+
+function seedProduct(database) {
+  const seeded = database.prepare("SELECT value FROM meta WHERE key = 'product_seeded'").get();
+  if (seeded) return;
+  const now = new Date().toISOString();
+  database.exec("BEGIN");
+  try {
+    database.prepare(`
+      INSERT INTO agents (
+        id, name, description, system_prompt, greeting_en, greeting_es,
+        voice, language, model_notes, enabled_tools_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'marin', 'multi', ?, NULL, ?, ?)
+    `).run(
+      DEFAULT_AGENT_ID,
+      "Maison Sol",
+      "Receptionist for the fictional salon in Castellón de la Plana. Speaks first, in English or Spanish.",
+      DEFAULT_SYSTEM_PROMPT,
+      GREETING_EN,
+      GREETING_ES,
+      "Spoken calls use the Realtime model from the server environment and this agent's voice. Typed fallback uses the chat model when a key is set.",
+      now,
+      now,
+    );
+    database.prepare(`
+      INSERT INTO knowledge_bases (id, title, body, source_url, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, ?, ?)
+    `).run(DEFAULT_KB_ID, "Maison Sol desk facts", salonKnowledge(), now, now);
+    database.prepare("INSERT INTO agent_knowledge (agent_id, knowledge_id) VALUES (?, ?)").run(DEFAULT_AGENT_ID, DEFAULT_KB_ID);
+    database.prepare("INSERT INTO meta (key, value) VALUES ('product_seeded', '1')").run();
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function seedIfNeeded(database) {

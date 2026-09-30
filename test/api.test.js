@@ -30,7 +30,10 @@ test("pages and health respond", async () => {
 
     const home = await fetch(`${base}/`);
     assert.equal(home.status, 200);
-    assert.match(await home.text(), /Maison Sol/);
+    const homeHtml = await home.text();
+    assert.match(homeHtml, /Maison Sol/);
+    assert.match(homeHtml, /marin/);
+    assert.match(homeHtml, /Voice Desk/);
 
     const dashboard = await fetch(`${base}/dashboard`);
     assert.equal(dashboard.status, 200);
@@ -40,6 +43,26 @@ test("pages and health respond", async () => {
     assert.match(html, /Security/);
     assert.doesNotMatch(html, /Add a mock tool/);
     assert.doesNotMatch(html, /id="toolGrid"/);
+
+    const tools = await fetch(`${base}/tools`);
+    assert.equal(tools.status, 200);
+    assert.match(await tools.text(), /mcpUrl/);
+
+    const pages = [
+      ["/agents", /Agents/],
+      ["/history", /Call history/],
+      ["/knowledge", /Knowledge base/],
+      ["/analytics", /Analytics/],
+      ["/phone-numbers", /Twilio/],
+      ["/settings", /Settings/],
+      ["/agents/agt_maison_sol", /Test call/],
+      ["/agents/agt_maison_sol/test", /Start call/],
+    ];
+    for (const [path, needle] of pages) {
+      const response = await fetch(`${base}${path}`);
+      assert.equal(response.status, 200, path);
+      assert.match(await response.text(), needle, path);
+    }
   });
 });
 

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Tools · Voice Desk</title>
+    <title>Test call · Voice Desk</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="/css/app.css" />
     <link rel="stylesheet" href="/css/shell.css" />
   </head>
-  <body class="app-shell" data-nav="tools">
+  <body class="app-shell voice" data-nav="agents">
     <aside class="sidebar">
       <a class="brand" href="/">
         <span class="mark" aria-hidden="true">V</span>
@@ -37,45 +37,50 @@
     <div class="workspace">
       <header class="page-head">
         <div>
-          <p class="kicker">Build</p>
-          <h1>MCP tools</h1>
-          <p class="lede">Paste a remote MCP server URL. The token stays on the server. Enabled tools can be offered to agents on the next test call.</p>
+          <p class="kicker" id="agentKicker">Web test call</p>
+          <h1 id="call-heading">Test call</h1>
+          <p class="lede">OpenAI Realtime speaks first with this agent's voice. If marin cannot connect, the desk will not switch to a browser voice. Typing still works. The call is stored when you hang up.</p>
         </div>
+        <a class="btn ghost" id="backToAgent" href="/agents">Back to agent</a>
       </header>
-      <main class="page">
-        <section class="panel mcp-panel" aria-labelledby="mcp-heading">
-          <header class="panel-head">
-            <h2 id="mcp-heading">Connection</h2>
-            <span id="mcpStatus">Not connected</span>
-          </header>
-          <form id="mcpForm" class="mcp-form">
-            <label>MCP server URL
-              <input id="mcpUrl" name="url" type="url" required placeholder="https://example.com/mcp" autocomplete="off" />
+      <main class="stage">
+        <section class="call-panel" aria-labelledby="call-heading">
+          <div class="orb-wrap" id="orb" data-state="idle">
+            <div class="orb-ring"></div>
+            <div class="orb"></div>
+          </div>
+          <p class="phase" id="phase">Ready when you are</p>
+          <p class="interim" id="interim" aria-live="polite"></p>
+          <div class="controls">
+            <button class="btn primary" id="callBtn" type="button">Start call</button>
+            <label class="lang">
+              Language
+              <select id="lang">
+                <option value="en">English</option>
+                <option value="es">Español</option>
+              </select>
             </label>
-            <label>Auth token, optional
-              <input id="mcpToken" name="token" type="password" placeholder="Bearer token if the server requires one" autocomplete="off" />
-            </label>
-            <div class="mcp-actions">
-              <button class="btn primary" id="mcpConnect" type="submit">Connect</button>
-              <button class="btn" id="mcpDisconnect" type="button">Disconnect</button>
-            </div>
-          </form>
-          <p class="hint" id="mcpMessage" role="status"></p>
-          <div id="mcpTools" class="mcp-tools"></div>
-          <h3 class="mcp-sub">Recent tool calls</h3>
-          <div id="mcpCalls"></div>
+          </div>
+          <p class="hint" id="hint">The agent greets first. Allow the microphone in Chrome or Edge.</p>
+          <audio id="remoteAudio" autoplay playsinline></audio>
+          <p class="call-meta" id="callMeta"></p>
         </section>
-        <section class="panel" aria-labelledby="sec-heading">
+        <section class="transcript-panel">
           <header class="panel-head">
-            <h2 id="sec-heading">Security</h2>
-            <span>Prompt check · tool allowlist</span>
+            <h2>Live transcript</h2>
+            <span id="modeBadge">Realtime</span>
           </header>
-          <ol id="security" class="feed"></ol>
+          <ol id="transcript" aria-live="polite"></ol>
+          <form id="composer">
+            <label class="sr-only" for="text">Message</label>
+            <input id="text" name="text" autocomplete="off" placeholder="Or type — the agent can speak the reply" />
+            <button class="btn" type="submit">Send</button>
+          </form>
+          <ul class="chips" id="chips"></ul>
         </section>
       </main>
-      <p class="foot">The MCP URL and token stay in SQLite. The token is never sent back to this page. <span id="updated">connecting</span></p>
     </div>
     <script src="/js/shell.js" defer></script>
-    <script src="/js/dashboard.js" defer></script>
+    <script type="module" src="/js/voice.js"></script>
   </body>
 </html>

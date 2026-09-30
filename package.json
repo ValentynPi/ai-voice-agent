@@ -2,7 +2,7 @@
   "name": "ai-voice-agent",
   "version": "1.0.0",
   "private": true,
-  "description": "Demo AI voice receptionist for Maison Sol in Castellón de la Plana. OpenAI Realtime voice marin, in-process tools, no Twilio.",
+  "description": "Voice Desk control plane for Maison Sol. OpenAI Realtime voice marin, agents and call history in SQLite, web test calls. No Twilio.",
   "type": "module",
   "engines": {
     "node": ">=22.13"
