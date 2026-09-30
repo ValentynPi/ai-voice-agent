@@ -210,7 +210,7 @@ function mcpToolRow(tool) {
 
 function renderMcpCalls(calls) {
   mcpCalls.replaceChildren();
-  const logs = (calls || []).slice(0, 6);
+  const logs = (calls || []).filter((log) => log.group === "mcp").slice(0, 6);
   if (!logs.length) {
     const empty = document.createElement("p");
     empty.className = "desc";
