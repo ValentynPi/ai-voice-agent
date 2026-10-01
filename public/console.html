@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telephony console</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23e11d48'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/console.css" />
+  </head>
+  <body>
+    <div class="cx">
+      <header class="cx-top">
+        <a class="cx-logo" href="/console">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#e11d48"/><path d="M7 9.5c1.3 2.2 2.4 3.2 5 3.2s3.7-1 5-3.2M9 13.2c.8 1.3 1.6 1.9 3 1.9s2.2-.6 3-1.9" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span><strong>Console</strong><em>Telephony</em></span>
+        </a>
+        <nav class="cx-switch" aria-label="Product">
+          <a href="/console" aria-current="page">Telephony</a>
+          <a href="/agents">Agents</a>
+        </nav>
+        <div class="cx-top-meta">
+          <span id="modeBadge" class="cx-badge demo">Demo</span>
+          <code id="accountChip">Account</code>
+        </div>
+      </header>
+      <aside class="cx-side">
+        <nav id="sideNav" aria-label="Telephony">
+          <p class="cx-group">Console</p>
+          <a href="/console" data-cx data-match="home">Overview</a>
+          <p class="cx-group">Phone Numbers</p>
+          <a href="/console/phone-numbers" data-cx data-match="numbers">Active numbers</a>
+          <a href="/console/phone-numbers/search" data-cx data-match="buy">Buy a number</a>
+          <p class="cx-group">Voice</p>
+          <a href="/console/voice/calls" data-cx data-match="calls">Calls</a>
+          <p class="cx-group">Develop</p>
+          <a href="/console/develop/twiml-apps" data-cx data-match="apps">TwiML Apps</a>
+          <p class="cx-group">Monitor</p>
+          <a href="/console/monitor/logs" data-cx data-match="logs">Logs</a>
+          <p class="cx-group">Account</p>
+          <a href="/console/account/keys" data-cx data-match="keys">API keys &amp; tokens</a>
+        </nav>
+        <p class="cx-side-note">Webhooks on this app answer with TwiML. Browser calls stay on OpenAI Realtime until Media Streams is connected.</p>
+      </aside>
+      <main class="cx-main">
+        <p id="banner" class="cx-banner">Demo mode. This console stores numbers locally. Nothing here is bought on Twilio until the account is connected.</p>
+        <p id="error" class="cx-error" hidden></p>
+        <div id="view" aria-live="polite"></div>
+      </main>
+    </div>
+    <div id="backdrop" class="cx-backdrop" hidden></div>
+    <aside id="drawer" class="cx-drawer" hidden aria-label="Resource details"></aside>
+    <script src="/js/console.js" defer></script>
+  </body>
+</html>

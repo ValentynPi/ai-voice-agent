@@ -2,7 +2,7 @@
   "name": "ai-voice-agent",
   "version": "1.0.0",
   "private": true,
-  "description": "Voice Desk control plane for Maison Sol. OpenAI Realtime voice marin, agents and call history in SQLite, web test calls. No Twilio.",
+  "description": "Voice Desk control plane for Maison Sol. OpenAI Realtime voice marin, plus a Twilio-style telephony console that stays in demo until credentials are set.",
   "type": "module",
   "engines": {
     "node": ">=22.13"

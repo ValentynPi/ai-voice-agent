@@ -1,10 +1,10 @@
 # Voice Desk
 
-Web control plane for a voice agent, demoed as **Maison Sol**, a fictional salon in Castellón de la Plana. The shell is a ValMax product: agents, call history, knowledge, analytics, and tools. It is not a phone carrier.
+Web control plane for a voice agent, demoed as **Maison Sol**, a fictional salon in Castellón de la Plana. The shell is a ValMax product: agents, call history, knowledge, analytics, and tools. Telephony is a separate console at `/console`, laid out like a carrier console (phone numbers, calls, TwiML apps, webhook logs, API keys).
 
 A **web test call** uses OpenAI Realtime. The default agent speaks first with the voice **marin**. Remote MCP tools connected on the Tools page are what that session can call, narrowed by each agent's allowlist. SQLite stores agents, knowledge, call records, and the MCP connection. Tokens are not sent back to the browser.
 
-Twilio, SIP, and buying numbers are a later phase. The Phone Numbers page says so and does not pretend to connect a carrier. A typed fallback, used only when Realtime is down, still has a local keyword planner over seeded salon rows.
+Without `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`, the telephony console stays in **Demo**. Numbers and calls are SQLite rows with Twilio-shaped fields. Nothing on that page is purchased from Twilio until those environment variables are set. A typed fallback, used only when Realtime is down, still has a local keyword planner over seeded salon rows.
 
 ```
 Microphone → OpenAI Realtime (marin) → security check → allowlisted tools → spoken reply
@@ -39,6 +39,10 @@ The server listens on `PORT` (default `3000`).
 | `OPENAI_VOICE` | No | Realtime output voice. Defaults to `marin`. |
 | `DATABASE_PATH` | No | SQLite file. Defaults to `data/maison-sol.sqlite`. Use `:memory:` for a throwaway database. |
 | `PORT` | No | HTTP port. Fly.io sets this for you. |
+| `TWILIO_ACCOUNT_SID` | No | With the auth token, switches `/console` from Demo to Connected and lists numbers and calls from the Twilio REST API. |
+| `TWILIO_AUTH_TOKEN` | No | Server-side only. Never returned to the browser. |
+| `TWILIO_API_KEY` | No | Optional API Key SID (`SK…`). Shown on the API keys page. Not required for list calls. |
+| `TWILIO_API_KEY_SECRET` | No | Optional. Server-side only. Never returned to the browser. |
 
 `gpt-5.1` is the chat brain. It is not a Realtime speech model, so the spoken session uses `gpt-realtime-2.1` with `voice: "marin"` (the pair in the 2026 Realtime docs). `POST /api/realtime/token` tries the configured Realtime id first. If the API says that model does not exist, it tries `gpt-realtime`, then `gpt-live-1`. The browser then connects with WebRTC and plays the remote audio. The minted session already sets `audio.output.voice` to `marin` and the enabled MCP tools. Sol sends the greeting only after the data channel is open, the Realtime session is ready, and the SDP answer is applied. If that response errors or finishes with no audio, the page retries it up to three times. The microphone stays muted until the greeting is heard. Tool calls come back over the data channel, run through the connected MCP server, and use the same prompt-injection checks as typed chat.
 
@@ -57,10 +61,83 @@ Set the key on Fly with `fly secrets set OPENAI_API_KEY=...`. Do not put it in `
 | `/knowledge` | Pasted notes. An optional URL is kept for a later crawl and is not fetched. |
 | `/analytics` | Call count, average duration, completion, and the last seven days. |
 | `/tools` and `/dashboard` | MCP URL, token, discover, enable, and disable. |
-| `/phone-numbers` | Placeholder for Twilio and SIP. |
+| `/console` | Telephony console: numbers, calls, TwiML apps, logs, API keys. |
+| `/phone-numbers` | Redirects to `/console/phone-numbers`. |
 | `/settings` | Model, default voice, and database path. No secrets. |
 
-Phase 1 is this control plane plus the web test call. Phase 2 would be Twilio or SIP inbound and outbound. That is not in this build.
+Agents, knowledge, and the speak-first web test call stay on the ValMax pages. The sidebar link **Telephony** opens the console full page. A switcher on the console links back to Agents.
+
+## Telephony console
+
+Open http://localhost:3000/console. The left nav follows carrier-console names: Phone Numbers, Voice → Calls, Develop → TwiML Apps, Monitor → Logs, Account → API keys & tokens. There is no messaging product in this console.
+
+### Demo and Connected
+
+| Mode | When | What the lists show |
+| --- | --- | --- |
+| Demo | `TWILIO_ACCOUNT_SID` or `TWILIO_AUTH_TOKEN` is unset, or the SID is not `AC` + 32 hex | SQLite. Buy a number inserts a local row from a Spain inventory. The row is marked demo and was not purchased on Twilio. |
+| Connected | Both environment variables are set | `GET` numbers and calls (and TwiML Apps) use `https://api.twilio.com/2010-04-01/Accounts/{Sid}/…`. The same screens render either payload. |
+
+The API keys page can store an Account SID, auth token, and API key in SQLite. Those values are never included in JSON or HTML. Saving them does **not** leave Demo mode. Live requests start only from the environment variables, so a token typed into the form cannot place orders by itself. Remove stored secrets with the button on that page; environment variables stay until you unset them.
+
+```bash
+fly secrets set TWILIO_ACCOUNT_SID=AC... TWILIO_AUTH_TOKEN=...
+# optional
+fly secrets set TWILIO_API_KEY=SK... TWILIO_API_KEY_SECRET=...
+```
+
+Do not put these in `fly.toml`.
+
+Buying a number while Connected calls Twilio's IncomingPhoneNumbers create and can cost money. The button stays disabled until the confirm checkbox is checked. Demo never calls Twilio.
+
+### Webhook URLs to paste into Twilio
+
+Replace the host with the deployed app (`https://ai-voice-agent-valmax.fly.dev` on Fly).
+
+| Twilio field | Method | URL |
+| --- | --- | --- |
+| Voice URL | POST | `https://ai-voice-agent-valmax.fly.dev/twilio/voice` |
+| Status callback URL | POST | `https://ai-voice-agent-valmax.fly.dev/twilio/status` |
+
+The seeded TwiML App "Maison Sol Voice" points at the same paths. The console shows the absolute URLs for the host you are browsing.
+
+`POST /twilio/voice` accepts the usual form body (`CallSid`, `From`, `To`, `CallStatus`, `Direction`, `AccountSid`, and the rest). It answers:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="en-US">Thank you for calling Maison Sol. This webhook answers with TwiML. Browser test calls use OpenAI Realtime until a Media Streams connection is added.</Say>
+</Response>
+```
+
+`POST /twilio/status` stores the status callback and returns 204. Both deliveries show under Monitor → Logs. If `X-Twilio-Signature` is present and a token is configured, the log records whether it matched. Unsigned requests still get a response so local curls and Demo keep working.
+
+### REST shapes
+
+Demo and Connected responses use the same fields (`sid`, `phone_number`, `friendly_name`, `voice_url`, `status_callback`, `capabilities`, call `from` / `to` / `direction` / `status` / `duration`, and so on).
+
+| Method | Path |
+| --- | --- |
+| GET | `/api/twilio/v1/account` |
+| PUT, DELETE | `/api/twilio/v1/account/credentials` |
+| GET, POST | `/api/twilio/v1/Accounts/:sid/IncomingPhoneNumbers` |
+| GET | `/api/twilio/v1/Accounts/:sid/AvailablePhoneNumbers/:country/Local` |
+| GET | `/api/twilio/v1/Accounts/:sid/Calls` |
+| GET | `/api/twilio/v1/Accounts/:sid/Calls/:callSid/Recordings` |
+| GET, POST | `/api/twilio/v1/Accounts/:sid/Applications` |
+| GET | `/api/twilio/v1/Accounts/:sid/Monitor/Events` |
+
+Call status values stored locally: `queued`, `ringing`, `in-progress`, `completed`, `failed`, `busy`, `no-answer`, `canceled`. Direction values: `inbound` and `outbound` (live Twilio values such as `outbound-api` are kept and shown as Outbound).
+
+A finished web test call is also written as a call resource: `from` is `client:browser`, direction is `inbound`, and the status is `in-progress`, `completed`, or `failed`. The Call SID is stable for that browser call. Open the row to jump back to the agent transcript. In-progress browser calls appear in the log before hangup.
+
+### Still required for real PSTN audio
+
+- `<Say>` is Twilio's voice, not marin. Hearing the Realtime agent on a phone needs Twilio Media Streams (`<Connect><Stream>`) or a SIP media bridge into the Realtime session. That websocket is not implemented.
+- The recording URL on the seeded demo call is a stub. `GET …/Recordings` returns no audio file.
+- There is no "place a PSTN call" button. Outbound dialing through the Calls API is not wired.
+- Messaging is omitted.
+- Demo numbers are not on a carrier. Connected numbers are whatever the Twilio account already owns, plus any purchase you explicitly confirm.
 
 ## Demo script
 

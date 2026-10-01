@@ -8,6 +8,7 @@ import {
   GREETING_EN,
   GREETING_ES,
 } from "./defaults.js";
+import { ensureTwilioTables } from "./twilio/schema.js";
 import { CUSTOMERS, HOURS, ORDERS, SALON, SERVICES, STAFF } from "./tools/demo-data.js";
 
 let db = null;
@@ -225,6 +226,7 @@ function migrate(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_call_records_started ON call_records (started_at);
   `);
+  ensureTwilioTables(database);
   seedProduct(database);
 }
 
