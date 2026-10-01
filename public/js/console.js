@@ -140,11 +140,43 @@ function caps(value) {
   return list.join(", ") || "—";
 }
 
+
+/** Agents brain origin only — strips trailing slash and /twilio/{voice,status,media} (+ query). */
+function normalizeAgentsBaseUrl(url) {
+  let raw = String(url || "").trim();
+  if (!raw) return "";
+  const suffixes = ["/twilio/voice", "/twilio/status", "/twilio/media"];
+  const stripSuffix = (pathname) => {
+    let path = String(pathname || "").replace(/\/+$/, "") || "";
+    for (const suffix of suffixes) {
+      if (path === suffix || path.endsWith(suffix)) {
+        path = path.slice(0, -suffix.length);
+        break;
+      }
+    }
+    return path.replace(/\/+$/, "");
+  };
+  try {
+    const parsed = new URL(raw);
+    const path = stripSuffix(parsed.pathname);
+    return `${parsed.origin}${path}`;
+  } catch {
+    raw = raw.replace(/[?#].*$/, "").replace(/\/+$/, "");
+    for (const suffix of suffixes) {
+      if (raw.endsWith(suffix)) {
+        raw = raw.slice(0, -suffix.length);
+        break;
+      }
+    }
+    return raw.replace(/\/+$/, "");
+  }
+}
+
 function absoluteUrl(value) {
   if (!value) return "";
   const raw = String(value);
   if (raw.startsWith("/")) {
-    const brain = String(account?.agents_public_url || "").replace(/\/$/, "");
+    const brain = normalizeAgentsBaseUrl(account?.agents_public_url || "");
     if (brain && (raw.startsWith("/twilio/voice") || raw.startsWith("/twilio/status"))) {
       return `${brain}${raw}`;
     }
@@ -154,10 +186,21 @@ function absoluteUrl(value) {
 }
 
 function brainVoiceUrl(agentId = "") {
-  let root = String(account?.voice_webhook_url || "").trim();
-  const brain = String(account?.agents_public_url || "").replace(/\/$/, "");
-  if (!root && brain) root = `${brain}/twilio/voice`;
-  if (!root) root = "/twilio/voice";
+  const brain = normalizeAgentsBaseUrl(account?.agents_public_url || "");
+  let root = "";
+  if (brain) {
+    root = `${brain}/twilio/voice`;
+  } else {
+    const raw = String(account?.voice_webhook_url || "").trim();
+    if (raw) {
+      const asBase = normalizeAgentsBaseUrl(raw);
+      root = asBase && /\/twilio\/(voice|status|media)\b/i.test(raw)
+        ? `${asBase}/twilio/voice`
+        : raw;
+    } else {
+      root = "/twilio/voice";
+    }
+  }
   if (!agentId) return root.startsWith("/") ? absoluteUrl(root) : root;
   try {
     const url = new URL(root.startsWith("/") ? absoluteUrl(root) : root);
@@ -230,7 +273,7 @@ async function overview() {
     api(resourcePath("/Monitor/Events")),
   ]);
   const recent = (calls.calls || []).slice(0, 5);
-  const savedBrain = localStorage.getItem("cx-agents-url") || account.agents_public_url || "";
+  const savedBrain = normalizeAgentsBaseUrl(localStorage.getItem("cx-agents-url") || account.agents_public_url || "");
   const savedAgent = localStorage.getItem("cx-agent-id") || "";
   view.innerHTML = `
     ${head("Telephony", "Overview", "Phone numbers, voice calls, webhooks, and API keys. The agent builder stays on Agents.")}
@@ -273,7 +316,7 @@ async function overview() {
 }
 
 async function fetchAgentsList(brainBase) {
-  const base = String(brainBase || "").replace(/\/$/, "");
+  const base = normalizeAgentsBaseUrl(brainBase || "");
   if (!base) return [];
   const response = await fetch(`${base}/api/agents`, { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(`Could not load agents from ${base} (${response.status})`);
@@ -296,7 +339,7 @@ function bindBrainCard(root, initialAgentId) {
   const note = root.querySelector("#brainNote");
   const pick = root.querySelector("#agentPick");
   const fillAgents = async () => {
-    const brain = form.agents_url.value.trim() || account.agents_public_url || "";
+    const brain = normalizeAgentsBaseUrl(form.agents_url.value || account.agents_public_url || "");
     note.textContent = "Loading agents…";
     try {
       const agents = await fetchAgentsList(brain);
@@ -318,10 +361,15 @@ function bindBrainCard(root, initialAgentId) {
   });
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const brain = form.agents_url.value.trim().replace(/\/$/, "");
+    const brain = normalizeAgentsBaseUrl(form.agents_url.value || "");
+    form.agents_url.value = brain;
     localStorage.setItem("cx-agents-url", brain);
     localStorage.setItem("cx-agent-id", pick.value || "");
-    if (brain) account.agents_public_url = brain;
+    if (brain) {
+      account.agents_public_url = brain;
+      account.voice_webhook_url = `${brain}/twilio/voice`;
+      account.status_callback_url = `${brain}/twilio/status`;
+    }
     refreshBrainVoiceDisplay(root, pick.value);
     bindCopies(root);
     note.textContent = "Saved in this browser. Use the Voice URL below on numbers and TwiML Apps.";
@@ -329,7 +377,7 @@ function bindBrainCard(root, initialAgentId) {
   root.querySelector("#demoCall")?.addEventListener("click", async () => {
     clearError();
     note.textContent = "Running demo call to Agents…";
-    const brain = form.agents_url.value.trim().replace(/\/$/, "") || account.agents_public_url || "";
+    const brain = normalizeAgentsBaseUrl(form.agents_url.value || account.agents_public_url || "");
     try {
       const result = await api("/api/twilio/v1/demo-call", {
         method: "POST",

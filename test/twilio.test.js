@@ -425,3 +425,31 @@ test("demo call reaches Agents Media Stream TwiML without Twilio credentials", a
     assert.equal(result.media.attempted, true);
   });
 });
+
+test("normalizeAgentsBaseUrl strips webhook suffixes", async () => {
+  const { normalizeAgentsBaseUrl } = await import("../src/twilio/public-url.js");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/voice"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/voice/"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/voice?agentId=x"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/status"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/media"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl(""), "");
+});
+
+test("demo call normalizes agents_base_url that already ends with /twilio/voice", async () => {
+  await withServer(async (base) => {
+    process.env.PUBLIC_URL = base;
+    process.env.AGENTS_PUBLIC_URL = base;
+    const result = await fetch(`${base}/api/twilio/v1/demo-call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents_base_url: `${base}/twilio/voice` }),
+    }).then((r) => r.json());
+    assert.equal(result.ok, true);
+    assert.equal(result.agents_base_url, base.replace(/\/$/, ""));
+    assert.equal(result.voice_url, `${base.replace(/\/$/, "")}/twilio/voice`);
+    assert.equal(result.uses_stream, true);
+  });
+});

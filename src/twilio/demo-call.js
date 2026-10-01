@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { isSid, randomSid } from "./ids.js";
-import { resolveAgentsPublicUrl } from "./public-url.js";
+import { normalizeAgentsBaseUrl, resolveAgentsPublicUrl } from "./public-url.js";
 import { demoAccountSid, recordEvent, upsertCall } from "./store.js";
 
 /**
@@ -10,7 +10,7 @@ import { demoAccountSid, recordEvent, upsertCall } from "./store.js";
  * 3) Open a short Media Streams WebSocket and wait for Realtime audio (or timeout)
  */
 export async function runDemoCall(req, { agentsBaseUrl, agentId, from, to } = {}) {
-  const agentsBase = String(agentsBaseUrl || resolveAgentsPublicUrl(req) || "").replace(/\/$/, "");
+  const agentsBase = normalizeAgentsBaseUrl(agentsBaseUrl || resolveAgentsPublicUrl(req) || "");
   if (!agentsBase) {
     const error = new Error("Set AGENTS_PUBLIC_URL (or paste an Agents brain URL) before running a demo call");
     error.status = 400;
