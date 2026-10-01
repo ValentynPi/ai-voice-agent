@@ -83,6 +83,34 @@ test("demo console account, numbers, calls, and webhooks share one shape", async
     const otherCountry = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/AvailablePhoneNumbers/US/Local`).then((response) => response.json());
     assert.equal(otherCountry.available_phone_numbers.length, 0);
     assert.match(otherCountry.message, /Spain/);
+    assert.match(otherCountry.message, /Israel/);
+
+    const israel = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/AvailablePhoneNumbers/IL/Local`).then((response) => response.json());
+    assert.ok(israel.available_phone_numbers.length >= 1);
+    assert.ok(israel.available_phone_numbers.every((item) => item.iso_country === "IL" && item.phone_number.startsWith("+972") && item.demo === true));
+    assert.equal(available.available_phone_numbers.some((item) => item.phone_number.startsWith("+972")), false);
+    const israelSms = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/AvailablePhoneNumbers/IL/Local?SmsEnabled=true`).then((response) => response.json());
+    assert.ok(israelSms.available_phone_numbers.length >= 1);
+    assert.ok(israelSms.available_phone_numbers.every((item) => item.capabilities.SMS === true));
+    const unitedKingdom = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/AvailablePhoneNumbers/GB/Local`).then((response) => response.json());
+    assert.equal(unitedKingdom.available_phone_numbers.length, 0);
+
+    const israelBought = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/IncomingPhoneNumbers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone_number: israel.available_phone_numbers[0].phone_number, friendly_name: "Tel Aviv desk" }),
+    });
+    const israelNumber = await israelBought.json();
+    assert.equal(israelBought.status, 201);
+    assert.equal(israelNumber.demo, true);
+    assert.equal(israelNumber.friendly_name, "Tel Aviv desk");
+    assert.equal(israelNumber.phone_number.startsWith("+972"), true);
+
+    const picker = await fetch(`${base}/js/console.js`).then((response) => response.text());
+    assert.match(picker, /iso: "IL", name: "Israel", dial: "\+972"/);
+    assert.match(picker, /iso: "ES", name: "Spain", dial: "\+34"/);
+    assert.match(picker, /iso: "US", name: "United States", dial: "\+1"/);
+    assert.match(picker, /iso: "GB", name: "United Kingdom", dial: "\+44"/);
 
     const bought = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/IncomingPhoneNumbers`, {
       method: "POST",

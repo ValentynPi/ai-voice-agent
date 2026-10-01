@@ -75,7 +75,7 @@ Open http://localhost:3000/console. The left nav follows carrier-console names: 
 
 | Mode | When | What the lists show |
 | --- | --- | --- |
-| Demo | `TWILIO_ACCOUNT_SID` or `TWILIO_AUTH_TOKEN` is unset, or the SID is not `AC` + 32 hex | SQLite. Buy a number inserts a local row from a Spain inventory. The row is marked demo and was not purchased on Twilio. |
+| Demo | `TWILIO_ACCOUNT_SID` or `TWILIO_AUTH_TOKEN` is unset, or the SID is not `AC` + 32 hex | SQLite. Buy a number inserts a local row from the Spain (ES, +34) or Israel (IL, +972) demo inventory. The row is marked demo and was not purchased on Twilio. United States and United Kingdom stay in the picker and still have no demo stock. |
 | Connected | Both environment variables are set | `GET` numbers and calls (and TwiML Apps) use `https://api.twilio.com/2010-04-01/Accounts/{Sid}/…`. The same screens render either payload. |
 
 The API keys page can store an Account SID, auth token, and API key in SQLite. Those values are never included in JSON or HTML. Saving them does **not** leave Demo mode. Live requests start only from the environment variables, so a token typed into the form cannot place orders by itself. Remove stored secrets with the button on that page; environment variables stay until you unset them.
