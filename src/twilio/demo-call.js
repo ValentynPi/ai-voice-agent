@@ -48,7 +48,14 @@ export async function runDemoCall(req, { agentsBaseUrl, agentId, from, to } = {}
   }
 
   const streamMatch = twiml.match(/<Stream[^>]*\surl=["']([^"']+)["']/i);
-  const streamUrl = streamMatch ? streamMatch[1] : "";
+  const streamUrl = streamMatch
+    ? streamMatch[1]
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+    : "";
   const usesStream = /<Stream[\s>]/i.test(twiml) || /<Connect[\s>]/i.test(twiml);
   const usesSayStub = /<Say[\s>]/i.test(twiml) && !usesStream;
 
