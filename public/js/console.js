@@ -8,6 +8,13 @@ const backdrop = document.querySelector("#backdrop");
 
 let account = null;
 
+const PHONE_COUNTRIES = [
+  { iso: "ES", name: "Spain", dial: "+34" },
+  { iso: "IL", name: "Israel", dial: "+972" },
+  { iso: "US", name: "United States", dial: "+1" },
+  { iso: "GB", name: "United Kingdom", dial: "+44" },
+];
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
     "&": "&amp;",
@@ -59,6 +66,12 @@ function formatPhone(value) {
   if (raw.startsWith("client:")) return raw;
   if (raw.startsWith("+34") && raw.length === 12) {
     return `+34 ${raw.slice(3, 6)} ${raw.slice(6, 9)} ${raw.slice(9)}`;
+  }
+  if (raw.startsWith("+972") && raw.length === 12) {
+    return `+972 ${raw.slice(4, 5)} ${raw.slice(5, 8)} ${raw.slice(8)}`;
+  }
+  if (raw.startsWith("+972") && raw.length === 13) {
+    return `+972 ${raw.slice(4, 6)} ${raw.slice(6, 9)} ${raw.slice(9)}`;
   }
   return raw;
 }
@@ -316,8 +329,8 @@ async function buyPage() {
   view.innerHTML = `
     ${head("Phone Numbers", "Buy a number", account.demo ? "Demo search only. Adding a number writes it locally and does not buy it from Twilio." : "Search uses the Twilio available-numbers API. Buying creates a real number and can cost money.")}
     <form class="cx-filters" id="searchForm">
-      <label>Country<select name="country"><option value="ES" ${country === "ES" ? "selected" : ""}>Spain</option><option value="US" ${country === "US" ? "selected" : ""}>United States</option><option value="GB" ${country === "GB" ? "selected" : ""}>United Kingdom</option></select></label>
-      <label>Contains<input name="contains" value="${esc(contains)}" placeholder="964" inputmode="numeric"></label>
+      <label>Country<select name="country">${PHONE_COUNTRIES.map((item) => `<option value="${item.iso}" ${country === item.iso ? "selected" : ""}>${esc(item.name)} (${esc(item.dial)})</option>`).join("")}</select></label>
+      <label>Contains<input name="contains" value="${esc(contains)}" placeholder="${country === "IL" ? "351" : "964"}" inputmode="numeric"></label>
       <label class="cx-check"><input type="checkbox" name="sms" ${sms ? "checked" : ""}> SMS</label>
       <button class="cx-btn" type="submit">Search</button>
     </form>

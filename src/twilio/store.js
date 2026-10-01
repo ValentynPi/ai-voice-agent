@@ -255,15 +255,16 @@ export function updateDemoNumber(accountSid, sid, input) {
 
 export function listAvailable({ country, contains = "", sms }) {
   const iso = String(country || "").toUpperCase();
-  if (iso !== "ES") {
+  const stock = DEMO_INVENTORY.filter((item) => item.iso_country === iso);
+  if (!stock.length) {
     return {
       numbers: [],
-      message: "Demo inventory only includes Spain (ES). Connect Twilio to search other countries. Nothing is purchased in Demo mode.",
+      message: "Demo inventory only includes Spain (ES) and Israel (IL). Connect Twilio to search other countries. Nothing is purchased in Demo mode.",
     };
   }
   const owned = new Set(getDb().prepare("SELECT phone_number FROM twilio_numbers").all().map((row) => row.phone_number));
   const digits = String(contains || "").replace(/\D/g, "");
-  const numbers = DEMO_INVENTORY.filter((item) => {
+  const numbers = stock.filter((item) => {
     if (owned.has(item.phone_number)) return false;
     if (digits && !item.phone_number.includes(digits)) return false;
     if (sms && !item.sms) return false;
@@ -274,7 +275,7 @@ export function listAvailable({ country, contains = "", sms }) {
     locality: item.locality,
     region: item.region,
     postal_code: null,
-    iso_country: "ES",
+    iso_country: item.iso_country,
     address_requirements: "none",
     beta: false,
     capabilities: { voice: true, SMS: Boolean(item.sms), MMS: false },
