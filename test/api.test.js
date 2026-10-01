@@ -53,7 +53,7 @@ test("pages and health respond", async () => {
       ["/history", /Call history/],
       ["/knowledge", /Knowledge base/],
       ["/analytics", /Analytics/],
-      ["/phone-numbers", /Twilio/],
+      ["/phone-numbers", /Phone Numbers/],
       ["/settings", /Settings/],
       ["/agents/agt_maison_sol", /Test call/],
       ["/agents/agt_maison_sol/test", /Start call/],

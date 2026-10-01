@@ -63,7 +63,7 @@ Set the key on Fly with `fly secrets set OPENAI_API_KEY=...`. Do not put it in `
 | `/tools` and `/dashboard` | MCP URL, token, discover, enable, and disable. |
 | `/console` | Agents app: 302 to the telephony host. Telephony app: redirects `/console/*` → `/*`. |
 | `/` on telephony | Demo Twilio console: numbers, calls, TwiML apps, logs, API keys. |
-| `/phone-numbers` | Agents: redirect to telephony. Telephony: active numbers page. |
+| `/phone-numbers` | Agents: Phone Numbers UI (lists via `/api/phone-numbers`, proxied from telephony when split). Telephony: active numbers console page. |
 | `/settings` | Model, default voice, and database path. No secrets. |
 
 Agents, knowledge, and the speak-first web test call stay on the ValMax pages. The sidebar link **Telephony** opens the console full page. A switcher on the console links back to Agents.
@@ -229,6 +229,14 @@ fly volumes create sol_data --region cdg --size 1 -a ai-voice-agent-valmax
 ```
 
 Finished web test calls (transcript, duration, status, and a short extractive summary) are rows in that same file. Live security events are still in memory and reset when the process restarts. They are not the salon book.
+
+## Agents ↔ telephony number sync
+
+Phone numbers are owned by the telephony SQLite (Fly volume on `ai-voice-agent-telephony`). Agents does not keep its own purchase store when `SERVICE=agents`.
+
+1. Telephony exposes `GET /api/public/phone-numbers` (sanitized list). Optional `TELEPHONY_SHARED_SECRET` requires header `X-Telephony-Secret`.
+2. Agents exposes `GET /api/phone-numbers`, which proxies that public list when `TELEPHONY_PUBLIC_URL` is set, or reads the local store in combined/`all` mode.
+3. Open **Phone Numbers** in the Agents sidebar (`/phone-numbers`) and refresh after buying on the telephony console.
 
 ## Two Fly apps
 

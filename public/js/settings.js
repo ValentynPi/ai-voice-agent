@@ -11,14 +11,16 @@ function row(label, value) {
 }
 
 async function load() {
-  let telephony = "Open the telephony console.";
+  let telephony = "Open Phone Numbers.";
   try {
-    const account = await readJson(await fetch("/api/twilio/v1/account"));
-    telephony = account.mode === "connected"
-      ? `Connected · ${account.account_sid}`
-      : "Demo mode. Lists stay local until Twilio env vars are set.";
+    const numbers = await readJson(await fetch("/api/phone-numbers"));
+    const count = (numbers.incoming_phone_numbers || []).length;
+    const where = numbers.source === "telephony" ? "synced from telephony" : "local store";
+    telephony = numbers.mode === "connected"
+      ? `Connected · ${count} number${count === 1 ? "" : "s"} (${where})`
+      : `Demo · ${count} number${count === 1 ? "" : "s"} (${where})`;
   } catch {
-    telephony = "Telephony console unavailable.";
+    telephony = "Phone Numbers unavailable.";
   }
   try {
     const state = await readJson(await fetch("/api/state"));

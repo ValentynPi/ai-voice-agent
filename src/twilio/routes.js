@@ -23,6 +23,7 @@ import {
   updateCredentials,
 } from "./service.js";
 import { statusWebhook, voiceWebhook } from "./webhooks.js";
+import { assertTelephonySecret, publicPhoneNumbersPayload } from "./public-list.js";
 
 function queryValue(req, ...names) {
   for (const name of names) {
@@ -90,6 +91,33 @@ export function mountTwilio(app) {
   app.get("/twilio/voice", voiceWebhook);
   app.post("/twilio/status", statusWebhook);
   app.get("/twilio/status", statusWebhook);
+
+  // Cross-host demo list for Agents Phone Numbers UI (optional shared secret).
+  app.get("/api/public/phone-numbers", async (req, res, next) => {
+    try {
+      assertTelephonySecret(req);
+      const origin = req.get("origin");
+      if (origin) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+        res.setHeader("Vary", "Origin");
+      }
+      res.json(await publicPhoneNumbersPayload(req));
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.options("/api/public/phone-numbers", (req, res) => {
+    const origin = req.get("origin");
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+      res.setHeader("Vary", "Origin");
+    }
+    res.status(204).end();
+  });
 
   const router = Router();
   router.use((req, res, next) => {

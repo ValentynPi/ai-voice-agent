@@ -114,8 +114,55 @@ test("agents service redirects /console to TELEPHONY_PUBLIC_URL", async () => {
       assert.equal(nested.headers.get("location"), "https://telephony.example/phone-numbers/search?country=IL");
 
       const phone = await fetch(`${base}/phone-numbers`, { redirect: "manual" });
-      assert.equal(phone.status, 302);
-      assert.equal(phone.headers.get("location"), "https://telephony.example/phone-numbers");
+      assert.equal(phone.status, 200);
+      assert.match(await phone.text(), /Phone Numbers/);
+
+      // Without a live telephony host the proxy errors; still exposes the route.
+      const listed = await fetch(`${base}/api/phone-numbers`);
+      assert.equal(listed.status, 502);
+    },
+  );
+});
+
+test("telephony public phone-numbers list is readable", async () => {
+  await withChild({ SERVICE: "telephony", AGENTS_PUBLIC_URL: "https://agents.example" }, async (base) => {
+    const res = await fetch(`${base}/api/public/phone-numbers`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.incoming_phone_numbers));
+    assert.ok(body.incoming_phone_numbers.length >= 1);
+    assert.ok(body.incoming_phone_numbers[0].phone_number);
+  });
+});
+
+test("agents proxies phone-numbers from telephony host", async () => {
+  await withChild({ SERVICE: "telephony", AGENTS_PUBLIC_URL: "https://agents.example" }, async (telephonyBase) => {
+    await withChild(
+      { SERVICE: "agents", TELEPHONY_PUBLIC_URL: telephonyBase },
+      async (agentsBase) => {
+        const res = await fetch(`${agentsBase}/api/phone-numbers`);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.source, "telephony");
+        assert.ok(body.incoming_phone_numbers.length >= 1);
+        assert.match(body.console_url, /phone-numbers$/);
+      },
+    );
+  });
+});
+
+test("shared secret protects telephony public list", async () => {
+  await withChild(
+    { SERVICE: "telephony", TELEPHONY_SHARED_SECRET: "demo-sync-secret" },
+    async (base) => {
+      const denied = await fetch(`${base}/api/public/phone-numbers`);
+      assert.equal(denied.status, 401);
+      const ok = await fetch(`${base}/api/public/phone-numbers`, {
+        headers: { "X-Telephony-Secret": "demo-sync-secret" },
+      });
+      assert.equal(ok.status, 200);
+      assert.equal((await ok.json()).ok, true);
     },
   );
 });

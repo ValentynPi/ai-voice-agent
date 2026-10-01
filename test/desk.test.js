@@ -170,12 +170,16 @@ test("agents, knowledge, history, and analytics round-trip", async () => {
 
     const phone = await fetch(`${base}/phone-numbers`);
     assert.equal(phone.status, 200);
-    assert.match(phone.url, /\/console\/phone-numbers$/);
+    assert.match(phone.url, /\/phone-numbers$/);
     const phoneHtml = await phone.text();
-    assert.match(phoneHtml, /Demo mode/);
-    assert.match(phoneHtml, /Twilio/);
+    assert.match(phoneHtml, /Phone Numbers/);
     assert.match(phoneHtml, /Buy a number/);
-    assert.match(phoneHtml, /Nothing here is bought on Twilio until the account is connected/);
+    assert.match(phoneHtml, /Telephony console/);
+
+    const listed = await fetch(`${base}/api/phone-numbers`).then((response) => response.json());
+    assert.equal(listed.source, "local");
+    assert.ok(Array.isArray(listed.incoming_phone_numbers));
+    assert.ok(listed.incoming_phone_numbers.length >= 1);
   });
 });
 

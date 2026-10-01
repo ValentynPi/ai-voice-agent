@@ -31,6 +31,7 @@ import { toolCatalogInfo } from "./tools/catalog.js";
 import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
 import { attachMediaBridge } from "./twilio/media-bridge.js";
 import { mountTwilio } from "./twilio/routes.js";
+import { publicPhoneNumbersPayload, telephonySharedSecret } from "./twilio/public-list.js";
 
 onCallEnded(saveCallRecord);
 
@@ -358,6 +359,62 @@ app.delete("/api/tools/:name", (req, res, next) => {
 
 mountTwilio(app);
 
+async function agentsPhoneNumbersPayload(req) {
+  // Prefer the telephony host store when split; otherwise list from this process.
+  if (TELEPHONY_PUBLIC_URL && SERVICE === "agents") {
+    const headers = { Accept: "application/json" };
+    const secret = telephonySharedSecret();
+    if (secret) headers["X-Telephony-Secret"] = secret;
+    let response;
+    try {
+      response = await fetch(`${TELEPHONY_PUBLIC_URL}/api/public/phone-numbers`, {
+        headers,
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch {
+      const error = new Error("Telephony host unreachable");
+      error.status = 502;
+      error.expose = true;
+      throw error;
+    }
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(body.error || `Telephony list failed (${response.status})`);
+      error.status = response.status === 401 ? 401 : 502;
+      error.expose = true;
+      throw error;
+    }
+    return {
+      ...body,
+      source: "telephony",
+      telephony_public_url: TELEPHONY_PUBLIC_URL,
+      console_url: `${TELEPHONY_PUBLIC_URL}/phone-numbers`,
+      buy_url: `${TELEPHONY_PUBLIC_URL}/phone-numbers/search`,
+    };
+  }
+  const local = await publicPhoneNumbersPayload(req);
+  const consoleBase = SERVICE === "telephony" ? "" : "/console";
+  return {
+    ...local,
+    source: "local",
+    telephony_public_url: TELEPHONY_PUBLIC_URL || null,
+    console_url: TELEPHONY_PUBLIC_URL
+      ? `${TELEPHONY_PUBLIC_URL}/phone-numbers`
+      : `${consoleBase}/phone-numbers`,
+    buy_url: TELEPHONY_PUBLIC_URL
+      ? `${TELEPHONY_PUBLIC_URL}/phone-numbers/search`
+      : `${consoleBase}/phone-numbers/search`,
+  };
+}
+
+app.get("/api/phone-numbers", async (req, res, next) => {
+  try {
+    res.json(await agentsPhoneNumbersPayload(req));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/chat", async (req, res, next) => {
   try {
     const { callId, text, lang } = req.body || {};
@@ -421,7 +478,8 @@ if (serveTelephony && SERVICE === "telephony") {
     const agent = getDefaultAgent();
     res.redirect(agent ? `/agents/${agent.id}/test` : "/agents");
   });
-  app.get("/phone-numbers", redirectToTelephony);
+  // Agents Phone Numbers UI lists via /api/phone-numbers (proxied from telephony when split).
+  app.get("/phone-numbers", sendPage("phone.html"));
   app.get(/^\/console(?:\/.*)?$/, redirectToTelephony);
   if (serveTelephony && SERVICE === "all") {
     // Combined local host: keep nested /console for one-process demos and tests.
