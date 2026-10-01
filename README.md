@@ -198,15 +198,28 @@ npm start
 DATABASE_PATH=/var/lib/maison-sol/salon.sqlite npm start
 ```
 
-Fly's root disk is ephemeral. `auto_stop_machines` can stop the machine, and the file under `/app/data` disappears with it. To keep the database, attach a volume and point `DATABASE_PATH` at it:
+Fly's root disk is ephemeral. `auto_stop_machines` can stop the machine, and the file under `/app/data` disappears with it. Purchased demo phone numbers, TwiML apps, credentials metadata, and agent-link settings live in that SQLite file — without a volume they vanish on every redeploy or machine stop.
+
+**Telephony** (`ai-voice-agent-telephony`) ships with a Fly volume already wired in `fly.telephony.toml`:
 
 ```bash
-fly volumes create sol_data --region cdg --size 1
+# once per app (already done for telephony if the volume exists)
+fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
+# SQLite needs a single writer
+fly scale count 1 -a ai-voice-agent-telephony
+fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
 ```
 
-Then add this to `fly.toml` and redeploy:
+The volume mounts at `/data`; `DATABASE_PATH=/data/maison-sol.sqlite`. The image entrypoint chowns `/data` to the `node` user so SQLite can write. After a redeploy, open the telephony console — previously bought/configured numbers should still list.
+
+For the **Agents** app, attach a volume the same way if you need agents/knowledge/call history to survive (optional; not required for phone-number memory):
+
+```bash
+fly volumes create sol_data --region cdg --size 1 -a ai-voice-agent-valmax
+```
 
 ```toml
+# fly.toml
 [mounts]
   source = "sol_data"
   destination = "/data"
@@ -220,10 +233,12 @@ Finished web test calls (transcript, duration, status, and a short extractive su
 ## Two Fly apps
 
 - Agents: `fly.toml` → `ai-voice-agent-valmax` (`SERVICE=agents`)
-- Telephony: `fly.telephony.toml` → `ai-voice-agent-telephony` (`SERVICE=telephony`)
+- Telephony: `fly.telephony.toml` → `ai-voice-agent-telephony` (`SERVICE=telephony`), with volume `telephony_data` → `/data` and `DATABASE_PATH=/data/maison-sol.sqlite` so demo numbers persist across restarts/deploys
 
 ```bash
 fly apps create ai-voice-agent-telephony --org personal
+fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
+fly scale count 1 -a ai-voice-agent-telephony
 fly deploy -c fly.toml -a ai-voice-agent-valmax
 fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
 ```

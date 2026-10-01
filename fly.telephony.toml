@@ -9,7 +9,15 @@ primary_region = "cdg"
   NODE_ENV = "production"
   SERVICE = "telephony"
   AGENTS_PUBLIC_URL = "https://ai-voice-agent-valmax.fly.dev"
-  # DATABASE_PATH defaults to /app/data/maison-sol.sqlite in the image.
+  # Persist demo numbers / TwiML apps / account metadata on the Fly volume.
+  DATABASE_PATH = "/data/maison-sol.sqlite"
+
+# Durable SQLite for purchased/configured phone numbers across restarts and deploys.
+# Create once: fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
+# Use a single machine (SQLite is not multi-writer): fly scale count 1 -a ai-voice-agent-telephony
+[mounts]
+  source = "telephony_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 3000

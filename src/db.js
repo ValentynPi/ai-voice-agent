@@ -45,7 +45,7 @@ export function databaseInfo() {
     memory,
     note: memory
       ? "This process is using an in-memory SQLite database."
-      : "SQLite file set by DATABASE_PATH, or data/maison-sol.sqlite. Fly's disk is ephemeral unless you attach a volume, so the file is lost when the machine stops.",
+      : "SQLite file set by DATABASE_PATH, or data/maison-sol.sqlite. On Fly telephony, a volume mounts at /data with DATABASE_PATH=/data/maison-sol.sqlite so numbers survive restarts/deploys; without a volume the file is lost when the machine stops.",
   };
 }
 
