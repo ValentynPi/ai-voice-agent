@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { getDb } from "./db.js";
 import { DEFAULT_AGENT_ID, VOICE_CHOICES } from "./defaults.js";
+import { mirrorBrowserCall } from "./twilio/store.js";
 
 function httpError(status, message) {
   const error = new Error(message);
@@ -440,6 +441,7 @@ export function saveCallRecord(call) {
     call.lang || null,
     call.endReason || null,
   );
+  mirrorBrowserCall(call, { status, durationMs, endedAt });
 }
 
 function mapRecord(row) {

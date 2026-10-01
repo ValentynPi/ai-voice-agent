@@ -29,6 +29,7 @@ import { endCall, getCall, listActivePublicCalls, onCallEnded, startCall, sweepC
 import { initDatabase } from "./db.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
 import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
+import { mountTwilio } from "./twilio/routes.js";
 
 onCallEnded(saveCallRecord);
 
@@ -49,12 +50,14 @@ function loadEnv() {
 
 export const app = express();
 app.disable("x-powered-by");
+app.set("trust proxy", 1);
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
   next();
 });
 app.use(express.json({ limit: "256kb" }));
+app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, service: "ai-voice-agent", status: "online", database: "sqlite" });
@@ -293,6 +296,8 @@ app.delete("/api/tools/:name", (req, res, next) => {
   }
 });
 
+mountTwilio(app);
+
 app.post("/api/chat", async (req, res, next) => {
   try {
     const { callId, text, lang } = req.body || {};
@@ -319,7 +324,8 @@ app.get("/history", sendPage("history.html"));
 app.get("/history/:id", sendPage("call.html"));
 app.get("/knowledge", sendPage("knowledge.html"));
 app.get("/analytics", sendPage("analytics.html"));
-app.get("/phone-numbers", sendPage("phone.html"));
+app.get("/phone-numbers", (req, res) => res.redirect(302, "/console/phone-numbers"));
+app.get(/^\/console(?:\/.*)?$/, sendPage("console.html"));
 app.get("/settings", sendPage("settings.html"));
 app.get("/call", (req, res) => {
   const agent = getDefaultAgent();

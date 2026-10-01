@@ -11,6 +11,15 @@ function row(label, value) {
 }
 
 async function load() {
+  let telephony = "Open the telephony console.";
+  try {
+    const account = await readJson(await fetch("/api/twilio/v1/account"));
+    telephony = account.mode === "connected"
+      ? `Connected · ${account.account_sid}`
+      : "Demo mode. Lists stay local until Twilio env vars are set.";
+  } catch {
+    telephony = "Telephony console unavailable.";
+  }
   try {
     const state = await readJson(await fetch("/api/state"));
     const pairs = [
@@ -22,7 +31,7 @@ async function load() {
       ["Database note", state.database?.note || ""],
       ["MCP", state.mcp?.connected ? `Connected · ${state.mcp.url}` : "Not connected"],
       ["MCP token", state.mcp?.hasToken ? "Stored on the server" : "None stored"],
-      ["Telephony", "Not in this phase. Twilio and SIP stay on the Phone Numbers page."],
+      ["Telephony", telephony],
     ];
     list.replaceChildren();
     for (const [label, value] of pairs) list.append(...row(label, value));

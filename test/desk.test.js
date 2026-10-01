@@ -169,10 +169,13 @@ test("agents, knowledge, history, and analytics round-trip", async () => {
     assert.equal(after.call.agentName, "North Desk");
 
     const phone = await fetch(`${base}/phone-numbers`);
+    assert.equal(phone.status, 200);
+    assert.match(phone.url, /\/console\/phone-numbers$/);
     const phoneHtml = await phone.text();
-    assert.match(phoneHtml, /Coming soon/);
-    assert.match(phoneHtml, /disabled/);
-    assert.doesNotMatch(phoneHtml, /buy a number now/i);
+    assert.match(phoneHtml, /Demo mode/);
+    assert.match(phoneHtml, /Twilio/);
+    assert.match(phoneHtml, /Buy a number/);
+    assert.match(phoneHtml, /Nothing here is bought on Twilio until the account is connected/);
   });
 });
 
