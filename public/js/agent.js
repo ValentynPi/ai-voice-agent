@@ -179,8 +179,123 @@ async function load() {
     paint(agentBody ? { ...agentBody.agent, voices } : { voices });
     renderKnowledge();
     renderTools();
+    await loadPhoneConnect();
   } catch (error) {
     note(error.message || "Could not load this agent.", "error");
+  }
+}
+
+function formatPhone(value) {
+  const raw = String(value || "");
+  if (raw.startsWith("+34") && raw.length === 12) {
+    return `+34 ${raw.slice(3, 6)} ${raw.slice(6, 9)} ${raw.slice(9)}`;
+  }
+  if (raw.startsWith("+972") && raw.length >= 12) {
+    return `+972 ${raw.slice(4, 5)} ${raw.slice(5, 8)} ${raw.slice(8)}`;
+  }
+  return raw;
+}
+
+function telephonyDeepLink(base, id) {
+  const root = String(base || "").replace(/\/$/, "");
+  if (!root) return "";
+  try {
+    const url = new URL(root.includes("/phone-numbers") ? root.replace(/\/phone-numbers.*/, "/") : `${root}/`);
+    if (id) url.searchParams.set("agentId", id);
+    return url.toString();
+  } catch {
+    return root;
+  }
+}
+
+async function assignNumber(sid, id) {
+  return readJson(await fetch("/api/phone-numbers/assign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sid, agentId: id || "" }),
+  }));
+}
+
+async function loadPhoneConnect() {
+  const phoneConnectBody = document.querySelector("#phoneConnectBody");
+  if (!phoneConnectBody) return;
+  const id = agent?.id || (!isNew ? agentId : "");
+  if (!id) {
+    phoneConnectBody.innerHTML = `<p class="sub">Save the agent first to connect a number.</p>`;
+    return;
+  }
+  phoneConnectBody.innerHTML = `<p class="sub">Loading numbers…</p>`;
+  try {
+    const payload = await readJson(await fetch("/api/phone-numbers"));
+    const numbers = payload.incoming_phone_numbers || [];
+    const bound = numbers.filter((n) => n.agent_id === id);
+    const unassigned = numbers.filter((n) => !n.agent_id);
+    const deep = telephonyDeepLink(payload.console_url || payload.telephony_public_url, id);
+    const bits = [];
+    if (bound.length) {
+      bits.push(`<p class="sub" style="margin-bottom:8px"><strong>Connected</strong></p>`);
+      for (const n of bound) {
+        bits.push(`<div class="head-actions" style="margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <span><strong>${formatPhone(n.phone_number)}</strong> <span class="quiet">${n.friendly_name || ""}</span></span>
+          <button class="btn small ghost" type="button" data-disconnect="${n.sid}">Disconnect</button>
+        </div>
+        <p class="quiet mono" style="margin:0 0 12px;font-size:12px;word-break:break-all">${n.voice_url || ""}</p>`);
+      }
+    } else {
+      bits.push(`<p class="sub">Not connected to a phone number yet.</p>`);
+    }
+    if (unassigned.length) {
+      const options = unassigned.map((n) =>
+        `<option value="${n.sid}">${formatPhone(n.phone_number)}${n.friendly_name ? ` — ${n.friendly_name}` : ""}</option>`
+      ).join("");
+      bits.push(`<label style="display:block;margin-top:12px">Unassigned number
+        <select id="phonePick">${options}</select>
+      </label>
+      <div class="head-actions" style="margin-top:12px;flex-wrap:wrap;gap:8px">
+        <button class="btn small primary" type="button" id="phoneConnectBtn">Connect in one click</button>
+        ${deep ? `<a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony</a>` : ""}
+      </div>
+      <p class="quiet" style="margin-top:8px">Sets Voice URL to Agents <span class="mono">/twilio/voice?agentId=${id}</span>.</p>`);
+    } else if (!numbers.length) {
+      bits.push(`<p class="sub" style="margin-top:12px">No numbers yet. Buy a demo number on the telephony console, then refresh.</p>
+        <div class="head-actions" style="margin-top:12px">
+          <a class="btn small primary" href="${payload.buy_url || payload.console_url || "/phone-numbers"}" target="_blank" rel="noopener">Buy a number</a>
+        </div>`);
+    } else {
+      bits.push(`<p class="sub" style="margin-top:12px">Every number is already assigned. Disconnect one, or buy another demo number.</p>
+        ${deep ? `<div class="head-actions" style="margin-top:12px"><a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony with this agent</a></div>` : ""}`);
+    }
+    bits.push(`<p class="quiet" id="phoneConnectNote" style="margin-top:12px"></p>`);
+    phoneConnectBody.innerHTML = bits.join("");
+
+    phoneConnectBody.querySelector("#phoneConnectBtn")?.addEventListener("click", async () => {
+      const pick = phoneConnectBody.querySelector("#phonePick");
+      const noteEl = phoneConnectBody.querySelector("#phoneConnectNote");
+      if (!pick?.value) return;
+      noteEl.textContent = "Connecting…";
+      try {
+        const result = await assignNumber(pick.value, id);
+        noteEl.textContent = `Connected. Voice URL → ${result.number?.voice_url || ""}`;
+        await loadPhoneConnect();
+      } catch (error) {
+        noteEl.textContent = error.message || "Could not connect.";
+      }
+    });
+
+    for (const btn of phoneConnectBody.querySelectorAll("[data-disconnect]")) {
+      btn.addEventListener("click", async () => {
+        const noteEl = phoneConnectBody.querySelector("#phoneConnectNote");
+        noteEl.textContent = "Disconnecting…";
+        try {
+          await assignNumber(btn.dataset.disconnect, "");
+          await loadPhoneConnect();
+        } catch (error) {
+          noteEl.textContent = error.message || "Could not disconnect.";
+        }
+      });
+    }
+  } catch (error) {
+    phoneConnectBody.innerHTML = `<p class="sub">Could not load numbers: ${error.message || "unknown error"}. Is the telephony host up?</p>`;
   }
 }
 
@@ -207,6 +322,7 @@ saveBtn.addEventListener("click", async () => {
     renderTools();
     subtitle.textContent = "Saved. The next test call uses this configuration.";
     note("Saved.", "ok");
+    await loadPhoneConnect();
   } catch (error) {
     note(error.message || "Could not save.", "error");
   } finally {

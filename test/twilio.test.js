@@ -453,3 +453,58 @@ test("demo call normalizes agents_base_url that already ends with /twilio/voice"
     assert.equal(result.uses_stream, true);
   });
 });
+
+test("assign agent updates number Voice URL with agentId", async () => {
+  const previous = {
+    AGENTS_PUBLIC_URL: process.env.AGENTS_PUBLIC_URL,
+    PUBLIC_URL: process.env.PUBLIC_URL,
+  };
+  process.env.AGENTS_PUBLIC_URL = "https://agents.example";
+  process.env.PUBLIC_URL = "https://agents.example";
+  try {
+    await withServer(async (base) => {
+      const account = await fetch(`${base}/api/twilio/v1/account`).then((r) => r.json());
+      const listed = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/IncomingPhoneNumbers`).then((r) => r.json());
+      const number = listed.incoming_phone_numbers[0];
+      assert.ok(number?.sid);
+
+      const assigned = await fetch(`${base}/api/twilio/v1/assign-agent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: number.sid, agent_id: "agt_maison_sol" }),
+      }).then(async (r) => ({ status: r.status, body: await r.json() }));
+      assert.equal(assigned.status, 200);
+      assert.equal(assigned.body.ok, true);
+      assert.equal(assigned.body.number.agent_id, "agt_maison_sol");
+      assert.equal(
+        assigned.body.number.voice_url,
+        "https://agents.example/twilio/voice?agentId=agt_maison_sol",
+      );
+
+      const publicList = await fetch(`${base}/api/public/phone-numbers`).then((r) => r.json());
+      const found = publicList.incoming_phone_numbers.find((row) => row.sid === number.sid);
+      assert.equal(found.agent_id, "agt_maison_sol");
+
+      const cleared = await fetch(`${base}/api/public/phone-numbers/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: number.sid, agent_id: "" }),
+      }).then((r) => r.json());
+      assert.equal(cleared.number.agent_id, null);
+      assert.equal(cleared.number.voice_url, "https://agents.example/twilio/voice");
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("parseAgentIdFromVoiceUrl reads query", async () => {
+  const { parseAgentIdFromVoiceUrl } = await import("../src/twilio/public-url.js");
+  assert.equal(parseAgentIdFromVoiceUrl("https://agents.example/twilio/voice?agentId=agt_x"), "agt_x");
+  assert.equal(parseAgentIdFromVoiceUrl("/twilio/voice?agentId=agt_y&x=1"), "agt_y");
+  assert.equal(parseAgentIdFromVoiceUrl("/twilio/voice"), "");
+  assert.equal(parseAgentIdFromVoiceUrl(""), "");
+});

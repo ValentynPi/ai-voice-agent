@@ -31,7 +31,7 @@ import { toolCatalogInfo } from "./tools/catalog.js";
 import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
 import { attachMediaBridge } from "./twilio/media-bridge.js";
 import { mountTwilio } from "./twilio/routes.js";
-import { publicPhoneNumbersPayload, telephonySharedSecret } from "./twilio/public-list.js";
+import { assignPublicNumber, publicPhoneNumbersPayload, telephonySharedSecret } from "./twilio/public-list.js";
 
 onCallEnded(saveCallRecord);
 
@@ -410,6 +410,64 @@ async function agentsPhoneNumbersPayload(req) {
 app.get("/api/phone-numbers", async (req, res, next) => {
   try {
     res.json(await agentsPhoneNumbersPayload(req));
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Bind (or clear) an agent on a telephony number.
+ * Body: { sid | numberSid, agentId }. Updates Voice URL to Agents /twilio/voice?agentId=…
+ * When split, proxies to the telephony host public assign API.
+ */
+app.post("/api/phone-numbers/assign", async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const sid = String(body.sid || body.number_sid || body.numberSid || "").trim();
+    const agentId = body.agent_id ?? body.agentId ?? "";
+    if (agentId) {
+      // Validate agent exists on this Agents host when we have the desk.
+      if (serveAgents) {
+        const agent = getAgent(String(agentId).trim());
+        if (!agent) {
+          const error = new Error("Unknown agent");
+          error.status = 404;
+          error.expose = true;
+          throw error;
+        }
+      }
+    }
+    if (TELEPHONY_PUBLIC_URL && SERVICE === "agents") {
+      const headers = {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      };
+      const secret = telephonySharedSecret();
+      if (secret) headers["X-Telephony-Secret"] = secret;
+      let response;
+      try {
+        response = await fetch(`${TELEPHONY_PUBLIC_URL}/api/public/phone-numbers/assign`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ sid, agent_id: agentId || "" }),
+          signal: AbortSignal.timeout(10000),
+        });
+      } catch {
+        const error = new Error("Telephony host unreachable");
+        error.status = 502;
+        error.expose = true;
+        throw error;
+      }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = new Error(payload.error || `Telephony assign failed (${response.status})`);
+        error.status = response.status === 401 ? 401 : response.status >= 400 && response.status < 500 ? response.status : 502;
+        error.expose = true;
+        throw error;
+      }
+      return res.json(payload);
+    }
+    res.json(await assignPublicNumber(req, { sid, agentId }));
   } catch (error) {
     next(error);
   }

@@ -23,7 +23,7 @@ import {
   updateCredentials,
 } from "./service.js";
 import { statusWebhook, voiceWebhook } from "./webhooks.js";
-import { assertTelephonySecret, publicPhoneNumbersPayload } from "./public-list.js";
+import { assertTelephonySecret, assignPublicNumber, publicPhoneNumbersPayload } from "./public-list.js";
 
 function queryValue(req, ...names) {
   for (const name of names) {
@@ -99,7 +99,7 @@ export function mountTwilio(app) {
       const origin = req.get("origin");
       if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
         res.setHeader("Vary", "Origin");
       }
@@ -112,7 +112,37 @@ export function mountTwilio(app) {
     const origin = req.get("origin");
     if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+      res.setHeader("Vary", "Origin");
+    }
+    res.status(204).end();
+  });
+
+  // Cross-host: Agents assigns agentId → Voice URL on a telephony number.
+  app.post("/api/public/phone-numbers/assign", async (req, res, next) => {
+    try {
+      assertTelephonySecret(req);
+      const origin = req.get("origin");
+      if (origin) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+        res.setHeader("Vary", "Origin");
+      }
+      const body = req.body || {};
+      const sid = body.sid || body.number_sid || body.numberSid || body.phone_number_sid;
+      const agentId = body.agent_id ?? body.agentId ?? "";
+      res.json(await assignPublicNumber(req, { sid, agentId }));
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.options("/api/public/phone-numbers/assign", (req, res) => {
+    const origin = req.get("origin");
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
       res.setHeader("Vary", "Origin");
     }
@@ -160,6 +190,17 @@ export function mountTwilio(app) {
       status_callback_method: "POST",
       agent_id: agentId || null,
     });
+  });
+
+  router.post("/assign-agent", async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const sid = body.sid || body.number_sid || body.numberSid;
+      const agentId = body.agent_id ?? body.agentId ?? "";
+      res.json(await assignPublicNumber(req, { sid, agentId }));
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.post("/demo-call", async (req, res, next) => {

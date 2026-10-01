@@ -1,4 +1,6 @@
-import { accountView, listPhoneNumbers } from "./service.js";
+import { accountView, assignAgentToNumber, listPhoneNumbers, parseAgentIdFromVoiceUrl } from "./service.js";
+import { isSid } from "./ids.js";
+import { httpError } from "./http.js";
 
 /** Optional shared secret so Agents can pull the telephony number list. */
 export function telephonySharedSecret() {
@@ -19,6 +21,7 @@ export function assertTelephonySecret(req) {
 }
 
 function sanitizeNumber(row) {
+  const voiceUrl = row.voice_url || "";
   return {
     sid: row.sid,
     phone_number: row.phone_number,
@@ -26,12 +29,26 @@ function sanitizeNumber(row) {
     status: row.status || "in-use",
     demo: Boolean(row.demo),
     origin: row.origin || (row.demo ? "demo" : "twilio"),
-    voice_url: row.voice_url || "",
+    voice_url: voiceUrl,
     voice_method: row.voice_method || "POST",
     status_callback: row.status_callback || "",
+    agent_id: row.agent_id || parseAgentIdFromVoiceUrl(voiceUrl) || null,
     capabilities: row.capabilities || { voice: true, sms: false, mms: false },
     date_created: row.date_created || null,
     date_updated: row.date_updated || null,
+  };
+}
+
+/** Assign (or clear) an agent on a number; updates Voice URL via Agents brain. */
+export async function assignPublicNumber(req, { sid, agentId } = {}) {
+  const numberSid = String(sid || "").trim();
+  if (!isSid(numberSid, "PN")) throw httpError(400, "sid must be a phone number SID (PN…)");
+  const account = accountView(req);
+  const updated = await assignAgentToNumber(account.account_sid, numberSid, agentId, req);
+  return {
+    ok: true,
+    number: sanitizeNumber(updated),
+    agents_public_url: account.agents_public_url || null,
   };
 }
 

@@ -273,8 +273,10 @@ async function overview() {
     api(resourcePath("/Monitor/Events")),
   ]);
   const recent = (calls.calls || []).slice(0, 5);
+  const urlAgent = new URLSearchParams(location.search).get("agentId") || "";
+  if (urlAgent) localStorage.setItem("cx-agent-id", urlAgent);
   const savedBrain = normalizeAgentsBaseUrl(localStorage.getItem("cx-agents-url") || account.agents_public_url || "");
-  const savedAgent = localStorage.getItem("cx-agent-id") || "";
+  const savedAgent = urlAgent || localStorage.getItem("cx-agent-id") || "";
   view.innerHTML = `
     ${head("Telephony", "Overview", "Phone numbers, voice calls, webhooks, and API keys. The agent builder stays on Agents.")}
     <section class="cx-stats">
@@ -291,6 +293,7 @@ async function overview() {
         <div class="cx-actions">
           <button class="cx-btn primary" type="submit">Save connection</button>
           <button class="cx-btn ghost" type="button" id="loadAgents">Load agents</button>
+          <button class="cx-btn ghost" type="button" id="applyVoiceUrls">Apply Voice URL to all numbers</button>
           <button class="cx-btn ghost" type="button" id="demoCall">Demo call to Agents</button>
         </div>
       </form>
@@ -374,6 +377,34 @@ function bindBrainCard(root, initialAgentId) {
     bindCopies(root);
     note.textContent = "Saved in this browser. Use the Voice URL below on numbers and TwiML Apps.";
   });
+  root.querySelector("#applyVoiceUrls")?.addEventListener("click", async () => {
+    clearError();
+    const agentId = pick.value || "";
+    note.textContent = agentId
+      ? `Applying Voice URL with agentId=${agentId} to all numbers…`
+      : "Applying default Voice URL (no agentId) to all numbers…";
+    try {
+      const listed = await api(resourcePath("/IncomingPhoneNumbers"));
+      const numbers = listed.incoming_phone_numbers || [];
+      if (!numbers.length) {
+        note.textContent = "No numbers to update. Buy a demo number first.";
+        return;
+      }
+      let ok = 0;
+      for (const number of numbers) {
+        await api("/api/twilio/v1/assign-agent", {
+          method: "POST",
+          body: JSON.stringify({ sid: number.sid, agent_id: agentId }),
+        });
+        ok += 1;
+      }
+      localStorage.setItem("cx-agent-id", agentId);
+      note.textContent = `Updated Voice URL on ${ok} number${ok === 1 ? "" : "s"}. Binding shows on Agents → Phone Numbers.`;
+    } catch (error) {
+      note.textContent = "";
+      showError(error);
+    }
+  });
   root.querySelector("#demoCall")?.addEventListener("click", async () => {
     clearError();
     note.textContent = "Running demo call to Agents…";
@@ -439,14 +470,15 @@ async function numbersPage() {
     <tr class="clickable" data-number="${esc(number.sid)}" tabindex="0">
       <td><span class="primary">${esc(formatPhone(number.phone_number))}</span>${number.demo ? `<span class="sub cx-flag">Demo · not purchased on Twilio</span>` : `<span class="sub">Twilio</span>`}</td>
       <td>${esc(number.friendly_name)}</td>
+      <td>${number.agent_id ? `<span class="mono">${esc(number.agent_id)}</span>` : `<span class="sub">Unassigned</span>`}</td>
       <td class="mono">${esc(number.voice_url || "—")}</td>
       <td>${esc(caps(number.capabilities))}</td>
       <td><span class="cx-pill ${pillClass(number.status)}">${esc(statusLabel(number.status))}</span></td>
     </tr>
-  `).join("") : emptyRow(5, "No numbers on this account.");
+  `).join("") : emptyRow(6, "No numbers on this account.");
   view.innerHTML = `
-    ${head("Phone Numbers", "Active numbers", account.demo ? "These rows live in SQLite. Buying one here does not create it on Twilio." : "These rows come from the connected Twilio account.", `<a class="cx-btn primary" href="${cxPath("/phone-numbers/search")}" data-cx>Buy a number</a>`)}
-    <div class="cx-table-wrap"><table class="cx-table"><thead><tr><th>Number</th><th>Friendly name</th><th>Voice URL</th><th>Capabilities</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${head("Phone Numbers", "Active numbers", account.demo ? "These rows live in SQLite. Buying one here does not create it on Twilio. Agent binding is stored in Voice URL (?agentId=)." : "These rows come from the connected Twilio account.", `<a class="cx-btn primary" href="${cxPath("/phone-numbers/search")}" data-cx>Buy a number</a>`)}
+    <div class="cx-table-wrap"><table class="cx-table"><thead><tr><th>Number</th><th>Friendly name</th><th>Agent</th><th>Voice URL</th><th>Capabilities</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
   `;
   for (const row of view.querySelectorAll("[data-number]")) {
     const open = () => openNumber(row.dataset.number);
@@ -459,15 +491,22 @@ async function numbersPage() {
 
 async function openNumber(sid) {
   const number = await api(resourcePath(`/IncomingPhoneNumbers/${sid}`));
+  const linkedAgent = number.agent_id || "";
+  const savedAgent = localStorage.getItem("cx-agent-id") || "";
   openDrawer(formatPhone(number.phone_number), number.sid, `
     ${number.demo ? `<p class="cx-note">Demo number. It is stored on this server and was not purchased on Twilio.</p>` : `<p class="cx-note">This number is on the connected Twilio account. Saving updates it there.</p>`}
     <dl class="cx-dl">
       <dt>Friendly name</dt><dd>${esc(number.friendly_name)}</dd>
+      <dt>Agent</dt><dd>${linkedAgent ? `<span class="mono">${esc(linkedAgent)}</span>` : "Unassigned (default Maison Sol)"}</dd>
       <dt>Capabilities</dt><dd>${esc(caps(number.capabilities))}</dd>
       <dt>Status</dt><dd>${esc(statusLabel(number.status))}</dd>
       <dt>Voice method</dt><dd>${esc(number.voice_method)}</dd>
       <dt>Created</dt><dd>${esc(formatWhen(number.date_created))}</dd>
     </dl>
+    <div class="cx-actions" style="margin-bottom:16px">
+      <button class="cx-btn primary" type="button" id="assignSavedAgent" ${savedAgent ? "" : "disabled"}>${savedAgent ? `Connect agent ${esc(savedAgent)}` : "Pick an agent on Overview first"}</button>
+      <button class="cx-btn ghost" type="button" id="clearAgent" ${linkedAgent ? "" : "disabled"}>Clear agentId</button>
+    </div>
     <form class="cx-form" id="numberForm">
       <label>Friendly name<input name="friendly_name" value="${esc(number.friendly_name)}" required></label>
       <label>Voice URL<input name="voice_url" value="${esc(absoluteUrl(number.voice_url))}" placeholder="${esc(account.voice_webhook_url)}"></label>
@@ -477,6 +516,30 @@ async function openNumber(sid) {
       <button class="cx-btn primary" type="submit">Save number</button>
     </form>
   `, (root) => {
+    root.querySelector("#assignSavedAgent")?.addEventListener("click", async () => {
+      try {
+        await api("/api/twilio/v1/assign-agent", {
+          method: "POST",
+          body: JSON.stringify({ sid, agent_id: savedAgent }),
+        });
+        closeDrawer();
+        await numbersPage();
+      } catch (error) {
+        showError(error);
+      }
+    });
+    root.querySelector("#clearAgent")?.addEventListener("click", async () => {
+      try {
+        await api("/api/twilio/v1/assign-agent", {
+          method: "POST",
+          body: JSON.stringify({ sid, agent_id: "" }),
+        });
+        closeDrawer();
+        await numbersPage();
+      } catch (error) {
+        showError(error);
+      }
+    });
     root.querySelector("#numberForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);

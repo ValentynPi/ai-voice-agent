@@ -64,6 +64,19 @@ Set the key on Fly with `fly secrets set OPENAI_API_KEY=...`. Do not put it in `
 | `/console` | Agents app: 302 to the telephony host. Telephony app: redirects `/console/*` → `/*`. |
 | `/` on telephony | Demo Twilio console: numbers, calls, TwiML apps, logs, API keys. |
 | `/phone-numbers` | Agents: Phone Numbers UI (lists via `/api/phone-numbers`, proxied from telephony when split). Telephony: active numbers console page. |
+
+### Connect an agent to a demo phone number
+
+1. Create or open an agent on Agents → **Connect to phone number**.
+2. Pick an **unassigned** number and click **Connect in one click** (or assign from Agents → Phone Numbers).
+3. That updates the number’s Voice URL on the telephony host to  
+   `https://ai-voice-agent-valmax.fly.dev/twilio/voice?agentId=<your-agent-id>`  
+   (and Status callback to `/twilio/status` on Agents).
+4. Verify: Agents Phone Numbers shows the agent; telephony Active numbers shows the same `agent_id` in Voice URL.
+5. Optional: open telephony with `?agentId=…`, then **Apply Voice URL to all numbers** on Overview, or run **Demo call to Agents** with that agent selected.
+
+Inbound / demo Media Streams use the `agentId` query (and Stream Parameter), not only the default Maison Sol agent.
+
 | `/settings` | Model, default voice, and database path. No secrets. |
 
 Agents, knowledge, and the speak-first web test call stay on the ValMax pages. The sidebar link **Telephony** opens the console full page. A switcher on the console links back to Agents.

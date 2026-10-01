@@ -6,6 +6,7 @@ import {
   randomSid,
   stableSid,
 } from "./ids.js";
+import { parseAgentIdFromVoiceUrl } from "./public-url.js";
 
 const CALL_STATUSES = new Set([
   "queued",
@@ -67,6 +68,7 @@ export function mapNumber(row) {
     status_callback_method: row.status_callback_method || "POST",
     sms_url: row.sms_url || null,
     sms_method: row.sms_method || "POST",
+    agent_id: parseAgentIdFromVoiceUrl(row.voice_url) || null,
     capabilities: capabilities(row),
     status: row.status || "in-use",
     api_version: "2010-04-01",

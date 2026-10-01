@@ -1,6 +1,6 @@
 import { listActivePublicCalls } from "../store.js";
 import { httpError, page, publicBase } from "./http.js";
-import { resolveAgentsPublicUrl } from "./public-url.js";
+import { parseAgentIdFromVoiceUrl, resolveAgentsPublicUrl } from "./public-url.js";
 import { isSid } from "./ids.js";
 import {
   createApplication,
@@ -100,6 +100,30 @@ export function agentsStatusUrl(req) {
   return `${agentsBase}/twilio/status`;
 }
 
+/**
+ * Point a number's Voice URL at Agents /twilio/voice?agentId=… and status at Agents.
+ * Empty agentId clears the query (default Maison Sol / getDefaultAgent).
+ */
+export async function assignAgentToNumber(accountSid, numberSid, agentId, req = null) {
+  const id = String(agentId || "").trim();
+  const voiceUrl = agentsVoiceUrl(req, id);
+  const statusUrl = agentsStatusUrl(req);
+  const current = await getPhoneNumber(accountSid, numberSid);
+  const updated = await changePhoneNumber(accountSid, numberSid, {
+    friendlyName: current.friendly_name,
+    voiceUrl,
+    voiceMethod: "POST",
+    statusCallback: statusUrl,
+    statusCallbackMethod: "POST",
+  });
+  return {
+    ...updated,
+    agent_id: parseAgentIdFromVoiceUrl(updated.voice_url) || (id || null),
+  };
+}
+
+export { parseAgentIdFromVoiceUrl };
+
 export function updateCredentials(input) {
   saveCredentials(input);
   return null;
@@ -149,6 +173,7 @@ function mapLiveNumber(row, accountSid) {
     status_callback_method: row.status_callback_method || "POST",
     sms_url: row.sms_url || null,
     sms_method: row.sms_method || "POST",
+    agent_id: parseAgentIdFromVoiceUrl(row.voice_url) || null,
     capabilities: {
       voice: Boolean(caps.voice),
       sms: Boolean(caps.sms ?? caps.SMS),

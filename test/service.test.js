@@ -166,3 +166,45 @@ test("shared secret protects telephony public list", async () => {
     },
   );
 });
+
+test("agents proxies phone-number assign to telephony", async () => {
+  await withChild(
+    { SERVICE: "telephony", AGENTS_PUBLIC_URL: "https://agents.example" },
+    async (telephonyBase) => {
+      await withChild(
+        { SERVICE: "agents", TELEPHONY_PUBLIC_URL: telephonyBase, AGENTS_PUBLIC_URL: "https://agents.example" },
+        async (agentsBase) => {
+          const listed = await fetch(`${agentsBase}/api/phone-numbers`).then((r) => r.json());
+          const number = listed.incoming_phone_numbers[0];
+          assert.ok(number?.sid);
+
+          // Create a real agent on the agents host, then assign.
+          const created = await fetch(`${agentsBase}/api/agents`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: "Bind Me",
+              systemPrompt: "You are a short voice agent.",
+              greetingEn: "Hello",
+              greetingEs: "Hola",
+            }),
+          }).then((r) => r.json());
+          const agentId = created.agent.id;
+
+          const assigned = await fetch(`${agentsBase}/api/phone-numbers/assign`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sid: number.sid, agentId }),
+          }).then(async (r) => ({ status: r.status, body: await r.json() }));
+          assert.equal(assigned.status, 200, JSON.stringify(assigned.body));
+          assert.equal(assigned.body.number.agent_id, agentId);
+          assert.match(assigned.body.number.voice_url, new RegExp(`agentId=${agentId}`));
+
+          const again = await fetch(`${agentsBase}/api/phone-numbers`).then((r) => r.json());
+          const found = again.incoming_phone_numbers.find((row) => row.sid === number.sid);
+          assert.equal(found.agent_id, agentId);
+        },
+      );
+    },
+  );
+});

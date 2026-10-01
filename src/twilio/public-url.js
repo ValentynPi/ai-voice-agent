@@ -61,3 +61,21 @@ export function httpToWs(url) {
   if (raw.startsWith("wss://") || raw.startsWith("ws://")) return raw;
   return raw;
 }
+
+/** Pull agentId from a Voice URL query string (absolute or path). */
+export function parseAgentIdFromVoiceUrl(voiceUrl) {
+  const raw = String(voiceUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const url = raw.startsWith("/") ? new URL(raw, "http://local.invalid") : new URL(raw);
+    return String(url.searchParams.get("agentId") || url.searchParams.get("agent") || "").trim();
+  } catch {
+    const match = raw.match(/[?&]agentId=([^&]+)/i) || raw.match(/[?&]agent=([^&]+)/i);
+    if (!match) return "";
+    try {
+      return decodeURIComponent(match[1]).trim();
+    } catch {
+      return String(match[1] || "").trim();
+    }
+  }
+}
