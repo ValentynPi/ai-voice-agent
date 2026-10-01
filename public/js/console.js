@@ -15,6 +15,23 @@ const PHONE_COUNTRIES = [
   { iso: "GB", name: "United Kingdom", dial: "+44" },
 ];
 
+/** Console path prefix: "/console" when nested, "" when telephony owns the host. */
+const CONSOLE_BASE = (() => {
+  const raw = document.documentElement.dataset.consoleBase;
+  if (raw != null) return String(raw).replace(/\/$/, "");
+  const path = location.pathname;
+  if (path === "/console" || path.startsWith("/console/")) return "/console";
+  return "";
+})();
+
+function cxPath(suffix = "") {
+  const part = String(suffix || "");
+  if (!part || part === "/") return CONSOLE_BASE || "/";
+  const normalized = part.startsWith("/") ? part : `/${part}`;
+  return `${CONSOLE_BASE}${normalized}`;
+}
+
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
     "&": "&amp;",
@@ -146,8 +163,8 @@ function paintChrome() {
 }
 
 function highlightNav() {
-  const path = location.pathname.replace(/\/$/, "") || "/console";
-  const match = path === "/console" ? "home"
+  const path = location.pathname.replace(/\/$/, "") || (CONSOLE_BASE || "/");
+  const match = path === (CONSOLE_BASE || "/") || path === "/" ? "home"
     : path.includes("/search") ? "buy"
     : path.includes("/phone-numbers") ? "numbers"
     : path.includes("/calls") ? "calls"
@@ -251,7 +268,7 @@ async function numbersPage() {
     </tr>
   `).join("") : emptyRow(5, "No numbers on this account.");
   view.innerHTML = `
-    ${head("Phone Numbers", "Active numbers", account.demo ? "These rows live in SQLite. Buying one here does not create it on Twilio." : "These rows come from the connected Twilio account.", `<a class="cx-btn primary" href="/console/phone-numbers/search" data-cx>Buy a number</a>`)}
+    ${head("Phone Numbers", "Active numbers", account.demo ? "These rows live in SQLite. Buying one here does not create it on Twilio." : "These rows come from the connected Twilio account.", `<a class="cx-btn primary" href="${cxPath("/phone-numbers/search")}" data-cx>Buy a number</a>`)}
     <div class="cx-table-wrap"><table class="cx-table"><thead><tr><th>Number</th><th>Friendly name</th><th>Voice URL</th><th>Capabilities</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
   `;
   for (const row of view.querySelectorAll("[data-number]")) {
@@ -344,7 +361,7 @@ async function buyPage() {
     next.set("country", form.get("country"));
     if (form.get("contains")) next.set("contains", form.get("contains"));
     if (form.get("sms")) next.set("sms", "1");
-    navigate(`/console/phone-numbers/search?${next}`);
+    navigate(`${cxPath("/phone-numbers/search")}?${next}`);
   });
   for (const button of view.querySelectorAll("[data-buy]")) {
     button.addEventListener("click", () => openBuy(button.dataset.buy));
@@ -378,7 +395,7 @@ function openBuy(phone) {
           }),
         });
         closeDrawer();
-        history.pushState({}, "", "/console/phone-numbers");
+        history.pushState({}, "", cxPath("/phone-numbers"));
         await render();
         await openNumber(created.sid);
       } catch (error) {
@@ -414,7 +431,7 @@ async function callsPage() {
     if (form.get("direction")) next.set("direction", form.get("direction"));
     if (form.get("from")) next.set("from", form.get("from"));
     const search = next.toString();
-    navigate(`/console/voice/calls${search ? `?${search}` : ""}`);
+    navigate(`${cxPath("/voice/calls")}${search ? `?${search}` : ""}`);
   });
   bindCallRows(view);
 }
@@ -647,15 +664,16 @@ async function render() {
   try {
     account = await api("/api/twilio/v1/account");
     paintChrome();
-    const path = location.pathname.replace(/\/$/, "") || "/console";
-    if (path === "/console") await overview();
-    else if (path === "/console/phone-numbers") await numbersPage();
-    else if (path === "/console/phone-numbers/search") await buyPage();
-    else if (path === "/console/voice/calls") await callsPage();
-    else if (path === "/console/develop/twiml-apps") await appsPage();
-    else if (path === "/console/monitor/logs") await logsPage();
-    else if (path === "/console/account/keys") await keysPage();
-    else view.innerHTML = `${head("Telephony", "Not found", "")}<p class="cx-lede">That console page is not available. <a href="/console" data-cx>Back to overview</a></p>`;
+    const path = location.pathname.replace(/\/$/, "") || (CONSOLE_BASE || "/");
+    const root = CONSOLE_BASE || "/";
+    if (path === root || path === "/") await overview();
+    else if (path === cxPath("/phone-numbers")) await numbersPage();
+    else if (path === cxPath("/phone-numbers/search")) await buyPage();
+    else if (path === cxPath("/voice/calls")) await callsPage();
+    else if (path === cxPath("/develop/twiml-apps")) await appsPage();
+    else if (path === cxPath("/monitor/logs")) await logsPage();
+    else if (path === cxPath("/account/keys")) await keysPage();
+    else view.innerHTML = `${head("Telephony", "Not found", "")}<p class="cx-lede">That console page is not available. <a href="${cxPath()}" data-cx>Back to overview</a></p>`;
   } catch (error) {
     view.innerHTML = "";
     showError(error);

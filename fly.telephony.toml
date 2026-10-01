@@ -1,0 +1,37 @@
+# Dedicated demo Twilio / telephony console (separate hostname from Agents).
+app = "ai-voice-agent-telephony"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  PORT = "3000"
+  NODE_ENV = "production"
+  SERVICE = "telephony"
+  AGENTS_PUBLIC_URL = "https://ai-voice-agent-valmax.fly.dev"
+  # DATABASE_PATH defaults to /app/data/maison-sol.sqlite in the image.
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -1,6 +1,6 @@
 # Voice Desk
 
-Web control plane for a voice agent, demoed as **Maison Sol**, a fictional salon in Castellón de la Plana. The shell is a ValMax product: agents, call history, knowledge, analytics, and tools. Telephony is a separate console at `/console`, laid out like a carrier console (phone numbers, calls, TwiML apps, webhook logs, API keys).
+Web control plane for a voice agent, demoed as **Maison Sol**, a fictional salon in Castellón de la Plana. The shell is a ValMax product: agents, call history, knowledge, analytics, and tools. Telephony is a separate product: locally it lives at `/console`, and in production it deploys as its own Fly app (`SERVICE=telephony`) on a different hostname with the console at `/`. Agents (`SERVICE=agents`) 302-redirect `/console` to `TELEPHONY_PUBLIC_URL`.
 
 A **web test call** uses OpenAI Realtime. The default agent speaks first with the voice **marin**. Remote MCP tools connected on the Tools page are what that session can call, narrowed by each agent's allowlist. SQLite stores agents, knowledge, call records, and the MCP connection. Tokens are not sent back to the browser.
 
@@ -61,8 +61,9 @@ Set the key on Fly with `fly secrets set OPENAI_API_KEY=...`. Do not put it in `
 | `/knowledge` | Pasted notes. An optional URL is kept for a later crawl and is not fetched. |
 | `/analytics` | Call count, average duration, completion, and the last seven days. |
 | `/tools` and `/dashboard` | MCP URL, token, discover, enable, and disable. |
-| `/console` | Telephony console: numbers, calls, TwiML apps, logs, API keys. |
-| `/phone-numbers` | Redirects to `/console/phone-numbers`. |
+| `/console` | Agents app: 302 to the telephony host. Telephony app: redirects `/console/*` → `/*`. |
+| `/` on telephony | Demo Twilio console: numbers, calls, TwiML apps, logs, API keys. |
+| `/phone-numbers` | Agents: redirect to telephony. Telephony: active numbers page. |
 | `/settings` | Model, default voice, and database path. No secrets. |
 
 Agents, knowledge, and the speak-first web test call stay on the ValMax pages. The sidebar link **Telephony** opens the console full page. A switcher on the console links back to Agents.
@@ -206,3 +207,14 @@ Then add this to `fly.toml` and redeploy:
 ```
 
 Finished web test calls (transcript, duration, status, and a short extractive summary) are rows in that same file. Live security events are still in memory and reset when the process restarts. They are not the salon book.
+
+## Two Fly apps
+
+- Agents: `fly.toml` → `ai-voice-agent-valmax` (`SERVICE=agents`)
+- Telephony: `fly.telephony.toml` → `ai-voice-agent-telephony` (`SERVICE=telephony`)
+
+```bash
+fly apps create ai-voice-agent-telephony --org personal
+fly deploy -c fly.toml -a ai-voice-agent-valmax
+fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
+```

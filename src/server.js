@@ -37,6 +37,41 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
 const PORT = Number(process.env.PORT) || 3000;
 
+/** "agents" | "telephony" | "all" (default: both products on one host for local/tests). */
+const SERVICE = String(process.env.SERVICE || "all").trim().toLowerCase();
+const serveAgents = SERVICE === "all" || SERVICE === "agents";
+const serveTelephony = SERVICE === "all" || SERVICE === "telephony";
+const TELEPHONY_PUBLIC_URL = String(process.env.TELEPHONY_PUBLIC_URL || "").replace(/\/$/, "");
+const AGENTS_PUBLIC_URL = String(process.env.AGENTS_PUBLIC_URL || "").replace(/\/$/, "");
+
+function telephonyTarget(reqPath = "/") {
+  if (!TELEPHONY_PUBLIC_URL) return null;
+  const raw = String(reqPath || "/");
+  let suffix = raw;
+  if (suffix === "/console" || suffix === "/console/") suffix = "/";
+  else if (suffix.startsWith("/console/")) suffix = suffix.slice("/console".length) || "/";
+  else if (suffix === "/phone-numbers" || suffix.startsWith("/phone-numbers/")) {
+    // keep
+  } else if (!suffix.startsWith("/")) suffix = `/${suffix}`;
+  return `${TELEPHONY_PUBLIC_URL}${suffix === "/" ? "/" : suffix}`;
+}
+
+function agentsHomeUrl() {
+  return AGENTS_PUBLIC_URL ? `${AGENTS_PUBLIC_URL}/agents` : "/agents";
+}
+
+function sendConsolePage(req, res) {
+  const file = path.join(publicDir, "console.html");
+  let html = fs.readFileSync(file, "utf8");
+  if (SERVICE === "telephony") {
+    html = html.replace(/data-console-base="\/console"/, 'data-console-base=""');
+    html = html.replace(/href="\/console"/g, 'href="/"');
+    html = html.replace(/href="\/console\//g, 'href="/');
+    html = html.replace(/href="\/agents"/g, `href="${agentsHomeUrl()}"`);
+  }
+  res.type("html").send(html);
+}
+
 function loadEnv() {
   const envPath = path.join(__dirname, "..", ".env");
   if (!fs.existsSync(envPath)) return;
@@ -60,7 +95,13 @@ app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, service: "ai-voice-agent", status: "online", database: "sqlite" });
+  res.json({
+    ok: true,
+    service: SERVICE === "telephony" ? "telephony" : SERVICE === "agents" ? "agents" : "ai-voice-agent",
+    mode: SERVICE,
+    status: "online",
+    database: "sqlite",
+  });
 });
 
 app.get("/api/state", (req, res) => {
@@ -313,24 +354,61 @@ function sendPage(file) {
   return (req, res) => res.sendFile(path.join(publicDir, file));
 }
 
-app.get("/", sendPage("index.html"));
-app.get("/dashboard", sendPage("dashboard.html"));
-app.get("/tools", sendPage("dashboard.html"));
-app.get("/agents", sendPage("agents.html"));
-app.get("/agents/new", sendPage("agent.html"));
-app.get("/agents/:id/test", sendPage("test.html"));
-app.get("/agents/:id", sendPage("agent.html"));
-app.get("/history", sendPage("history.html"));
-app.get("/history/:id", sendPage("call.html"));
-app.get("/knowledge", sendPage("knowledge.html"));
-app.get("/analytics", sendPage("analytics.html"));
-app.get("/phone-numbers", (req, res) => res.redirect(302, "/console/phone-numbers"));
-app.get(/^\/console(?:\/.*)?$/, sendPage("console.html"));
-app.get("/settings", sendPage("settings.html"));
-app.get("/call", (req, res) => {
-  const agent = getDefaultAgent();
-  res.redirect(agent ? `/agents/${agent.id}/test` : "/agents");
-});
+function redirectToTelephony(req, res) {
+  const target = telephonyTarget(req.originalUrl.split("?")[0]);
+  if (!target) {
+    // Local / all-mode fallback when no separate telephony host is configured.
+    if (req.path === "/phone-numbers" || req.path.startsWith("/phone-numbers/")) {
+      return res.redirect(302, `/console${req.path === "/phone-numbers" ? "/phone-numbers" : req.path}`);
+    }
+    return sendConsolePage(req, res);
+  }
+  const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  return res.redirect(302, `${target}${qs}`);
+}
+
+if (serveTelephony && SERVICE === "telephony") {
+  // Demo Twilio console owns this hostname at /.
+  app.get("/", sendConsolePage);
+  app.get("/phone-numbers", sendConsolePage);
+  app.get("/phone-numbers/search", sendConsolePage);
+  app.get("/voice/calls", sendConsolePage);
+  app.get("/develop/twiml-apps", sendConsolePage);
+  app.get("/monitor/logs", sendConsolePage);
+  app.get("/account/keys", sendConsolePage);
+  app.get(/^\/console(?:\/.*)?$/, (req, res) => {
+    const target = telephonyTarget(req.path) || req.path.replace(/^\/console/, "") || "/";
+    const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    // Same host: strip /console prefix so the product lives at root.
+    if (String(target).startsWith("http")) return res.redirect(302, `${target}${qs}`);
+    return res.redirect(302, `${target}${qs}`);
+  });
+  app.get("/agents", (req, res) => res.redirect(302, agentsHomeUrl()));
+  app.get("/agents/*", (req, res) => res.redirect(302, agentsHomeUrl()));
+} else if (serveAgents) {
+  app.get("/", sendPage("index.html"));
+  app.get("/dashboard", sendPage("dashboard.html"));
+  app.get("/tools", sendPage("dashboard.html"));
+  app.get("/agents", sendPage("agents.html"));
+  app.get("/agents/new", sendPage("agent.html"));
+  app.get("/agents/:id/test", sendPage("test.html"));
+  app.get("/agents/:id", sendPage("agent.html"));
+  app.get("/history", sendPage("history.html"));
+  app.get("/history/:id", sendPage("call.html"));
+  app.get("/knowledge", sendPage("knowledge.html"));
+  app.get("/analytics", sendPage("analytics.html"));
+  app.get("/settings", sendPage("settings.html"));
+  app.get("/call", (req, res) => {
+    const agent = getDefaultAgent();
+    res.redirect(agent ? `/agents/${agent.id}/test` : "/agents");
+  });
+  app.get("/phone-numbers", redirectToTelephony);
+  app.get(/^\/console(?:\/.*)?$/, redirectToTelephony);
+  if (serveTelephony && SERVICE === "all") {
+    // Combined local host: keep nested /console for one-process demos and tests.
+    // redirectToTelephony falls back to sendConsolePage when TELEPHONY_PUBLIC_URL is unset.
+  }
+}
 
 app.use(express.static(publicDir));
 
@@ -386,8 +464,11 @@ if (isMain) {
     .catch((error) => console.error("Demo seed failed:", error))
     .finally(() => {
       app.listen(PORT, () => {
-        console.log(`Voice Desk on http://localhost:${PORT}`);
-        console.log(`Agents on http://localhost:${PORT}/agents`);
+        console.log(`Voice Desk (${SERVICE}) on http://localhost:${PORT}`);
+        if (serveAgents) console.log(`Agents on http://localhost:${PORT}/agents`);
+        if (SERVICE === "telephony") console.log(`Telephony console on http://localhost:${PORT}/`);
+        else if (serveTelephony) console.log(`Telephony console on http://localhost:${PORT}/console`);
+        if (TELEPHONY_PUBLIC_URL) console.log(`Telephony public URL ${TELEPHONY_PUBLIC_URL}`);
       });
     });
 }

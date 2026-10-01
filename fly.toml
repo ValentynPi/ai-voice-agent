@@ -7,6 +7,8 @@ primary_region = "cdg"
 [env]
   PORT = "3000"
   NODE_ENV = "production"
+  SERVICE = "agents"
+  TELEPHONY_PUBLIC_URL = "https://ai-voice-agent-telephony.fly.dev"
   OPENAI_MODEL = "gpt-5.1"
   OPENAI_REALTIME_MODEL = "gpt-realtime-2.1"
   OPENAI_VOICE = "marin"
