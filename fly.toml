@@ -13,9 +13,15 @@ primary_region = "cdg"
   OPENAI_MODEL = "gpt-5.1"
   OPENAI_REALTIME_MODEL = "gpt-realtime-2.1"
   OPENAI_VOICE = "marin"
-  # DATABASE_PATH defaults to /app/data/maison-sol.sqlite in the image.
-  # That disk is ephemeral. Attach a volume and set DATABASE_PATH=/data/maison-sol.sqlite
-  # before relying on it. See the README.
+  # Persist agents / knowledge / call history / MCP links on the Fly volume.
+  DATABASE_PATH = "/data/maison-sol.sqlite"
+
+# Durable SQLite for Agents app state across restarts and deploys.
+# Create once: fly volumes create agents_data --region cdg --size 1 -a ai-voice-agent-valmax
+# Use a single machine (SQLite is not multi-writer): fly scale count 1 -a ai-voice-agent-valmax
+[mounts]
+  source = "agents_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 3000

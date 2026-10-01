@@ -197,7 +197,7 @@ fly secrets set OPENAI_API_KEY=sk-...   # optional
 fly deploy
 ```
 
-`Dockerfile` runs `npm start` on port 3000 as the `node` user. The HTTP health check is `GET /api/health`. The Fly app is `ai-voice-agent-valmax` in region `cdg`. `fly.toml` sets `OPENAI_MODEL=gpt-5.1`, `OPENAI_REALTIME_MODEL=gpt-realtime-2.1`, and `OPENAI_VOICE=marin`. The image sets `DATABASE_PATH=/app/data/maison-sol.sqlite`.
+`Dockerfile` starts as root so `docker-entrypoint.sh` can chown a Fly volume at `/data`, then drops to `node` and runs `npm start` on port 3000. The HTTP health check is `GET /api/health`. The Fly app is `ai-voice-agent-valmax` in region `cdg`. `fly.toml` sets `OPENAI_MODEL=gpt-5.1`, `OPENAI_REALTIME_MODEL=gpt-realtime-2.1`, `OPENAI_VOICE=marin`, and `DATABASE_PATH=/data/maison-sol.sqlite` on the mounted volume (image default without a volume is `/app/data/maison-sol.sqlite`).
 
 ## Database
 
@@ -211,37 +211,24 @@ npm start
 DATABASE_PATH=/var/lib/maison-sol/salon.sqlite npm start
 ```
 
-Fly's root disk is ephemeral. `auto_stop_machines` can stop the machine, and the file under `/app/data` disappears with it. Purchased demo phone numbers, TwiML apps, credentials metadata, and agent-link settings live in that SQLite file — without a volume they vanish on every redeploy or machine stop.
+Fly's root disk is ephemeral. `auto_stop_machines` can stop the machine, and the file under `/app/data` disappears with it. Agents, knowledge notes, call history, MCP links, purchased demo phone numbers, TwiML apps, credentials metadata, and agent-link settings live in that SQLite file — without a volume they vanish on every redeploy or machine stop.
 
-**Telephony** (`ai-voice-agent-telephony`) ships with a Fly volume already wired in `fly.telephony.toml`:
+**Agents** (`ai-voice-agent-valmax`) and **Telephony** (`ai-voice-agent-telephony`) both ship with Fly volumes wired in their toml files:
 
 ```bash
-# once per app (already done for telephony if the volume exists)
+# once per app (skip if the volume already exists)
+fly volumes create agents_data --region cdg --size 1 -a ai-voice-agent-valmax
 fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
 # SQLite needs a single writer
+fly scale count 1 -a ai-voice-agent-valmax
 fly scale count 1 -a ai-voice-agent-telephony
+fly deploy -c fly.toml -a ai-voice-agent-valmax
 fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
 ```
 
-The volume mounts at `/data`; `DATABASE_PATH=/data/maison-sol.sqlite`. The image entrypoint chowns `/data` to the `node` user so SQLite can write. After a redeploy, open the telephony console — previously bought/configured numbers should still list.
+Each volume mounts at `/data`; `DATABASE_PATH=/data/maison-sol.sqlite`. The image entrypoint chowns `/data` to the `node` user so SQLite can write. After a redeploy, Agents keeps agents/knowledge/call history/MCP links, and the telephony console keeps previously bought/configured numbers.
 
-For the **Agents** app, attach a volume the same way if you need agents/knowledge/call history to survive (optional; not required for phone-number memory):
-
-```bash
-fly volumes create sol_data --region cdg --size 1 -a ai-voice-agent-valmax
-```
-
-```toml
-# fly.toml
-[mounts]
-  source = "sol_data"
-  destination = "/data"
-
-[env]
-  DATABASE_PATH = "/data/maison-sol.sqlite"
-```
-
-Finished web test calls (transcript, duration, status, and a short extractive summary) are rows in that same file. Live security events are still in memory and reset when the process restarts. They are not the salon book.
+Finished web test calls (transcript, duration, status, and a short extractive summary) are rows in that same Agents file. Live security events are still in memory and reset when the process restarts. They are not the salon book.
 
 ## Agents ↔ telephony number sync
 
@@ -253,12 +240,14 @@ Phone numbers are owned by the telephony SQLite (Fly volume on `ai-voice-agent-t
 
 ## Two Fly apps
 
-- Agents: `fly.toml` → `ai-voice-agent-valmax` (`SERVICE=agents`)
+- Agents: `fly.toml` → `ai-voice-agent-valmax` (`SERVICE=agents`), with volume `agents_data` → `/data` and `DATABASE_PATH=/data/maison-sol.sqlite` so agents/knowledge/call history/MCP links persist across restarts/deploys
 - Telephony: `fly.telephony.toml` → `ai-voice-agent-telephony` (`SERVICE=telephony`), with volume `telephony_data` → `/data` and `DATABASE_PATH=/data/maison-sol.sqlite` so demo numbers persist across restarts/deploys
 
 ```bash
 fly apps create ai-voice-agent-telephony --org personal
+fly volumes create agents_data --region cdg --size 1 -a ai-voice-agent-valmax
 fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
+fly scale count 1 -a ai-voice-agent-valmax
 fly scale count 1 -a ai-voice-agent-telephony
 fly deploy -c fly.toml -a ai-voice-agent-valmax
 fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
