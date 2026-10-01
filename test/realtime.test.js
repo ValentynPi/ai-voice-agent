@@ -220,3 +220,10 @@ test("realtime injection is refused before a tool can run", async () => {
     assert.equal(state.toolCalls.some((event) => event.ok && event.name === "get_weather"), false);
   });
 });
+
+test("telephony realtime session uses g711 pcmu for Media Streams", () => {
+  const session = buildRealtimeSession("gpt-realtime-2.1", "en", null, { telephony: true });
+  assert.equal(session.audio.input.format.type, "audio/pcmu");
+  assert.equal(session.audio.output.format.type, "audio/pcmu");
+  assert.equal(session.audio.output.voice, "marin");
+});

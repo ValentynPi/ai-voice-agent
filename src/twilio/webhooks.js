@@ -1,7 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { getAgent, getDefaultAgent } from "../desk.js";
 import { credentialEnvironment } from "./live.js";
 import { publicBase } from "./http.js";
 import { isSid, randomSid } from "./ids.js";
+import { httpToWs, resolvePublicUrl } from "./public-url.js";
 import { defaultVoiceTarget } from "./service.js";
 import { demoAccountSid, getStoredCall, readAccount, recordEvent, upsertCall } from "./store.js";
 import { voiceTwiml } from "./twiml.js";
@@ -60,8 +62,8 @@ function rememberCall(params, { status, endTime }) {
     duration: Number.isFinite(duration) ? duration : null,
     recordingUrl: params.RecordingUrl || null,
     recordingSid: isSid(params.RecordingSid, "RE") ? params.RecordingSid : null,
-    media: "twiml",
-    annotation: "Captured from the voice webhook on this app.",
+    media: "twilio-media",
+    annotation: "Captured from the Agents voice webhook (Media Streams).",
     demo: true,
   });
   return sid;
@@ -82,18 +84,50 @@ function logDelivery(req, { callSid, status, body, message, level, signature }) 
   });
 }
 
+function resolveAgentId(req, params) {
+  const fromQuery = String(req.query?.agentId || req.query?.agent || "").trim();
+  if (fromQuery && getAgent(fromQuery)) return fromQuery;
+  const fromBody = String(params.AgentId || params.agentId || "").trim();
+  if (fromBody && getAgent(fromBody)) return fromBody;
+  const def = getDefaultAgent();
+  return def?.id || "";
+}
+
+function mediaStreamUrl(req, { agentId, callSid }) {
+  const service = String(process.env.SERVICE || "all").trim().toLowerCase();
+  let base = resolvePublicUrl(req);
+  // Telephony host is the console frontend; Media Streams must land on Agents.
+  if (service === "telephony") {
+    const agents = String(process.env.AGENTS_PUBLIC_URL || "").replace(/\/$/, "");
+    if (agents) base = agents;
+  }
+  if (!base) return "";
+  const wsBase = httpToWs(base);
+  const url = new URL(`${wsBase}/twilio/media`);
+  if (agentId) url.searchParams.set("agentId", agentId);
+  if (callSid) url.searchParams.set("callSid", callSid);
+  return url.toString();
+}
+
 export function voiceWebhook(req, res) {
-  const params = publicParams(req.body);
-  const signature = signatureState(req, params);
+  const params = { ...publicParams(req.query), ...publicParams(req.body) };
+  const signature = signatureState(req, publicParams(req.body));
   const callSid = rememberCall(params, { status: params.CallStatus || "ringing" });
-  const xml = voiceTwiml();
+  const agentId = resolveAgentId(req, params);
+  const streamUrl = mediaStreamUrl(req, { agentId, callSid });
+  const xml = voiceTwiml({ streamUrl, agentId, callSid });
   const invalid = signature === "invalid";
+  const hasStream = Boolean(streamUrl);
   logDelivery(req, {
     callSid,
     status: 200,
     body: xml,
     level: invalid ? "warning" : "info",
-    message: invalid ? "Voice webhook answered with TwiML. Signature did not match." : "Voice webhook answered with TwiML",
+    message: invalid
+      ? "Voice webhook answered with Media Stream TwiML. Signature did not match."
+      : hasStream
+        ? "Voice webhook answered with Media Stream TwiML"
+        : "Voice webhook answered without a stream URL (PUBLIC_URL missing)",
     signature,
   });
   res.status(200).type("text/xml").send(xml);

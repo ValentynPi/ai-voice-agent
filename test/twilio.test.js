@@ -168,8 +168,9 @@ test("demo console account, numbers, calls, and webhooks share one shape", async
     assert.match(voice.headers.get("content-type"), /xml/);
     const xml = await voice.text();
     assert.match(xml, /<Response>/);
-    assert.match(xml, /<Say/);
-    assert.match(xml, /Media Streams/);
+    assert.match(xml, /<Connect>/);
+    assert.match(xml, /<Stream/);
+    assert.match(xml, /\/twilio\/media/);
 
     const status = await fetch(`${base}/twilio/status`, {
       method: "POST",
@@ -362,4 +363,65 @@ test("connected mode lists Twilio resources and refuses an unconfirmed purchase"
   } finally {
     global.fetch = previousFetch;
   }
+});
+
+test("voice webhook returns Connect/Stream and telephony points webhooks at Agents", async () => {
+  const previous = {
+    AGENTS_PUBLIC_URL: process.env.AGENTS_PUBLIC_URL,
+    PUBLIC_URL: process.env.PUBLIC_URL,
+    SERVICE: process.env.SERVICE,
+  };
+  process.env.AGENTS_PUBLIC_URL = "https://agents.example";
+  process.env.PUBLIC_URL = "https://agents.example";
+  try {
+    await withServer(async (base) => {
+      const account = await fetch(`${base}/api/twilio/v1/account`).then((r) => r.json());
+      assert.equal(account.agents_public_url, "https://agents.example");
+      assert.equal(account.voice_webhook_url, "https://agents.example/twilio/voice");
+      assert.equal(account.status_callback_url, "https://agents.example/twilio/status");
+
+      const brain = await fetch(`${base}/api/twilio/v1/brain?agentId=missing`).then((r) => r.json());
+      assert.match(brain.voice_webhook_url, /\/twilio\/voice/);
+
+      const voice = await fetch(`${base}/twilio/voice?agentId=`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          CallSid: sid("CA", "aa"),
+          From: "+34600111222",
+          To: "+34964000214",
+          CallStatus: "ringing",
+          Direction: "inbound",
+        }),
+      });
+      const xml = await voice.text();
+      assert.equal(voice.status, 200);
+      assert.match(xml, /<Connect>/);
+      assert.match(xml, /wss:\/\/agents\.example\/twilio\/media/);
+      assert.doesNotMatch(xml, /<Say/);
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("demo call reaches Agents Media Stream TwiML without Twilio credentials", async () => {
+  await withServer(async (base) => {
+    process.env.PUBLIC_URL = base;
+    process.env.AGENTS_PUBLIC_URL = base;
+    const result = await fetch(`${base}/api/twilio/v1/demo-call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents_base_url: base }),
+    }).then((r) => r.json());
+    assert.equal(result.ok, true);
+    assert.equal(result.uses_stream, true);
+    assert.equal(result.uses_say_stub, false);
+    assert.match(result.stream_url || "", /\/twilio\/media/);
+    // Without OPENAI_API_KEY the bridge closes; stream connect may or may not get audio.
+    assert.equal(result.media.attempted, true);
+  });
 });

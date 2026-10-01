@@ -142,8 +142,30 @@ function caps(value) {
 
 function absoluteUrl(value) {
   if (!value) return "";
-  if (String(value).startsWith("/")) return `${location.origin}${value}`;
-  return String(value);
+  const raw = String(value);
+  if (raw.startsWith("/")) {
+    const brain = String(account?.agents_public_url || "").replace(/\/$/, "");
+    if (brain && (raw.startsWith("/twilio/voice") || raw.startsWith("/twilio/status"))) {
+      return `${brain}${raw}`;
+    }
+    return `${location.origin}${raw}`;
+  }
+  return raw;
+}
+
+function brainVoiceUrl(agentId = "") {
+  let root = String(account?.voice_webhook_url || "").trim();
+  const brain = String(account?.agents_public_url || "").replace(/\/$/, "");
+  if (!root && brain) root = `${brain}/twilio/voice`;
+  if (!root) root = "/twilio/voice";
+  if (!agentId) return root.startsWith("/") ? absoluteUrl(root) : root;
+  try {
+    const url = new URL(root.startsWith("/") ? absoluteUrl(root) : root);
+    url.searchParams.set("agentId", agentId);
+    return url.toString();
+  } catch {
+    return `${root}${root.includes("?") ? "&" : "?"}agentId=${encodeURIComponent(agentId)}`;
+  }
 }
 
 function head(kicker, title, lede, actions = "") {
@@ -208,6 +230,8 @@ async function overview() {
     api(resourcePath("/Monitor/Events")),
   ]);
   const recent = (calls.calls || []).slice(0, 5);
+  const savedBrain = localStorage.getItem("cx-agents-url") || account.agents_public_url || "";
+  const savedAgent = localStorage.getItem("cx-agent-id") || "";
   view.innerHTML = `
     ${head("Telephony", "Overview", "Phone numbers, voice calls, webhooks, and API keys. The agent builder stays on Agents.")}
     <section class="cx-stats">
@@ -215,20 +239,125 @@ async function overview() {
       <article class="cx-stat"><span>Calls</span><strong>${calls.calls.length}</strong></article>
       <article class="cx-stat"><span>Webhook logs</span><strong>${events.events.length}</strong></article>
     </section>
+    <section class="cx-card" id="brainCard">
+      <h2>Connect to Agents</h2>
+      <p>Twilio (demo or live) is the frontend. Paste the Agents brain URL so Voice URL / Status callback hit OpenAI Realtime via Media Streams — not this telephony host.</p>
+      <form class="cx-form" id="brainForm">
+        <label>Agents brain URL<input name="agents_url" value="${esc(savedBrain)}" placeholder="https://ai-voice-agent-valmax.fly.dev" spellcheck="false"></label>
+        <label>Agent<select name="agent_id" id="agentPick"><option value="">Default agent</option></select></label>
+        <div class="cx-actions">
+          <button class="cx-btn primary" type="submit">Save connection</button>
+          <button class="cx-btn ghost" type="button" id="loadAgents">Load agents</button>
+          <button class="cx-btn ghost" type="button" id="demoCall">Demo call to Agents</button>
+        </div>
+      </form>
+      <p id="brainNote" class="cx-lede" style="margin-top:12px"></p>
+      <div class="cx-url-row" style="margin-top:12px"><span>Voice URL</span><code id="brainVoiceUrl">${esc(brainVoiceUrl(savedAgent))}</code><button class="cx-btn ghost" type="button" data-copy="${esc(brainVoiceUrl(savedAgent))}">Copy</button></div>
+      <div class="cx-url-row"><span>Status callback</span><code>${esc(account.status_callback_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.status_callback_url)}">Copy</button></div>
+    </section>
     <section class="cx-card">
-      <h2>Voice webhooks for this app</h2>
-      <p>Paste these into a TwiML App or a phone number. Method is HTTP POST. The voice URL returns TwiML.</p>
+      <h2>Voice webhooks (Agents brain)</h2>
+      <p>Default Voice URL / Status callback for bought numbers and TwiML Apps. Method is HTTP POST. The voice URL returns <span class="mono">&lt;Connect&gt;&lt;Stream&gt;</span> into the Agents Realtime session.</p>
       <div class="cx-url-row"><span>Voice URL</span><code>${esc(account.voice_webhook_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.voice_webhook_url)}">Copy</button></div>
       <div class="cx-url-row"><span>Status callback</span><code>${esc(account.status_callback_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.status_callback_url)}">Copy</button></div>
     </section>
     <section class="cx-card">
       <h2>Recent calls</h2>
-      <p>Browser test calls show up here as <span class="mono">client:browser</span>. PSTN audio still needs Media Streams.</p>
+      <p>Browser test calls show up here as <span class="mono">client:browser</span>. Demo calls from this console exercise Media Streams into Agents.</p>
     </section>
-    ${callsTable(recent, "No calls yet. A web test call from Agents will land here.")}
+    ${callsTable(recent, "No calls yet. Run a demo call or a web test call from Agents.")}
   `;
   bindCopies(view);
   bindCallRows(view);
+  bindBrainCard(view, savedAgent);
+}
+
+async function fetchAgentsList(brainBase) {
+  const base = String(brainBase || "").replace(/\/$/, "");
+  if (!base) return [];
+  const response = await fetch(`${base}/api/agents`, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`Could not load agents from ${base} (${response.status})`);
+  const body = await response.json();
+  return Array.isArray(body.agents) ? body.agents : [];
+}
+
+function refreshBrainVoiceDisplay(root, agentId) {
+  const url = brainVoiceUrl(agentId);
+  const code = root.querySelector("#brainVoiceUrl");
+  if (code) code.textContent = url;
+  const copy = root.querySelector('#brainCard [data-copy]');
+  // Update the first copy button in the brain card voice row
+  const voiceRow = root.querySelector("#brainVoiceUrl")?.parentElement?.querySelector("[data-copy]");
+  if (voiceRow) voiceRow.dataset.copy = url;
+}
+
+function bindBrainCard(root, initialAgentId) {
+  const form = root.querySelector("#brainForm");
+  const note = root.querySelector("#brainNote");
+  const pick = root.querySelector("#agentPick");
+  const fillAgents = async () => {
+    const brain = form.agents_url.value.trim() || account.agents_public_url || "";
+    note.textContent = "Loading agents…";
+    try {
+      const agents = await fetchAgentsList(brain);
+      const current = pick.value || initialAgentId || localStorage.getItem("cx-agent-id") || "";
+      pick.innerHTML = `<option value="">Default agent</option>` + agents.map((agent) =>
+        `<option value="${esc(agent.id)}" ${agent.id === current ? "selected" : ""}>${esc(agent.name || agent.id)}</option>`
+      ).join("");
+      note.textContent = agents.length ? `Loaded ${agents.length} agent${agents.length === 1 ? "" : "s"} from ${brain}.` : `No agents at ${brain}.`;
+      refreshBrainVoiceDisplay(root, pick.value);
+    } catch (error) {
+      note.textContent = error.message || "Could not load agents. Paste an agent id manually in the Voice URL.";
+    }
+  };
+  root.querySelector("#loadAgents")?.addEventListener("click", () => fillAgents());
+  pick?.addEventListener("change", () => {
+    localStorage.setItem("cx-agent-id", pick.value || "");
+    refreshBrainVoiceDisplay(root, pick.value);
+    bindCopies(root);
+  });
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const brain = form.agents_url.value.trim().replace(/\/$/, "");
+    localStorage.setItem("cx-agents-url", brain);
+    localStorage.setItem("cx-agent-id", pick.value || "");
+    if (brain) account.agents_public_url = brain;
+    refreshBrainVoiceDisplay(root, pick.value);
+    bindCopies(root);
+    note.textContent = "Saved in this browser. Use the Voice URL below on numbers and TwiML Apps.";
+  });
+  root.querySelector("#demoCall")?.addEventListener("click", async () => {
+    clearError();
+    note.textContent = "Running demo call to Agents…";
+    const brain = form.agents_url.value.trim().replace(/\/$/, "") || account.agents_public_url || "";
+    try {
+      const result = await api("/api/twilio/v1/demo-call", {
+        method: "POST",
+        body: JSON.stringify({
+          agents_base_url: brain || undefined,
+          agent_id: pick.value || undefined,
+        }),
+      });
+      const bits = [];
+      if (result.uses_stream) bits.push("Media Stream TwiML");
+      if (result.uses_say_stub) bits.push("Say stub (unexpected)");
+      if (result.media?.audioFrames) bits.push(`${result.media.audioFrames} audio frame(s) from Realtime`);
+      else if (result.media?.connected) bits.push("stream connected, no audio yet");
+      if (result.media?.error) bits.push(result.media.error);
+      note.textContent = `Demo call ${result.call_sid}: ${bits.join(" · ") || "done"}.`;
+      if (!result.ok) showError(new Error(result.media?.error || "Agents did not return Media Stream TwiML"));
+    } catch (error) {
+      note.textContent = "";
+      showError(error);
+    }
+  });
+  if (initialAgentId || savedBrainHasAgents(form)) {
+    fillAgents().catch(() => {});
+  }
+}
+
+function savedBrainHasAgents(form) {
+  return Boolean(form?.agents_url?.value?.trim() || account?.agents_public_url);
 }
 
 function callsTable(calls, empty) {
@@ -474,7 +603,7 @@ async function appsPage() {
     ${head("Develop", "TwiML Apps", "Point voice and status callbacks at this app. Saving a demo app updates SQLite. A connected account updates Twilio.", `<button class="cx-btn primary" type="button" id="newApp">Create TwiML App</button>`)}
     <section class="cx-card">
       <h2>Endpoints to paste into Twilio</h2>
-      <p>Use POST. The voice webhook responds with a Say verb until Media Streams is connected.</p>
+      <p>Use POST. The voice webhook on Agents returns Connect/Stream into OpenAI Realtime.</p>
       <div class="cx-url-row"><span>Voice URL</span><code>${esc(account.voice_webhook_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.voice_webhook_url)}">Copy</button></div>
       <div class="cx-url-row"><span>Status callback</span><code>${esc(account.status_callback_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.status_callback_url)}">Copy</button></div>
     </section>

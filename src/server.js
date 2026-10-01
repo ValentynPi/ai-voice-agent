@@ -29,6 +29,7 @@ import { endCall, getCall, listActivePublicCalls, onCallEnded, startCall, sweepC
 import { initDatabase } from "./db.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
 import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
+import { attachMediaBridge } from "./twilio/media-bridge.js";
 import { mountTwilio } from "./twilio/routes.js";
 
 onCallEnded(saveCallRecord);
@@ -91,6 +92,21 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   next();
 });
+
+app.use((req, res, next) => {
+  // Allow the telephony console (other origin) to read agent lists and health.
+  if (req.path === "/api/agents" || req.path.startsWith("/api/agents/") || req.path === "/api/health") {
+    const origin = req.get("origin");
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Vary", "Origin");
+    }
+    if (req.method === "OPTIONS") return res.status(204).end();
+  }
+  next();
+});
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
@@ -101,6 +117,9 @@ app.get("/api/health", (req, res) => {
     mode: SERVICE,
     status: "online",
     database: "sqlite",
+    agents_public_url: AGENTS_PUBLIC_URL || null,
+    telephony_public_url: TELEPHONY_PUBLIC_URL || null,
+    public_url: String(process.env.PUBLIC_URL || "").replace(/\/$/, "") || null,
   });
 });
 
@@ -453,6 +472,14 @@ async function seedDemo() {
   }
 }
 
+
+const _listen = app.listen.bind(app);
+app.listen = (...args) => {
+  const server = _listen(...args);
+  if (serveAgents) attachMediaBridge(server);
+  return server;
+};
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
@@ -469,6 +496,8 @@ if (isMain) {
         if (SERVICE === "telephony") console.log(`Telephony console on http://localhost:${PORT}/`);
         else if (serveTelephony) console.log(`Telephony console on http://localhost:${PORT}/console`);
         if (TELEPHONY_PUBLIC_URL) console.log(`Telephony public URL ${TELEPHONY_PUBLIC_URL}`);
+        if (AGENTS_PUBLIC_URL) console.log(`Agents public URL ${AGENTS_PUBLIC_URL}`);
+        if (process.env.PUBLIC_URL) console.log(`Public URL ${String(process.env.PUBLIC_URL).replace(/\/$/, "")}`);
       });
     });
 }

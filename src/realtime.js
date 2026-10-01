@@ -105,7 +105,8 @@ function sessionVoice(agent) {
   return String(agent?.voice || "").trim() || voiceName();
 }
 
-export function buildRealtimeSession(model, lang, agent) {
+export function buildRealtimeSession(model, lang, agent, { telephony = false } = {}) {
+  const pcmu = telephony ? { type: "audio/pcmu" } : null;
   return {
     type: "realtime",
     model,
@@ -113,6 +114,7 @@ export function buildRealtimeSession(model, lang, agent) {
     instructions: receptionistInstructions(lang, agent),
     audio: {
       input: {
+        ...(pcmu ? { format: pcmu } : {}),
         transcription: { model: "gpt-4o-mini-transcribe" },
         turn_detection: {
           type: "semantic_vad",
@@ -120,7 +122,10 @@ export function buildRealtimeSession(model, lang, agent) {
           interrupt_response: true,
         },
       },
-      output: { voice: sessionVoice(agent) },
+      output: {
+        ...(pcmu ? { format: pcmu } : {}),
+        voice: sessionVoice(agent),
+      },
     },
     tools: selectSessionTools(realtimeToolSpecs(), agent),
     tool_choice: "auto",

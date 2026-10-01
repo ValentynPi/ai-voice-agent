@@ -1,5 +1,6 @@
 import { listActivePublicCalls } from "../store.js";
 import { httpError, page, publicBase } from "./http.js";
+import { resolveAgentsPublicUrl } from "./public-url.js";
 import { isSid } from "./ids.js";
 import {
   createApplication,
@@ -55,7 +56,10 @@ export function accountView(req) {
   const live = env.live;
   const apiKey = envApiKey();
   const base = req ? publicBase(req) : "";
+  const agentsBase = resolveAgentsPublicUrl(req) || base;
   const accountSid = live?.accountSid || stored.account_sid;
+  const voicePath = "/twilio/voice";
+  const statusPath = "/twilio/status";
   return {
     mode: live ? "connected" : "demo",
     demo: !live,
@@ -69,14 +73,31 @@ export function accountView(req) {
     api_key_sid: (live && apiKey.sid) || stored.api_key_sid || null,
     api_key_secret_set: Boolean((live && apiKey.secretSet) || stored.api_key_secret),
     environment_warning: env.warning,
-    voice_webhook_url: base ? `${base}/twilio/voice` : "/twilio/voice",
-    status_callback_url: base ? `${base}/twilio/status` : "/twilio/status",
+    // Point Twilio Voice / Status at the Agents brain, not the telephony host.
+    agents_public_url: agentsBase || "",
+    voice_webhook_url: agentsBase ? `${agentsBase}${voicePath}` : voicePath,
+    status_callback_url: agentsBase ? `${agentsBase}${statusPath}` : statusPath,
     voice_method: "POST",
     status_callback_method: "POST",
     date_created: stored.date_created,
     date_updated: stored.updated_at,
     uri: `/api/twilio/v1/Accounts/${accountSid}`,
   };
+}
+
+/** Build the exact Voice URL a number/app should use for a given agent. */
+export function agentsVoiceUrl(req, agentId = "") {
+  const agentsBase = resolveAgentsPublicUrl(req) || (req ? publicBase(req) : "");
+  if (!agentsBase) return agentId ? `/twilio/voice?agentId=${encodeURIComponent(agentId)}` : "/twilio/voice";
+  const url = new URL(`${agentsBase}/twilio/voice`);
+  if (agentId) url.searchParams.set("agentId", agentId);
+  return url.toString();
+}
+
+export function agentsStatusUrl(req) {
+  const agentsBase = resolveAgentsPublicUrl(req) || (req ? publicBase(req) : "");
+  if (!agentsBase) return "/twilio/status";
+  return `${agentsBase}/twilio/status`;
 }
 
 export function updateCredentials(input) {

@@ -102,16 +102,24 @@ Replace the host with the deployed app (`https://ai-voice-agent-valmax.fly.dev` 
 
 The seeded TwiML App "Maison Sol Voice" points at the same paths. The console shows the absolute URLs for the host you are browsing.
 
-`POST /twilio/voice` accepts the usual form body (`CallSid`, `From`, `To`, `CallStatus`, `Direction`, `AccountSid`, and the rest). It answers:
+`POST /twilio/voice` accepts the usual form body (`CallSid`, `From`, `To`, `CallStatus`, `Direction`, `AccountSid`, and the rest). Optional query `agentId` selects which Agents desk agent owns the call (otherwise the default agent). It answers with Media Streams TwiML:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="en-US">Thank you for calling Maison Sol. This webhook answers with TwiML. Browser test calls use OpenAI Realtime until a Media Streams connection is added.</Say>
+  <Connect>
+    <Stream url="wss://ai-voice-agent-valmax.fly.dev/twilio/media?agentId=…">
+      <Parameter name="agentId" value="…" />
+    </Stream>
+  </Connect>
 </Response>
 ```
 
+`wss://…/twilio/media` is the Agents brain bridge: Twilio μ-law audio is piped into the same OpenAI Realtime session shape used by the web test call (prompt, voice marin, tools, speak-first greeting). Set `PUBLIC_URL` (or rely on `FLY_APP_NAME`) on the Agents host so Stream URLs are absolute.
+
 `POST /twilio/status` stores the status callback and returns 204. Both deliveries show under Monitor → Logs. If `X-Twilio-Signature` is present and a token is configured, the log records whether it matched. Unsigned requests still get a response so local curls and Demo keep working.
+
+On the telephony console, **Connect to Agents** shows the exact Voice URL (pointing at `AGENTS_PUBLIC_URL`) and a **Demo call to Agents** button that POSTs a fake inbound webhook and briefly opens the Media Stream WebSocket — no `TWILIO_ACCOUNT_SID` required.
 
 ### REST shapes
 
@@ -132,11 +140,12 @@ Call status values stored locally: `queued`, `ringing`, `in-progress`, `complete
 
 A finished web test call is also written as a call resource: `from` is `client:browser`, direction is `inbound`, and the status is `in-progress`, `completed`, or `failed`. The Call SID is stable for that browser call. Open the row to jump back to the agent transcript. In-progress browser calls appear in the log before hangup.
 
-### Still required for real PSTN audio
+### PSTN audio path
 
-- `<Say>` is Twilio's voice, not marin. Hearing the Realtime agent on a phone needs Twilio Media Streams (`<Connect><Stream>`) or a SIP media bridge into the Realtime session. That websocket is not implemented.
+- Voice URL / Status callback on numbers and TwiML Apps should point at the **Agents** host (`AGENTS_PUBLIC_URL`), not the telephony console host. The telephony UI defaults and copy buttons already do this when `AGENTS_PUBLIC_URL` is set.
+- Inbound calls get `<Connect><Stream>` into `wss://…/twilio/media`, which bridges Twilio Media Streams to OpenAI Realtime (`audio/pcmu`). Realtime still needs `OPENAI_API_KEY` on Agents.
 - The recording URL on the seeded demo call is a stub. `GET …/Recordings` returns no audio file.
-- There is no "place a PSTN call" button. Outbound dialing through the Calls API is not wired.
+- Outbound dialing through the Calls API is not wired. Use **Demo call to Agents** on the telephony overview to exercise the inbound path without carrier credentials.
 - Messaging is omitted.
 - Demo numbers are not on a carrier. Connected numbers are whatever the Twilio account already owns, plus any purchase you explicitly confirm.
 

@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { httpError, stripSecrets } from "./http.js";
+import { runDemoCall } from "./demo-call.js";
 import {
   accountView,
+  agentsStatusUrl,
+  agentsVoiceUrl,
   buyPhoneNumber,
   changeAppResource,
   changePhoneNumber,
@@ -117,6 +120,33 @@ export function mountTwilio(app) {
   router.delete("/account/credentials", (req, res) => {
     removeCredentials();
     res.json(accountView(req));
+  });
+
+  router.get("/brain", (req, res) => {
+    const agentId = queryValue(req, "agentId", "agent");
+    res.json({
+      agents_public_url: accountView(req).agents_public_url || "",
+      voice_webhook_url: agentsVoiceUrl(req, agentId),
+      status_callback_url: agentsStatusUrl(req),
+      voice_method: "POST",
+      status_callback_method: "POST",
+      agent_id: agentId || null,
+    });
+  });
+
+  router.post("/demo-call", async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const result = await runDemoCall(req, {
+        agentsBaseUrl: body.agents_base_url || body.agentsBaseUrl || body.agents_public_url,
+        agentId: body.agent_id || body.agentId || "",
+        from: body.from || body.From,
+        to: body.to || body.To,
+      });
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.get("/Accounts/:sid/IncomingPhoneNumbers", async (req, res, next) => {
