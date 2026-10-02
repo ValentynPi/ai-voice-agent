@@ -5,12 +5,26 @@ import { realtimeCandidates, noteRealtimeModel, voiceName } from "./models.js";
 import { screenInput, sanitizeText } from "./security.js";
 import { appendMessage, getCall, recordSecurity, recordToolCall, touchCall } from "./store.js";
 
-function languageLine(lang) {
-  return lang === "es"
-    ? "Reply in Spanish."
-    : lang === "en"
-      ? "Reply in English."
-      : "Reply in the caller's language. Prefer the language of the greeting and the latest caller turn.";
+/** Soft UI/agent preference only — caller language always wins after they speak. */
+export function languageLine(lang, agent) {
+  const raw = String(lang || "").trim().toLowerCase();
+  const agentPref = String(agent?.language || "").trim().toLowerCase();
+  const pref = raw === "es" || raw === "en" ? raw
+    : agentPref === "es" || agentPref === "en" ? agentPref
+      : "multi";
+  const follow = [
+    "Language rule (mandatory): Always reply in the language of the caller's most recent spoken turn.",
+    "If the caller switches language mid-call (Hebrew, Spanish, English, Arabic, Russian, French, or any other), switch immediately and continue in that language until they switch again.",
+    "Never keep replying in English (or the greeting language) after the caller has spoken a different language.",
+    "The greeting language applies only to the opening line; after the caller speaks, their latest language wins every turn.",
+  ].join(" ");
+  if (pref === "es") {
+    return `${follow} Soft preference only before the caller speaks: Spanish.`;
+  }
+  if (pref === "en") {
+    return `${follow} Soft preference only before the caller speaks: English.`;
+  }
+  return `${follow} Soft preference only before the caller speaks: match the greeting, then follow the caller.`;
 }
 
 function todayLine() {
@@ -53,6 +67,7 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
     "Use only the tools provided in this session. Never invent tool results, records, or capabilities the tools do not provide.",
     "If the caller asks for something no provided tool can do, say you cannot do that on this call. Do not pretend a tool ran.",
     // Speech style — short, clear, quiet when waiting
+    "Language: match the caller's latest spoken language every turn; switch when they switch. Do not stick to English if they speak another language.",
     "Speak simply and clearly in plain educated language. Prefer 1–2 short sentences unless the caller asks for more detail. Never ramble or monologue.",
     "After the greeting, stop and wait for the caller. Do not fill silence with chatter, tips, or capability lists.",
     "Ask at most one question at a time. Do not stack questions.",
@@ -80,7 +95,7 @@ export function receptionistInstructions(lang, agent, { toolCount } = {}) {
     return [
       guard,
       "Fallback demo persona: Sol at Maison Sol in Castellón de la Plana when no agent is selected.",
-      languageLine(lang),
+      languageLine(lang, agent),
       todayLine(),
     ].join("\n\n");
   }
@@ -89,7 +104,7 @@ export function receptionistInstructions(lang, agent, { toolCount } = {}) {
   const parts = [
     guard,
     `Bot task:\n${prompt}`,
-    languageLine(lang),
+    languageLine(lang, agent),
     todayLine(),
   ];
   const knowledge = formatKnowledge(agent.knowledge);
@@ -127,6 +142,7 @@ export function greetingEvent(_lang, agent) {
         "Detect which language the following greeting is written in and speak only in that language.",
         "Say exactly the following greeting, then stop and wait for the caller.",
         "Do not continue speaking, do not monologue, and do not fill silence.",
+        "After the caller speaks, reply in whatever language they used (even if different from this greeting).",
         "Do not add offers, capability lists, or ChatGPT-style pitches (no writing, images, brainstorming, coding, or general assistant features).",
         "Do not call tools.",
         "",

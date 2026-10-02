@@ -180,14 +180,26 @@ function sendEvent(event) {
 }
 
 function instructionsForLang(instructions) {
-  const english = "Reply in English.";
-  const spanish = "Reply in Spanish.";
-  const next = langSelect.value === "es" ? spanish : english;
-  if (!instructions) return next;
-  if (instructions.includes(english) || instructions.includes(spanish)) {
-    return instructions.replaceAll(english, next).replaceAll(spanish, next);
+  // Never hard-lock the model to English/Spanish from the UI dropdown.
+  // Prefer following the caller's latest spoken language every turn.
+  const follow = [
+    "Language rule (mandatory): Always reply in the language of the caller's most recent spoken turn.",
+    "If the caller switches language mid-call, switch immediately. Do not stay in English after they speak another language.",
+  ].join(" ");
+  let next = String(instructions || "")
+    .replaceAll("Reply in English.", " ")
+    .replaceAll("Reply in Spanish.", " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!next.includes("Language rule (mandatory)")) {
+    next = next ? `${next}\n\n${follow}` : follow;
   }
-  return `${instructions} ${next}`;
+  if (langSelect.value === "es") {
+    next = `${next} Soft UI preference only before the caller speaks: Spanish.`;
+  } else if (langSelect.value === "en") {
+    next = `${next} Soft UI preference only before the caller speaks: English.`;
+  }
+  return next;
 }
 
 function sessionAudio() {

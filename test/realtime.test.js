@@ -39,6 +39,25 @@ test("realtime session asks for marin, tools, and a speech model", () => {
 });
 
 
+
+test("session instructions follow caller language switches", () => {
+  const enPref = buildRealtimeSession("gpt-realtime-2.1", "en", {
+    systemPrompt: "You are Weather.",
+    language: "en",
+  });
+  assert.match(enPref.instructions, /Language rule \(mandatory\)/);
+  assert.match(enPref.instructions, /Never keep replying in English/i);
+  assert.match(enPref.instructions, /Hebrew/);
+  assert.match(enPref.instructions, /Soft preference only before the caller speaks: English/);
+  assert.doesNotMatch(enPref.instructions, /(?<!Soft preference only before the caller speaks: )Reply in English\./);
+
+  const multi = buildRealtimeSession("gpt-realtime-2.1", "multi", {
+    systemPrompt: "You are Weather.",
+    language: "multi",
+  });
+  assert.match(multi.instructions, /match the greeting, then follow the caller/);
+});
+
 test("realtime instructions guard against ChatGPT-style capability claims", () => {
   const weak = buildRealtimeSession("gpt-realtime-2.1", "en", {
     systemPrompt: "You are Weather.",
@@ -80,7 +99,9 @@ test("agent settings narrow voice, greeting, tools, and knowledge", () => {
   assert.equal(session.audio.output.voice, "cedar");
   assert.match(session.instructions, /North Desk/);
   assert.match(session.instructions, /Closed Monday/);
-  assert.match(session.instructions, /Reply in Spanish/);
+  assert.match(session.instructions, /Language rule \(mandatory\)/);
+  assert.match(session.instructions, /Soft preference only before the caller speaks: Spanish/);
+  assert.match(session.instructions, /caller's most recent spoken turn/i);
   assert.match(session.instructions, /Knowledge base/);
   const greeting = greetingEvent("es", agent);
   assert.match(greeting.response.instructions, /Hola norte/);

@@ -184,8 +184,8 @@ async function handleTwilioMedia(twilioWs, url) {
   let greetingSent = false;
   const handledTools = new Set();
   const agentHint = String(url.searchParams.get("agentId") || "").trim();
-  let lang = String(url.searchParams.get("lang") || "en").trim();
-  if (lang !== "es" && lang !== "en") lang = "en";
+  let lang = String(url.searchParams.get("lang") || "multi").trim().toLowerCase();
+  if (lang !== "es" && lang !== "en" && lang !== "multi") lang = "multi";
 
   const closeAll = (reason = "client") => {
     if (closed) return;
