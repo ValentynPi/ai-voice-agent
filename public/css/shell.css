@@ -325,3 +325,34 @@ table.data .quiet, .quiet { color: var(--muted); font-weight: 400; font-size: 12
   font-size: 12px;
   font-weight: 550;
 }
+
+/* Agent editor — bot task next to MCP tools */
+.task-label {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.task-prompt {
+  width: 100%;
+  min-height: 200px;
+  resize: vertical;
+  line-height: 1.45;
+  background: var(--bg, #0c0f14);
+  border: 1px solid var(--line, rgba(255,255,255,0.1));
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--text, #e8eef7);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  font-weight: 400;
+}
+.task-prompt:focus {
+  outline: 2px solid var(--accent, #e6c27a);
+  outline-offset: 1px;
+}

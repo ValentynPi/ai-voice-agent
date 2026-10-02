@@ -39,7 +39,7 @@
         <div>
           <p class="kicker"><a href="/agents">Agents</a></p>
           <h1 id="title">Agent</h1>
-          <p class="lede" id="subtitle">Prompt, greeting, voice, knowledge, and tools for the next test call.</p>
+          <p class="lede" id="subtitle">Task, greeting, voice, knowledge, and MCP tools for the next test call.</p>
         </div>
         <div class="head-actions">
           <button class="btn ghost" id="duplicateBtn" type="button" hidden>Duplicate</button>
@@ -56,9 +56,6 @@
             </label>
             <label>Description
               <input id="description" name="description" maxlength="400" />
-            </label>
-            <label>System prompt
-              <textarea class="prompt" id="systemPrompt" name="systemPrompt" required maxlength="8000"></textarea>
             </label>
             <label>Greeting
               <textarea id="greeting" name="greeting" maxlength="1000" placeholder="Write the opening line in any language. The agent speaks that language."></textarea>
@@ -96,6 +93,13 @@
               <h2>Knowledge</h2>
               <p class="sub">Attached notes are added to the Realtime instructions. <a href="/knowledge">Manage knowledge</a></p>
               <div class="check-list" id="knowledgeChecks"></div>
+            </section>
+            <section class="panel slim" id="botTaskPanel">
+              <h2>Bot task</h2>
+              <p class="sub">What this agent should do — the main instructions for every test and phone call. Keep it short and spoken-friendly.</p>
+              <label class="task-label" for="systemPrompt">Instructions
+                <textarea class="prompt task-prompt" id="systemPrompt" name="systemPrompt" form="agentForm" required maxlength="8000" placeholder="Describe the agent’s job, tone, and hard rules…"></textarea>
+              </label>
             </section>
             <section class="panel slim">
               <h2>Tools</h2>
