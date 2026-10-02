@@ -310,15 +310,7 @@ app.post("/api/agents", (req, res, next) => {
 
 app.get("/api/agents/:id", (req, res, next) => {
   try {
-    // Prefer tenant match; fall back to global id (Voice URL / telephony dialer).
-    const agent = getAgent(req.params.id, req.accountId) || getAgent(req.params.id);
-    if (!agent) {
-      const error = new Error("Agent not found");
-      error.status = 404;
-      error.expose = true;
-      throw error;
-    }
-    res.json({ agent, voices: voiceChoices() });
+    res.json({ agent: requireAgent(req.params.id, req.accountId), voices: voiceChoices() });
   } catch (error) {
     next(error);
   }

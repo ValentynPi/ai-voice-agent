@@ -239,9 +239,9 @@ export function resolveAccountId(req) {
   return DEMO_ACCOUNT_ID;
 }
 
-/** Maison Sol built-in tools (weather/CRM/orders) only for the public demo tenant. */
-export function includeDemoBuiltins(accountId) {
-  return accountId === DEMO_ACCOUNT_ID;
+/** Built-in salon tools are removed from the product. Tools come from MCP only. */
+export function includeDemoBuiltins(_accountId) {
+  return false;
 }
 
 export function attachAccount(req, _res, next) {

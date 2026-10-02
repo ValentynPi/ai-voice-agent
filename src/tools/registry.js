@@ -143,6 +143,7 @@ export const TOOLS = [
   },
 ];
 
+// Handlers remain for internal/tests; product APIs pass includeDemoBuiltins()===false (MCP only).
 registerBuiltinTools(TOOLS);
 
 function runtimeTools({ includeBuiltins = true } = {}) {

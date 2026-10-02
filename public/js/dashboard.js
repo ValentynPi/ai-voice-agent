@@ -1,8 +1,6 @@
 let latest = null;
 let signature = "";
 let mcpSignature = "";
-let demoBuiltins = false;
-
 const statusPill = document.querySelector("#statusPill");
 const security = document.querySelector("#security");
 const mcpStatus = document.querySelector("#mcpStatus");
@@ -14,8 +12,6 @@ const mcpDisconnect = document.querySelector("#mcpDisconnect");
 const mcpMessage = document.querySelector("#mcpMessage");
 const mcpTools = document.querySelector("#mcpTools");
 const mcpCalls = document.querySelector("#mcpCalls");
-const builtinTools = document.querySelector("#builtinTools");
-const builtinPanel = document.querySelector("#builtinPanel");
 const toolsLede = document.querySelector("#toolsLede");
 const updated = document.querySelector("#updated");
 
@@ -24,7 +20,6 @@ async function poll() {
     const response = await fetch("/api/state");
     if (!response.ok) throw new Error("bad status");
     const data = await response.json();
-    demoBuiltins = Boolean(data.demoBuiltins);
     const next = JSON.stringify(data);
     latest = data;
     if (next !== signature) {
@@ -97,13 +92,9 @@ function renderMcp(mcp, calls) {
   }
   if (mcp.error) mcpMessage.textContent = mcp.error;
   else if (connected) {
-    mcpMessage.textContent = demoBuiltins
-      ? "Enabled MCP tools are offered on the next call, alongside built-ins."
-      : "Enabled MCP tools are offered on the next call.";
+    mcpMessage.textContent = "Enabled MCP tools are offered on the next call.";
   } else {
-    mcpMessage.textContent = demoBuiltins
-      ? "No MCP server connected. Built-in salon tools still work on every call."
-      : "No MCP server connected. Connect one to offer tools on the next call.";
+    mcpMessage.textContent = "No MCP server connected. Connect one to offer tools on the next call.";
   }
 
   const nextSignature = JSON.stringify(mcp.tools || []);
@@ -250,9 +241,7 @@ mcpDisconnect.addEventListener("click", async () => {
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || "Could not disconnect");
     mcpToken.value = "";
-    mcpMessage.textContent = demoBuiltins
-      ? "Disconnected. Built-in salon tools still work; MCP tools will not."
-      : "Disconnected. MCP tools will not be offered until you connect again.";
+    mcpMessage.textContent = "Disconnected. MCP tools will not be offered until you connect again.";
     await refresh();
   } catch (error) {
     mcpMessage.textContent = error.message || "Could not disconnect";
@@ -277,50 +266,8 @@ function clock(iso) {
   }).format(new Date(iso));
 }
 
-async function loadBuiltins() {
-  if (!builtinTools) return;
-  try {
-    const response = await fetch("/api/tools");
-    if (!response.ok) throw new Error("bad status");
-    const data = await response.json();
-    demoBuiltins = Boolean(data.demoBuiltins);
-    const showBuiltins = demoBuiltins;
-    const tools = showBuiltins
-      ? (data.tools || []).filter((tool) => tool.builtin)
-      : [];
-    if (toolsLede) {
-      toolsLede.textContent = showBuiltins
-        ? "Built-in salon tools run without MCP. Optionally paste a remote MCP server URL — the token stays on the server — to offer extra tools on the next test call."
-        : "Connect a remote MCP server — the token stays on the server — to offer tools on the next test call. New accounts start with no tools.";
-    }
-    if (builtinPanel) builtinPanel.hidden = !tools.length;
-    builtinTools.replaceChildren();
-    if (!tools.length) return;
-    for (const tool of tools) {
-      const row = document.createElement("article");
-      row.className = "tool-row";
-      const header = document.createElement("header");
-      const title = document.createElement("h3");
-      title.textContent = tool.name;
-      const meta = document.createElement("span");
-      meta.className = "tag";
-      meta.textContent = tool.group || "builtin";
-      header.append(title, meta);
-      const schema = document.createElement("p");
-      schema.className = "schema";
-      schema.textContent = tool.parameterSummary || "no parameters";
-      const description = document.createElement("p");
-      description.className = "desc";
-      description.textContent = tool.description || "";
-      row.append(header, schema, description);
-      builtinTools.append(row);
-    }
-  } catch {
-    if (builtinPanel) builtinPanel.hidden = true;
-    builtinTools.replaceChildren();
-  }
+if (toolsLede) {
+  toolsLede.textContent = "Connect a remote MCP server — the token stays on the server — to offer tools on the next test call. New accounts start with no tools until you connect MCP.";
 }
-
-loadBuiltins();
 poll();
 setInterval(poll, 1500);

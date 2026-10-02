@@ -148,12 +148,12 @@ test("phone numbers list respects the signed-in tenant", async () => {
   });
 });
 
-test("signed-in accounts do not see Maison Sol built-in tools", async () => {
+test("no account sees Maison Sol built-in tools (MCP only)", async () => {
   await withServer(async (base) => {
     const demoTools = await fetch(`${base}/api/tools`).then((r) => r.json());
-    assert.equal(demoTools.demoBuiltins, true);
-    assert.ok(demoTools.tools.some((tool) => tool.name === "get_weather" && tool.builtin));
-    assert.ok(demoTools.tools.some((tool) => tool.name === "lookup_customer" && tool.builtin));
+    assert.equal(demoTools.demoBuiltins, false);
+    assert.equal(demoTools.tools.some((tool) => tool.builtin), false);
+    assert.equal(demoTools.tools.some((tool) => tool.name === "get_weather"), false);
 
     const signup = await fetch(`${base}/api/auth/signup`, {
       method: "POST",
@@ -191,22 +191,17 @@ test("signed-in accounts do not see Maison Sol built-in tools", async () => {
 
 test("signed-in security feed and chat never see demo salon tools", async () => {
   await withServer(async (base) => {
-    // Seed demo noise: Ana Ruiz + hours on the public demo tenant.
+    // Demo chat no longer runs salon built-ins (MCP only). Seed a demo call for cross-tenant checks.
     const demoCall = await fetch(`${base}/api/calls`, { method: "POST" }).then((r) => r.json());
     const demoTurn = await fetch(`${base}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callId: demoCall.call.id, text: "Look up Ana Ruiz", lang: "en" }),
     }).then((r) => r.json());
-    assert.equal(demoTurn.tools?.[0]?.name, "lookup_customer");
-    await fetch(`${base}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callId: demoCall.call.id, text: "What are your hours?", lang: "en" }),
-    });
+    assert.equal((demoTurn.tools || []).some((tool) => /lookup_customer|query_hours|get_weather/i.test(tool.name)), false);
     const demoState = await fetch(`${base}/api/state`).then((r) => r.json());
-    assert.ok(demoState.securityEvents.some((e) => e.tool === "lookup_customer" && e.decision === "allow"));
-    assert.ok(demoState.toolCalls.some((e) => e.name === "query_hours" || e.name === "lookup_customer"));
+    assert.equal(demoState.demoBuiltins, false);
+    assert.equal((demoState.tools || []).some((tool) => tool.builtin), false);
 
     const signup = await fetch(`${base}/api/auth/signup`, {
       method: "POST",
