@@ -29,7 +29,9 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   const session = buildRealtimeSession("gpt-realtime-2.1", "en");
   assert.equal(session.model, "gpt-realtime-2.1");
   assert.equal(session.audio.output.voice, "marin");
-  assert.equal(session.audio.input.turn_detection.create_response, false);
+  assert.equal(session.audio.input.turn_detection.create_response, true);
+  assert.equal(session.audio.input.turn_detection.eagerness, "low");
+  assert.equal(session.audio.input.turn_detection.interrupt_response, true);
   assert.ok(Array.isArray(session.tools));
   assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
   assert.equal(session.tools.some((tool) => tool.name === "book_appointment"), false);
@@ -73,7 +75,9 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /outside your Bot task/i);
   assert.match(weak.instructions, /say clearly and briefly that you cannot do that/i);
   assert.match(weak.instructions, /Never invent results/i);
-  assert.match(weak.instructions, /1–2 short sentences|1-2 short sentences/i);
+  assert.match(weak.instructions, /1–3 short sentences|1-3 short sentences/i);
+  assert.match(weak.instructions, /never go silent/i);
+  assert.match(weak.instructions, /clarifying question/i);
   assert.match(weak.instructions, /wait for the caller/i);
   assert.match(weak.instructions, /Do not narrate tool use/i);
 

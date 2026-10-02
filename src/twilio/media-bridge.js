@@ -64,6 +64,7 @@ function sessionVariant(session, dropTurnFlags) {
   if (detection) {
     delete detection.create_response;
     delete detection.interrupt_response;
+    delete detection.eagerness;
   }
   return next;
 }
@@ -95,7 +96,7 @@ async function openOpenAiRealtime({ lang, agent }) {
         } catch {
           /* ignore */
         }
-        if (!dropTurnFlags && /create_response|interrupt_response|turn_detection|unknown|additional/i.test(lastError)) {
+        if (!dropTurnFlags && /create_response|interrupt_response|eagerness|turn_detection|unknown|additional/i.test(lastError)) {
           continue;
         }
         if (/model/i.test(lastError)) break;
@@ -317,12 +318,13 @@ async function handleTwilioMedia(twilioWs, url) {
             response: {
               output_modalities: ["audio"],
               tool_choice: "none",
-              instructions: `Say exactly the following, then stop.\n\n${outcome.reply}`,
+              instructions: `Say exactly the following, then stop.
+
+${outcome.reply}`,
             },
           });
-        } else {
-          sendOpenAi({ type: "response.create" });
         }
+        // create_response=true on semantic_vad already answers the caller turn.
       } catch (error) {
         console.error("Utterance screen failed:", error?.message || error);
       }

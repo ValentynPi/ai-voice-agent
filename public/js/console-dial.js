@@ -872,7 +872,7 @@ async function onCallerAudio(text, itemId) {
     speakRefusal(payload.reply);
     return;
   }
-  sendEvent({ type: "response.create" });
+  // Semantic VAD create_response=true already starts the reply; do not double-fire response.create.
 }
 
 async function onAssistantAudio(text) {
