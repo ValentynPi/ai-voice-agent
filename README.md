@@ -163,7 +163,7 @@ The seeded TwiML App "Maison Sol Voice" points at the same paths. The console sh
 
 `POST /twilio/status` stores the status callback and returns 204. Both deliveries show under Monitor → Logs. If `X-Twilio-Signature` is present and a token is configured, the log records whether it matched. Unsigned requests still get a response so local curls and Demo keep working.
 
-On the telephony console, **Connect to Agents** shows the exact Voice URL (pointing at `AGENTS_PUBLIC_URL`) and a **Demo call to Agents** button that POSTs a fake inbound webhook and briefly opens the Media Stream WebSocket — no `TWILIO_ACCOUNT_SID` required.
+On the telephony console, **Connect to Agents** shows the exact Voice URL (pointing at `AGENTS_PUBLIC_URL`) and a **Demo call to Agents** button that POSTs a fake inbound webhook and briefly opens the Media Stream WebSocket — no `TWILIO_ACCOUNT_SID` required. For an interactive talk session, use **Make a call** on **Voice → Calls** (or Overview): paste a Voice URL / Agents test link / agent id, then **Call** opens `{AGENTS_PUBLIC_URL}/agents/<id>/test` in the same window.
 
 ### REST shapes
 
@@ -189,7 +189,7 @@ A finished web test call is also written as a call resource: `from` is `client:b
 - Voice URL / Status callback on numbers and TwiML Apps should point at the **Agents** host (`AGENTS_PUBLIC_URL`), not the telephony console host. The telephony UI defaults and copy buttons already do this when `AGENTS_PUBLIC_URL` is set.
 - Inbound calls get `<Connect><Stream>` into `wss://…/twilio/media`, which bridges Twilio Media Streams to OpenAI Realtime (`audio/pcmu`). Realtime still needs `OPENAI_API_KEY` on Agents.
 - The recording URL on the seeded demo call is a stub. `GET …/Recordings` returns no audio file.
-- Outbound dialing through the Calls API is not wired. Use **Demo call to Agents** on the telephony overview to exercise the inbound path without carrier credentials.
+- Outbound dialing through the Calls API is not wired. Use **Make a call** (paste Voice URL → Agents web test) for an interactive browser session, or **Demo call to Agents** on Overview to probe the inbound Media Stream path without carrier credentials.
 - Messaging is omitted.
 - Demo numbers are not on a carrier. Connected numbers are whatever the Twilio account already owns, plus any purchase you explicitly confirm.
 

@@ -198,6 +198,127 @@ function parseAgentIdFromVoiceUrl(voiceUrl) {
   }
 }
 
+/** Resolve pasted Voice URL / Agents test link / bare agent id into an interactive web-call target. */
+function savedAgentsBrain() {
+  return normalizeAgentsBaseUrl(
+    localStorage.getItem("cx-agents-url") || account?.agents_public_url || ""
+  );
+}
+
+function agentsWebCallUrl(agentsBase, agentId) {
+  const base = normalizeAgentsBaseUrl(agentsBase || "") || String(agentsBase || "").replace(/\/+$/, "");
+  if (!base || !agentId) return "";
+  return `${base}/agents/${encodeURIComponent(agentId)}/test`;
+}
+
+function parseInteractiveCallTarget(raw, fallbackBrain = "") {
+  const input = String(raw || "").trim();
+  if (!input) {
+    return { error: "Paste a Voice URL, Agents test link, or agent id." };
+  }
+
+  const looksLikeUrl = /^https?:\/\//i.test(input) || input.startsWith("/") || /[/?#]/.test(input);
+  if (!looksLikeUrl) {
+    if (!/^[A-Za-z0-9_.:-]{2,128}$/.test(input)) {
+      return { error: "That does not look like a Voice URL or agent id." };
+    }
+    const brain = normalizeAgentsBaseUrl(fallbackBrain) || savedAgentsBrain();
+    if (!brain) {
+      return { error: "Save an Agents brain URL on Overview, or paste a full Voice URL / test link." };
+    }
+    return { agentId: input, agentsBase: brain };
+  }
+
+  let url;
+  try {
+    url = input.startsWith("/") ? new URL(input, location.origin) : new URL(input);
+  } catch {
+    return { error: "Invalid URL. Paste a Voice URL (…/twilio/voice?agentId=…), Agents test link, or agent id." };
+  }
+
+  let agentId = String(url.searchParams.get("agentId") || url.searchParams.get("agent") || "").trim();
+  const pathTest = url.pathname.match(/\/agents\/([^/]+)\/test\/?$/i);
+  if (!agentId && pathTest) {
+    try { agentId = decodeURIComponent(pathTest[1]).trim(); } catch { agentId = String(pathTest[1] || "").trim(); }
+  }
+  if (!agentId) {
+    return { error: "Could not find agentId in that link. Use …/twilio/voice?agentId=… or …/agents/<id>/test." };
+  }
+
+  let agentsBase = "";
+  if (/\/twilio\/(voice|status|media)\b/i.test(url.pathname)) {
+    agentsBase = normalizeAgentsBaseUrl(url.toString());
+  } else {
+    agentsBase = url.origin;
+  }
+  if (!agentsBase) agentsBase = normalizeAgentsBaseUrl(fallbackBrain) || savedAgentsBrain();
+  if (!agentsBase) {
+    return { error: "Could not determine Agents host from that link. Save a brain URL on Overview." };
+  }
+  return { agentId, agentsBase };
+}
+
+function makeCallCardHtml({ compact = false } = {}) {
+  const title = "Make a call";
+  const lede = compact
+    ? "Paste a Voice URL or Agents test link, then open an interactive browser call."
+    : "Paste an Agents Voice URL (<span class=\"mono\">…/twilio/voice?agentId=…</span>), an Agents test link (<span class=\"mono\">…/agents/&lt;id&gt;/test</span>), or just an agent id when the brain URL is saved. Opens the Agents web call in this window — not the server-side Demo call probe.";
+  const placeholder = "https://…/twilio/voice?agentId=… or …/agents/<id>/test";
+  return `
+    <section class="cx-card" id="makeCallCard">
+      <h2>${esc(title)}</h2>
+      <p>${lede}</p>
+      <form class="cx-form" id="makeCallForm" style="margin-top:12px">
+        <label>Voice URL / agent link<input name="call_target" id="makeCallInput" value="" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off"></label>
+        <div class="cx-actions">
+          <button class="cx-btn primary" type="submit" id="makeCallBtn">Call</button>
+          ${compact ? `<a class="cx-btn ghost" href="${cxPath("/voice/calls")}" data-cx>Open Calls</a>` : ""}
+        </div>
+      </form>
+      <p id="makeCallNote" class="cx-lede" style="margin-top:10px">Opens Agents web call for this Voice URL.</p>
+    </section>
+  `;
+}
+
+function bindMakeCallForm(root) {
+  const form = root.querySelector("#makeCallForm");
+  const note = root.querySelector("#makeCallNote");
+  const input = root.querySelector("#makeCallInput");
+  if (!form || !input) return;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    clearError();
+    const brainField = root.querySelector("#brainForm input[name=\"agents_url\"]");
+    const fallback = brainField?.value || savedAgentsBrain();
+    const parsed = parseInteractiveCallTarget(input.value, fallback);
+    if (parsed.error) {
+      if (note) {
+        note.textContent = parsed.error;
+        note.classList.add("cx-call-error");
+      }
+      showError(new Error(parsed.error));
+      return;
+    }
+    const target = agentsWebCallUrl(parsed.agentsBase, parsed.agentId);
+    if (!target) {
+      const msg = "Could not build Agents test call URL.";
+      if (note) {
+        note.textContent = msg;
+        note.classList.add("cx-call-error");
+      }
+      showError(new Error(msg));
+      return;
+    }
+    localStorage.setItem("cx-agent-id", parsed.agentId);
+    if (parsed.agentsBase) localStorage.setItem("cx-agents-url", parsed.agentsBase);
+    if (note) {
+      note.classList.remove("cx-call-error");
+      note.textContent = `Opening Agents web call for agent ${parsed.agentId}…`;
+    }
+    location.assign(target);
+  });
+}
+
 function brainVoiceUrl(agentId = "") {
   const brain = normalizeAgentsBaseUrl(account?.agents_public_url || "");
   let root = "";
@@ -314,6 +435,7 @@ async function overview() {
       <div class="cx-url-row" style="margin-top:12px"><span>Voice URL</span><code id="brainVoiceUrl">${esc(brainVoiceUrl(savedAgent))}</code><button class="cx-btn ghost" type="button" data-copy="${esc(brainVoiceUrl(savedAgent))}">Copy</button></div>
       <div class="cx-url-row"><span>Status callback</span><code>${esc(account.status_callback_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.status_callback_url)}">Copy</button></div>
     </section>
+    ${makeCallCardHtml({ compact: true })}
     <section class="cx-card">
       <h2>Recent calls</h2>
       <p>Browser test calls show up here as <span class="mono">client:browser</span>. Demo calls from this console exercise Media Streams into Agents.</p>
@@ -323,6 +445,7 @@ async function overview() {
   bindCopies(view);
   bindCallRows(view);
   bindBrainCard(view, savedAgent);
+  bindMakeCallForm(view);
 }
 
 async function fetchAgentsList(brainBase) {
@@ -743,6 +866,7 @@ async function callsPage() {
   const statuses = ["", "queued", "ringing", "in-progress", "completed", "failed", "busy", "no-answer"];
   view.innerHTML = `
     ${head("Voice", "Calls", "Call SID, direction, and status follow Twilio's call resource. A browser test call is an inbound client:browser leg.")}
+    ${makeCallCardHtml({ compact: false })}
     <form class="cx-filters" id="callFilters">
       <label>Status<select name="status">${statuses.map((status) => `<option value="${esc(status)}" ${params.get("status") === status ? "selected" : ""}>${esc(status ? statusLabel(status) : "Any")}</option>`).join("")}</select></label>
       <label>Direction<select name="direction"><option value="">Any</option><option value="inbound" ${params.get("direction") === "inbound" ? "selected" : ""}>Inbound</option><option value="outbound" ${params.get("direction") === "outbound" ? "selected" : ""}>Outbound</option></select></label>
@@ -751,6 +875,7 @@ async function callsPage() {
     </form>
     ${callsTable(data.calls || [], "No calls match.")}
   `;
+  bindMakeCallForm(view);
   view.querySelector("#callFilters").addEventListener("submit", (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);

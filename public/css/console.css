@@ -285,3 +285,5 @@ table.cx-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .cx-top { flex-wrap: wrap; padding: 10px; }
   .cx-top-meta { margin-left: 0; }
 }
+
+.cx-lede.cx-call-error { color: #fca5a5; }
