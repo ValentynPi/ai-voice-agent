@@ -205,10 +205,13 @@ function savedAgentsBrain() {
   );
 }
 
-function agentsWebCallUrl(agentsBase, agentId) {
-  const base = normalizeAgentsBaseUrl(agentsBase || "") || String(agentsBase || "").replace(/\/+$/, "");
-  if (!base || !agentId) return "";
-  return `${base}/agents/${encodeURIComponent(agentId)}/test`;
+function telephonyDialUrl(agentsBase, agentId) {
+  if (!agentId) return "";
+  const params = new URLSearchParams();
+  params.set("agentId", agentId);
+  const base = normalizeAgentsBaseUrl(agentsBase || "");
+  if (base) params.set("agentsBase", base);
+  return `${cxPath("/voice/dial")}?${params.toString()}`;
 }
 
 function parseInteractiveCallTarget(raw, fallbackBrain = "") {
@@ -261,8 +264,8 @@ function parseInteractiveCallTarget(raw, fallbackBrain = "") {
 function makeCallCardHtml({ compact = false } = {}) {
   const title = "Make a call";
   const lede = compact
-    ? "Paste a Voice URL or Agents test link, then open an interactive browser call."
-    : "Paste an Agents Voice URL (<span class=\"mono\">…/twilio/voice?agentId=…</span>), an Agents test link (<span class=\"mono\">…/agents/&lt;id&gt;/test</span>), or just an agent id when the brain URL is saved. Opens the Agents web call in this window — not the server-side Demo call probe.";
+    ? "Paste a Voice URL or agent link, then call from this telephony console (stays on this host)."
+    : "Paste an Agents Voice URL (<span class=\"mono\">…/twilio/voice?agentId=…</span>), an Agents test link, or just an agent id when the brain URL is saved. The interactive call runs on this telephony host — you are not sent to the Agents desk. Demo call remains a separate server probe.";
   const placeholder = "https://…/twilio/voice?agentId=… or …/agents/<id>/test";
   return `
     <section class="cx-card" id="makeCallCard">
@@ -275,7 +278,7 @@ function makeCallCardHtml({ compact = false } = {}) {
           ${compact ? `<a class="cx-btn ghost" href="${cxPath("/voice/calls")}" data-cx>Open Calls</a>` : ""}
         </div>
       </form>
-      <p id="makeCallNote" class="cx-lede" style="margin-top:10px">Opens Agents web call for this Voice URL.</p>
+      <p id="makeCallNote" class="cx-lede" style="margin-top:10px">Opens the telephony dialer for this Voice URL (same host).</p>
     </section>
   `;
 }
@@ -299,9 +302,9 @@ function bindMakeCallForm(root) {
       showError(new Error(parsed.error));
       return;
     }
-    const target = agentsWebCallUrl(parsed.agentsBase, parsed.agentId);
+    const target = telephonyDialUrl(parsed.agentsBase, parsed.agentId);
     if (!target) {
-      const msg = "Could not build Agents test call URL.";
+      const msg = "Could not build telephony dialer URL.";
       if (note) {
         note.textContent = msg;
         note.classList.add("cx-call-error");
@@ -313,7 +316,7 @@ function bindMakeCallForm(root) {
     if (parsed.agentsBase) localStorage.setItem("cx-agents-url", parsed.agentsBase);
     if (note) {
       note.classList.remove("cx-call-error");
-      note.textContent = `Opening Agents web call for agent ${parsed.agentId}…`;
+      note.textContent = `Opening telephony dialer for agent ${parsed.agentId}…`;
     }
     location.assign(target);
   });

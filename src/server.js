@@ -31,6 +31,7 @@ import { toolCatalogInfo } from "./tools/catalog.js";
 import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
 import { attachMediaBridge } from "./twilio/media-bridge.js";
 import { mountTwilio } from "./twilio/routes.js";
+import { createBrainProxy } from "./twilio/brain-proxy.js";
 import { assignPublicNumber, publicPhoneNumbersPayload, telephonySharedSecret } from "./twilio/public-list.js";
 import {
   DEMO_ACCOUNT_ID,
@@ -125,6 +126,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use(attachAccount);
+app.use(createBrainProxy({ service: SERVICE, agentsPublicUrl: AGENTS_PUBLIC_URL }));
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -233,7 +235,8 @@ app.get("/api/state", (req, res) => {
 app.post("/api/calls", (req, res, next) => {
   try {
     const requested = req.body?.agentId;
-    const agent = requested ? requireAgent(requested, req.accountId) : getDefaultAgent(req.accountId);
+    // Voice URL / dialer paste carries agentId — resolve globally (same as Twilio webhooks).
+    const agent = requested ? requireAgent(requested) : getDefaultAgent(req.accountId);
     if (requested && !agent) {
       const error = new Error("Agent not found");
       error.status = 404;
@@ -307,7 +310,15 @@ app.post("/api/agents", (req, res, next) => {
 
 app.get("/api/agents/:id", (req, res, next) => {
   try {
-    res.json({ agent: requireAgent(req.params.id, req.accountId), voices: voiceChoices() });
+    // Prefer tenant match; fall back to global id (Voice URL / telephony dialer).
+    const agent = getAgent(req.params.id, req.accountId) || getAgent(req.params.id);
+    if (!agent) {
+      const error = new Error("Agent not found");
+      error.status = 404;
+      error.expose = true;
+      throw error;
+    }
+    res.json({ agent, voices: voiceChoices() });
   } catch (error) {
     next(error);
   }
@@ -373,7 +384,7 @@ app.post("/api/realtime/token", async (req, res, next) => {
     if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
     if (!callBelongsToRequest(call, req)) return res.status(404).json({ error: "Call not found" });
     await ensureMcp();
-    const agent = call.agentId ? getAgent(call.agentId, req.accountId) : getDefaultAgent(req.accountId);
+    const agent = call.agentId ? getAgent(call.agentId) : getDefaultAgent(req.accountId);
     const secret = await mintRealtimeClientSecret({ lang, agent });
     res.json({ ...secret, callId });
   } catch (error) {
@@ -668,12 +679,17 @@ function redirectToTelephony(req, res) {
   return res.redirect(302, `${target}${qs}`);
 }
 
+function sendConsoleDialPage(req, res) {
+  res.sendFile(path.join(publicDir, "console-dial.html"));
+}
+
 if (serveTelephony && SERVICE === "telephony") {
   // Demo Twilio console owns this hostname at /.
   app.get("/", sendConsolePage);
   app.get("/phone-numbers", sendConsolePage);
   app.get("/phone-numbers/search", sendConsolePage);
   app.get("/voice/calls", sendConsolePage);
+  app.get("/voice/dial", sendConsoleDialPage);
   app.get("/develop/twiml-apps", sendConsolePage);
   app.get("/monitor/logs", sendConsolePage);
   app.get("/account/keys", sendConsolePage);
@@ -713,6 +729,8 @@ if (serveTelephony && SERVICE === "telephony") {
   if (serveTelephony && SERVICE === "all") {
     // Combined local host: keep nested /console for one-process demos and tests.
     // redirectToTelephony falls back to sendConsolePage when TELEPHONY_PUBLIC_URL is unset.
+    app.get("/console/voice/dial", sendConsoleDialPage);
+    app.get("/voice/dial", sendConsoleDialPage);
   }
 }
 

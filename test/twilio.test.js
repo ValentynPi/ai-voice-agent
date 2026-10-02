@@ -508,3 +508,49 @@ test("parseAgentIdFromVoiceUrl reads query", async () => {
   assert.equal(parseAgentIdFromVoiceUrl("/twilio/voice"), "");
   assert.equal(parseAgentIdFromVoiceUrl(""), "");
 });
+
+test("brain proxy forwards only telephony brain paths", async () => {
+  const { createBrainProxy } = await import("../src/twilio/brain-proxy.js");
+  const noop = createBrainProxy({ service: "agents", agentsPublicUrl: "https://agents.example" });
+  let called = false;
+  await new Promise((resolve) => noop({}, {}, () => { called = true; resolve(); }));
+  assert.equal(called, true);
+
+  const hits = [];
+  const proxy = createBrainProxy({ service: "telephony", agentsPublicUrl: "https://agents.example" });
+  const fakeFetch = async (url, init) => {
+    hits.push({ url, method: init.method, body: init.body });
+    return {
+      status: 201,
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({ ok: true }),
+    };
+  };
+  const prev = globalThis.fetch;
+  globalThis.fetch = fakeFetch;
+  try {
+    const req = {
+      method: "POST",
+      path: "/api/calls",
+      originalUrl: "/api/calls",
+      url: "/api/calls",
+      body: { agentId: "agt_x" },
+      accountId: "acct_demo",
+      get: () => "",
+      query: {},
+    };
+    const res = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      setHeader() {},
+      send(body) { this.body = body; },
+    };
+    await proxy(req, res, () => { throw new Error("should not next"); });
+    assert.equal(res.statusCode, 201);
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].url, "https://agents.example/api/calls");
+    assert.match(hits[0].body, /agt_x/);
+  } finally {
+    globalThis.fetch = prev;
+  }
+});

@@ -286,4 +286,86 @@ table.cx-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .cx-top-meta { margin-left: 0; }
 }
 
+
+/* Telephony-native interactive dialer (/voice/dial) */
+.cx-dial {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .cx-dial { grid-template-columns: 1fr; }
+}
+.cx-dial-stage { text-align: center; padding: 22px 16px 16px; }
+.cx-dial-orb {
+  --orb: #6e7bf2;
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin: 8px auto 14px;
+}
+.cx-dial-orb[data-state="listening"] { --orb: #34d399; }
+.cx-dial-orb[data-state="thinking"] { --orb: #fbbf24; }
+.cx-dial-orb[data-state="speaking"] { --orb: #6e7bf2; }
+.cx-dial-ring, .cx-dial-core {
+  position: absolute; inset: 0; border-radius: 50%;
+}
+.cx-dial-ring {
+  border: 1px solid color-mix(in srgb, var(--orb) 55%, transparent);
+  box-shadow: 0 0 0 8px color-mix(in srgb, var(--orb) 12%, transparent);
+  animation: cx-dial-pulse 2.4s ease-in-out infinite;
+}
+.cx-dial-core {
+  inset: 18px;
+  background: radial-gradient(circle at 35% 30%, #fff8, transparent 42%), var(--orb);
+  opacity: 0.92;
+}
+@keyframes cx-dial-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.04); opacity: 1; }
+}
+.cx-dial-phase { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+.cx-dial-interim { min-height: 1.2em; margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.cx-dial-meta { margin: 10px 0 0; color: var(--faint); font-size: 12px; word-break: break-all; }
+.cx-dial-lang {
+  display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px;
+}
+.cx-dial-lang select {
+  background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+}
+.cx-dial-transcript { min-height: 420px; display: flex; flex-direction: column; }
+.cx-dial-panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px;
+}
+.cx-dial-panel-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.cx-dial-bubbles {
+  list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; max-height: 360px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.cx-dial-bubbles .bubble {
+  border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 8px 10px; text-align: left;
+}
+.cx-dial-bubbles .bubble.user { border-color: rgba(110, 123, 242, 0.35); }
+.cx-dial-bubbles .bubble .who { display: block; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+.cx-dial-bubbles .bubble p { margin: 0; font-size: 13px; line-height: 1.45; }
+.cx-dial-bubbles .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.cx-dial-bubbles .tag {
+  font-size: 11px; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+}
+.cx-dial-bubbles .tag.ok { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.35); }
+.cx-dial-bubbles .tag.bad { color: #fca5a5; border-color: rgba(248, 113, 113, 0.35); }
+.cx-dial-composer { display: flex; gap: 8px; margin-top: 10px; }
+.cx-dial-composer input {
+  flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+}
+.cx-dial-chips { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.cx-dial-chips button {
+  background: var(--card-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 12px; color: var(--muted);
+}
+.cx-dial-chips button.danger { color: #fca5a5; border-color: rgba(248, 113, 113, 0.35); }
+.cx-btn.live { background: #34d399; border-color: transparent; color: #052e1c; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0;
+}
 .cx-lede.cx-call-error { color: #fca5a5; }

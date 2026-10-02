@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" data-console-base="" data-agents-base="https://ai-voice-agent-valmax.fly.dev">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Make a call · Telephony</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181b'/%3E%3Crect x='8' y='8' width='16' height='16' rx='4' fill='%236e7bf2'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/console.css" />
+  </head>
+  <body>
+    <div class="cx">
+      <header class="cx-top">
+        <a class="cx-logo" href="/">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="6" fill="#1c1c1f" stroke="rgba(255,255,255,0.14)"/><rect x="6" y="6" width="12" height="12" rx="3" fill="#6e7bf2"/></svg>
+          <span><strong>Console</strong><em>Telephony</em></span>
+        </a>
+        <nav class="cx-switch" aria-label="Product">
+          <a href="/" aria-current="page">Telephony</a>
+          <a href="https://ai-voice-agent-valmax.fly.dev/agents">Agents</a>
+        </nav>
+        <div class="cx-top-meta">
+          <span class="cx-badge connected">Live dialer</span>
+          <code>WebRTC · Realtime</code>
+        </div>
+      </header>
+      <aside class="cx-side">
+        <nav aria-label="Telephony">
+          <p class="cx-group">Console</p>
+          <a href="/">Overview</a>
+          <p class="cx-group">Phone Numbers</p>
+          <a href="/phone-numbers">Active numbers</a>
+          <a href="/phone-numbers/search">Buy a number</a>
+          <p class="cx-group">Voice</p>
+          <a href="/voice/calls">Calls</a>
+          <a href="/voice/dial" aria-current="page">Make a call</a>
+          <p class="cx-group">Develop</p>
+          <a href="/develop/twiml-apps">TwiML Apps</a>
+          <p class="cx-group">Monitor</p>
+          <a href="/monitor/logs">Logs</a>
+          <p class="cx-group">Account</p>
+          <a href="/account/keys">API keys &amp; tokens</a>
+        </nav>
+        <p class="cx-side-note">This call stays on the telephony host. Audio uses OpenAI Realtime via the Agents brain APIs (proxied).</p>
+      </aside>
+      <main class="cx-main">
+        <header class="cx-head">
+          <div>
+            <p class="cx-kicker">Voice</p>
+            <h1 id="call-heading">Make a call</h1>
+            <p class="cx-lede" id="agentKicker">Interactive browser call on telephony. Paste came from a Voice URL — you are not on the Agents desk.</p>
+          </div>
+          <div class="cx-actions">
+            <a class="cx-btn ghost" id="backToCalls" href="/voice/calls">Back to Calls</a>
+          </div>
+        </header>
+
+        <div class="cx-dial">
+          <section class="cx-card cx-dial-stage">
+            <div class="cx-dial-orb" id="orb" data-state="idle">
+              <div class="cx-dial-ring"></div>
+              <div class="cx-dial-core"></div>
+            </div>
+            <p class="cx-dial-phase" id="phase">Ready when you are</p>
+            <p class="cx-dial-interim" id="interim" aria-live="polite"></p>
+            <div class="cx-actions" style="justify-content:center;margin-top:14px">
+              <button class="cx-btn primary" id="callBtn" type="button">Start call</button>
+              <label class="cx-dial-lang">Language
+                <select id="lang">
+                  <option value="en">English</option>
+                  <option value="es">Español</option>
+                </select>
+              </label>
+            </div>
+            <p class="cx-lede" id="hint" style="margin-top:12px;text-align:center">Allow the microphone. The agent greets first.</p>
+            <audio id="remoteAudio" autoplay playsinline></audio>
+            <p class="cx-dial-meta mono" id="callMeta"></p>
+            <div class="cx-url-row" style="margin-top:12px"><span>Voice URL</span><code id="voiceUrlShown">—</code></div>
+          </section>
+
+          <section class="cx-card cx-dial-transcript">
+            <header class="cx-dial-panel-head">
+              <h2>Live transcript</h2>
+              <span class="cx-pill" id="modeBadge">Realtime</span>
+            </header>
+            <ol id="transcript" class="cx-dial-bubbles" aria-live="polite"></ol>
+            <form id="composer" class="cx-dial-composer">
+              <label class="sr-only" for="text">Message</label>
+              <input id="text" name="text" autocomplete="off" placeholder="Or type — the agent can speak the reply" />
+              <button class="cx-btn" type="submit">Send</button>
+            </form>
+            <ul class="cx-dial-chips" id="chips"></ul>
+          </section>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/js/console-dial.js"></script>
+  </body>
+</html>
