@@ -154,7 +154,7 @@ function ensureRecognition() {
   };
   rec.onerror = (event) => {
     if (event.error === "not-allowed") {
-      hintEl.textContent = "Microphone blocked. You can still type, and Sol will speak back.";
+      hintEl.textContent = `Microphone blocked. You can still type, and ${agentLabel} will speak back.`;
     }
   };
   rec.onend = () => {
@@ -291,7 +291,7 @@ function releaseGreetingMic() {
   if (!callActive || !realtime) return;
   setPhase("listening", "Listening");
   if (greetingHeardAudio) {
-    hintEl.textContent = `OpenAI Realtime is connected. Sol speaks with the ${realtime.voice || "marin"} voice.`;
+    hintEl.textContent = `OpenAI Realtime is connected. ${agentLabel} speaks with the ${realtime.voice || "marin"} voice.`;
   }
 }
 
@@ -334,7 +334,7 @@ function maybeSendGreeting() {
   if (greetingHoldTimer) clearTimeout(greetingHoldTimer);
   greetingHoldTimer = setTimeout(() => releaseGreetingMic(), 12000);
   setPhase("speaking", "Speaking");
-  hintEl.textContent = `Sol is greeting you with the ${realtime.voice || "marin"} voice.`;
+  hintEl.textContent = `${agentLabel} is greeting you with the ${realtime.voice || "marin"} voice.`;
   showGreetingBubble();
 }
 
@@ -349,11 +349,11 @@ function failGreeting(status) {
   if (action === "ignore") return false;
   greetingSent = false;
   if (action === "give-up") {
-    hintEl.textContent = "Sol could not start the greeting. You can speak or type. Marin will not use a browser voice.";
+    hintEl.textContent = `${agentLabel} could not start the greeting. You can speak or type. Marin will not use a browser voice.`;
     releaseGreetingMic();
     return true;
   }
-  hintEl.textContent = "Sol is trying the greeting again.";
+  hintEl.textContent = `${agentLabel} is trying the greeting again.`;
   maybeSendGreeting();
   return true;
 }
@@ -477,7 +477,7 @@ async function connectRealtime(activeCallId = callId) {
   await pc.setRemoteDescription({ type: "answer", sdp: answer });
   answerApplied = true;
   nudgeRemoteAudio();
-  hintEl.textContent = `Connecting the ${token.voice || "marin"} voice. Sol will speak first.`;
+  hintEl.textContent = `Connecting the ${token.voice || "marin"} voice. ${agentLabel} will speak first.`;
   maybeSendGreeting();
   if (!greetingSent) scheduleGreetingFallback();
   return true;
@@ -556,7 +556,7 @@ async function startCall() {
     }, 5000);
 
     let connected = false;
-    let failure = "OpenAI Realtime voice marin is unavailable. Sol will not use a browser voice. You can still type and read the reply.";
+    let failure = `OpenAI Realtime voice marin is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
     try {
       connected = await connectRealtime(callId);
     } catch (error) {
@@ -564,7 +564,7 @@ async function startCall() {
       const micBlocked = /NotAllowedError|Permission|not-allowed|denied/i.test(`${error.name || ""} ${error.message || ""}`);
       failure = micBlocked
         ? "Microphone blocked. Marin needs the microphone and will not fall back to a browser voice. You can still type and read the reply."
-        : `OpenAI Realtime voice marin is unavailable (${error.message || "connection failed"}). Sol will not use a browser voice. You can still type and read the reply.`;
+        : `OpenAI Realtime voice marin is unavailable (${error.message || "connection failed"}). ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
     }
     if (!connected) {
       closeRealtime();
@@ -753,7 +753,7 @@ async function submitFallback(text) {
     else {
       modeBadge.textContent = "Marin unavailable";
       setPhase("idle", "Voice unavailable");
-      hintEl.textContent = "OpenAI Realtime voice marin is unavailable. Sol will not use a browser voice. You can still type and read the reply.";
+      hintEl.textContent = `OpenAI Realtime voice marin is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
     }
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
@@ -798,7 +798,7 @@ async function handleRealtimeEvent(event) {
   if (event.type === "error") {
     const message = event.error?.message || event.message || "Realtime error";
     if (!failGreeting("error")) {
-      hintEl.textContent = `Realtime error: ${message}. Sol is not using a browser voice.`;
+      hintEl.textContent = `Realtime error: ${message}. ${agentLabel} is not using a browser voice.`;
       if (micHeldForGreeting) releaseGreetingMic();
     }
   }

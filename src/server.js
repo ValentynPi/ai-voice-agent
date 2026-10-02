@@ -157,7 +157,7 @@ app.get("/api/auth/me", (req, res) => {
     security: {
       sessionCookie: "vd_session",
       cookieFlags: ["HttpOnly", "SameSite=Lax", "Secure in production"],
-      tenantIsolation: "Agents, knowledge, history, and tools are scoped to your account id.",
+      tenantIsolation: "Agents, knowledge, and call history are scoped to your account. MCP tool connections are shared on this Agents host.",
       authRequired,
     },
   });
