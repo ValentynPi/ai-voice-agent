@@ -4,10 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Account · Voice Desk</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181b'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='system-ui' font-size='14' font-weight='700' fill='%23f4f4f5'%3EV%3C/text%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560&family=Outfit:wght@360;480;560&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/css/app.css" />
     <link rel="stylesheet" href="/css/shell.css" />
     <style>
@@ -16,43 +16,49 @@
         place-items: center;
         min-height: 100vh;
         margin: 0;
-        background:
-          radial-gradient(900px 420px at 100% -10%, rgba(230, 194, 122, 0.08), transparent 55%),
-          #0c0f14;
-        color: #e8eef7;
-        font-family: "Plus Jakarta Sans", sans-serif;
+        background: #09090b;
+        color: #f4f4f5;
+        font-family: Inter, "Segoe UI", system-ui, sans-serif;
       }
       .auth-card {
-        width: min(420px, calc(100vw - 32px));
-        padding: 28px 24px;
-        border-radius: 16px;
-        border: 1px solid rgba(232, 237, 245, 0.08);
-        background: #141922;
-        display: grid;
-        gap: 14px;
-      }
-      .auth-card h1 { margin: 0; font-size: 24px; letter-spacing: -0.03em; }
-      .auth-card .lede { margin: 0; color: #93a0b4; font-size: 14px; line-height: 1.45; }
-      .auth-card label { display: grid; gap: 6px; font-size: 13px; color: #93a0b4; }
-      .auth-card input {
-        min-height: 40px;
-        padding: 0 12px;
+        width: min(400px, calc(100vw - 32px));
+        padding: 24px 22px;
         border-radius: 10px;
-        border: 1px solid rgba(232, 237, 245, 0.12);
-        background: #0c0f14;
-        color: #e8eef7;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: #141416;
+        display: grid;
+        gap: 12px;
+      }
+      .auth-card h1 { margin: 0; font-size: 20px; letter-spacing: -0.03em; font-weight: 600; }
+      .auth-card .lede { margin: 0; color: #a1a1aa; font-size: 13px; line-height: 1.45; }
+      .auth-card label { display: grid; gap: 4px; font-size: 12px; color: #a1a1aa; font-weight: 500; }
+      .auth-card input {
+        min-height: 36px;
+        padding: 0 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: #09090b;
+        color: #f4f4f5;
         font: inherit;
       }
-      .auth-card .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
-      .auth-card .error { color: #e08b78; font-size: 13px; margin: 0; }
-      .auth-card .switch { margin: 0; font-size: 13px; color: #93a0b4; }
-      .auth-card .switch a { color: #e6c27a; }
+      .auth-card .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+      .auth-card .error { color: #f87171; font-size: 13px; margin: 0; }
+      .auth-card .switch { margin: 0; font-size: 13px; color: #a1a1aa; }
+      .auth-card .switch a { color: #6e7bf2; }
+      .auth-card .kicker {
+        margin: 0 0 4px;
+        color: #a1a1aa;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-weight: 550;
+      }
     </style>
   </head>
   <body class="auth-page">
     <form class="auth-card" id="authForm">
       <div>
-        <p class="kicker" style="margin:0 0 6px;color:#e6c27a;font-size:12px;letter-spacing:0.08em;text-transform:uppercase">Voice Desk</p>
+        <p class="kicker">Voice Desk</p>
         <h1 id="title">Create account</h1>
         <p class="lede" id="lede">New accounts start empty — no Maison Sol agents, knowledge, or phone numbers.</p>
       </div>
