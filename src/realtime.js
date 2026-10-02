@@ -10,7 +10,7 @@ function languageLine(lang) {
     ? "Reply in Spanish."
     : lang === "en"
       ? "Reply in English."
-      : "Reply in the caller's language, English or Spanish.";
+      : "Reply in the caller's language. Prefer the language of the greeting and the latest caller turn.";
 }
 
 function todayLine() {

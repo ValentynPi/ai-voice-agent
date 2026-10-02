@@ -302,12 +302,6 @@ async function overview() {
       <div class="cx-url-row"><span>Status callback</span><code>${esc(account.status_callback_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.status_callback_url)}">Copy</button></div>
     </section>
     <section class="cx-card">
-      <h2>Voice webhooks (Agents brain)</h2>
-      <p>Default Voice URL / Status callback for bought numbers and TwiML Apps. Method is HTTP POST. The voice URL returns <span class="mono">&lt;Connect&gt;&lt;Stream&gt;</span> into the Agents Realtime session.</p>
-      <div class="cx-url-row"><span>Voice URL</span><code>${esc(account.voice_webhook_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.voice_webhook_url)}">Copy</button></div>
-      <div class="cx-url-row"><span>Status callback</span><code>${esc(account.status_callback_url)}</code><button class="cx-btn ghost" type="button" data-copy="${esc(account.status_callback_url)}">Copy</button></div>
-    </section>
-    <section class="cx-card">
       <h2>Recent calls</h2>
       <p>Browser test calls show up here as <span class="mono">client:browser</span>. Demo calls from this console exercise Media Streams into Agents.</p>
     </section>
@@ -380,6 +374,10 @@ function bindBrainCard(root, initialAgentId) {
   root.querySelector("#applyVoiceUrls")?.addEventListener("click", async () => {
     clearError();
     const agentId = pick.value || "";
+    const confirmMsg = agentId
+      ? `Overwrite Voice URL on EVERY number with agentId=${agentId}? Existing bindings will change.`
+      : "Overwrite Voice URL on EVERY number with the default (no agentId)? Existing bindings will be cleared.";
+    if (!window.confirm(confirmMsg)) return;
     note.textContent = agentId
       ? `Applying Voice URL with agentId=${agentId} to all numbers…`
       : "Applying default Voice URL (no agentId) to all numbers…";
@@ -503,9 +501,17 @@ async function openNumber(sid) {
       <dt>Voice method</dt><dd>${esc(number.voice_method)}</dd>
       <dt>Created</dt><dd>${esc(formatWhen(number.date_created))}</dd>
     </dl>
-    <div class="cx-actions" style="margin-bottom:16px">
-      <button class="cx-btn primary" type="button" id="assignSavedAgent" ${savedAgent ? "" : "disabled"}>${savedAgent ? `Connect agent ${esc(savedAgent)}` : "Pick an agent on Overview first"}</button>
-      <button class="cx-btn ghost" type="button" id="clearAgent" ${linkedAgent ? "" : "disabled"}>Clear agentId</button>
+    <div class="cx-form" style="margin-bottom:16px">
+      <label>Connect agent
+        <select id="drawerAgentPick">
+          <option value="">Unassigned (default agent)</option>
+        </select>
+      </label>
+      <div class="cx-actions" style="margin-top:10px">
+        <button class="cx-btn primary" type="button" id="assignDrawerAgent">Apply agent</button>
+        <button class="cx-btn ghost" type="button" id="clearAgent" ${linkedAgent ? "" : "disabled"}>Clear agentId</button>
+      </div>
+      <p class="cx-lede" id="drawerAgentNote" style="margin-top:8px"></p>
     </div>
     <form class="cx-form" id="numberForm">
       <label>Friendly name<input name="friendly_name" value="${esc(number.friendly_name)}" required></label>
@@ -516,12 +522,46 @@ async function openNumber(sid) {
       <button class="cx-btn primary" type="submit">Save number</button>
     </form>
   `, (root) => {
-    root.querySelector("#assignSavedAgent")?.addEventListener("click", async () => {
+    const pick = root.querySelector("#drawerAgentPick");
+    const noteEl = root.querySelector("#drawerAgentNote");
+    const preferred = linkedAgent || savedAgent || "";
+    (async () => {
       try {
+        const brain = normalizeAgentsBaseUrl(account?.agents_public_url || localStorage.getItem("cx-agents-url") || "");
+        const agents = brain ? await fetchAgentsList(brain) : [];
+        if (!agents.length) {
+          pick.innerHTML = `<option value="">Unassigned (default agent)</option>` +
+            (preferred ? `<option value="${esc(preferred)}" selected>${esc(preferred)}</option>` : "");
+          if (noteEl) noteEl.textContent = brain
+            ? "No agents returned from Agents. You can still clear agentId."
+            : "Set Agents brain URL on Overview to load the agent list.";
+          return;
+        }
+        pick.innerHTML = `<option value="">Unassigned (default agent)</option>` + agents.map((agent) =>
+          `<option value="${esc(agent.id)}" ${agent.id === preferred ? "selected" : ""}>${esc(agent.name || agent.id)}</option>`
+        ).join("");
+        if (preferred && ![...pick.options].some((option) => option.value === preferred)) {
+          const orphan = document.createElement("option");
+          orphan.value = preferred;
+          orphan.textContent = preferred;
+          orphan.selected = true;
+          pick.append(orphan);
+        }
+      } catch (error) {
+        if (noteEl) noteEl.textContent = error.message || "Could not load agents.";
+        if (preferred) {
+          pick.innerHTML = `<option value="">Unassigned (default agent)</option><option value="${esc(preferred)}" selected>${esc(preferred)}</option>`;
+        }
+      }
+    })();
+    root.querySelector("#assignDrawerAgent")?.addEventListener("click", async () => {
+      try {
+        const agentId = pick.value || "";
         await api("/api/twilio/v1/assign-agent", {
           method: "POST",
-          body: JSON.stringify({ sid, agent_id: savedAgent }),
+          body: JSON.stringify({ sid, agent_id: agentId }),
         });
+        if (agentId) localStorage.setItem("cx-agent-id", agentId);
         closeDrawer();
         await numbersPage();
       } catch (error) {
@@ -696,7 +736,11 @@ async function openCall(sid) {
     </dl>
     ${recording?.note ? `<p class="cx-lede">${esc(recording.note)}</p>` : ""}
     ${call.annotation ? `<p class="cx-lede">${esc(call.annotation)}</p>` : ""}
-    ${call.local_call_id ? `<p><a href="/history/${esc(call.local_call_id)}">Open the agent transcript</a></p>` : ""}
+    ${(() => {
+      const brain = normalizeAgentsBaseUrl(account?.agents_public_url || "");
+      if (!call.local_call_id || !brain) return "";
+      return `<p><a href="${esc(brain + "/history/" + call.local_call_id)}" target="_blank" rel="noopener">Open the agent transcript</a></p>`;
+    })()}
   `);
 }
 

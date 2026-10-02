@@ -89,7 +89,7 @@
             </section>
             <section class="panel slim" id="phoneConnectPanel">
               <h2>Connect to phone number</h2>
-              <p class="sub">Attach this agent to a demo Twilio number so inbound Voice URL uses <span class="mono">?agentId=</span> this agent (not only Maison Sol).</p>
+              <p class="sub">Attach this agent to a demo Twilio number so inbound Voice URL uses <span class="mono">?agentId=</span> this agent.</p>
               <div id="phoneConnectBody"><p class="sub">Save the agent first to connect a number.</p></div>
             </section>
             <section class="panel slim">
@@ -99,9 +99,9 @@
             </section>
             <section class="panel slim">
               <h2>Tools</h2>
-              <p class="sub">MCP tools are connected on the Tools page. This agent can use all of the enabled ones, or a subset.</p>
-              <label class="choice"><input type="radio" name="toolMode" value="all" checked /> Use every enabled MCP tool</label>
-              <label class="choice"><input type="radio" name="toolMode" value="custom" /> Only selected tools</label>
+              <p class="sub">Built-in salon tools (weather, hours, CRM, bookings) are always available. Optional MCP tools are connected on the <a href="/tools">Tools</a> page.</p>
+              <label class="choice"><input type="radio" name="toolMode" value="all" checked /> Use every enabled MCP tool (plus built-ins)</label>
+              <label class="choice"><input type="radio" name="toolMode" value="custom" /> Only selected MCP tools (plus built-ins)</label>
               <div class="check-list" id="toolChecks"></div>
             </section>
           </div>

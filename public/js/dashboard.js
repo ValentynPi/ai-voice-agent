@@ -13,6 +13,7 @@ const mcpDisconnect = document.querySelector("#mcpDisconnect");
 const mcpMessage = document.querySelector("#mcpMessage");
 const mcpTools = document.querySelector("#mcpTools");
 const mcpCalls = document.querySelector("#mcpCalls");
+const builtinTools = document.querySelector("#builtinTools");
 const updated = document.querySelector("#updated");
 
 async function poll() {
@@ -91,8 +92,8 @@ function renderMcp(mcp, calls) {
       : "Bearer token if the server requires one";
   }
   if (mcp.error) mcpMessage.textContent = mcp.error;
-  else if (connected) mcpMessage.textContent = "Enabled tools are offered to Sol on the next call.";
-  else mcpMessage.textContent = "Not connected. Sol will greet, but she has no tools until you connect one.";
+  else if (connected) mcpMessage.textContent = "Enabled MCP tools are offered on the next call, alongside built-ins.";
+  else mcpMessage.textContent = "No MCP server connected. Built-in salon tools still work on every call.";
 
   const nextSignature = JSON.stringify(mcp.tools || []);
   if (nextSignature !== mcpSignature) {
@@ -238,7 +239,7 @@ mcpDisconnect.addEventListener("click", async () => {
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || "Could not disconnect");
     mcpToken.value = "";
-    mcpMessage.textContent = "Disconnected. Sol will not call those tools.";
+    mcpMessage.textContent = "Disconnected. Built-in salon tools still work; MCP tools will not.";
     await refresh();
   } catch (error) {
     mcpMessage.textContent = error.message || "Could not disconnect";
@@ -263,5 +264,49 @@ function clock(iso) {
   }).format(new Date(iso));
 }
 
+async function loadBuiltins() {
+  if (!builtinTools) return;
+  try {
+    const response = await fetch("/api/tools");
+    if (!response.ok) throw new Error("bad status");
+    const data = await response.json();
+    const tools = (data.tools || []).filter((tool) => tool.builtin !== false);
+    builtinTools.replaceChildren();
+    if (!tools.length) {
+      const empty = document.createElement("p");
+      empty.className = "desc";
+      empty.textContent = "No built-in tools listed.";
+      builtinTools.append(empty);
+      return;
+    }
+    for (const tool of tools) {
+      const row = document.createElement("article");
+      row.className = "tool-row";
+      const header = document.createElement("header");
+      const title = document.createElement("h3");
+      title.textContent = tool.name;
+      const meta = document.createElement("span");
+      meta.className = "tag";
+      meta.textContent = tool.group || "builtin";
+      header.append(title, meta);
+      const schema = document.createElement("p");
+      schema.className = "schema";
+      schema.textContent = tool.parameterSummary || "no parameters";
+      const description = document.createElement("p");
+      description.className = "desc";
+      description.textContent = tool.description || "";
+      row.append(header, schema, description);
+      builtinTools.append(row);
+    }
+  } catch {
+    builtinTools.replaceChildren();
+    const empty = document.createElement("p");
+    empty.className = "desc";
+    empty.textContent = "Could not load built-in tools.";
+    builtinTools.append(empty);
+  }
+}
+
+loadBuiltins();
 poll();
 setInterval(poll, 1500);

@@ -38,7 +38,7 @@ test("pages and health respond", async () => {
     const dashboard = await fetch(`${base}/dashboard`);
     assert.equal(dashboard.status, 200);
     const html = await dashboard.text();
-    assert.match(html, /MCP tools/);
+    assert.match(html, /Tools/);
     assert.match(html, /mcpUrl/);
     assert.match(html, /Security/);
     assert.doesNotMatch(html, /Add a mock tool/);

@@ -111,7 +111,7 @@ function renderTools() {
   if (!tools.length) {
     const empty = document.createElement("p");
     empty.className = "sub";
-    empty.textContent = "No MCP tools discovered yet. Connect a server on the Tools page.";
+    empty.textContent = "No optional MCP tools yet. Built-ins still work. Connect a server on the Tools page to add more.";
     toolChecks.append(empty);
     return;
   }

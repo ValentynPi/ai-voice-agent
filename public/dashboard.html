@@ -38,14 +38,22 @@
       <header class="page-head">
         <div>
           <p class="kicker">Build</p>
-          <h1>MCP tools</h1>
-          <p class="lede">Paste a remote MCP server URL. The token stays on the server. Enabled tools can be offered to agents on the next test call.</p>
+          <h1>Tools</h1>
+          <p class="lede">Built-in salon tools run without MCP. Optionally paste a remote MCP server URL — the token stays on the server — to offer extra tools on the next test call.</p>
         </div>
       </header>
       <main class="page">
+        <section class="panel" aria-labelledby="builtin-heading">
+          <header class="panel-head">
+            <h2 id="builtin-heading">Built-in tools</h2>
+            <span>Always on for agents</span>
+          </header>
+          <p class="hint">Weather, salon hours, CRM, orders, and bookings ship with the desk. No MCP connection required.</p>
+          <div id="builtinTools" class="mcp-tools"></div>
+        </section>
         <section class="panel mcp-panel" aria-labelledby="mcp-heading">
           <header class="panel-head">
-            <h2 id="mcp-heading">Connection</h2>
+            <h2 id="mcp-heading">MCP connection</h2>
             <span id="mcpStatus">Not connected</span>
           </header>
           <form id="mcpForm" class="mcp-form">
