@@ -105,6 +105,7 @@ function mapAgent(row, knowledge) {
   const notes = knowledge || [];
   return {
     id: row.id,
+    accountId: row.account_id || DEMO_ACCOUNT_ID,
     name: row.name,
     description: row.description || "",
     systemPrompt: row.system_prompt,
@@ -121,7 +122,7 @@ function mapAgent(row, knowledge) {
 }
 
 const AGENT_COLUMNS = `
-  id, name, description, system_prompt, greeting, voice, language,
+  id, account_id, name, description, system_prompt, greeting, voice, language,
   model_notes, enabled_tools_json, created_at, updated_at
 `;
 

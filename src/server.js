@@ -224,7 +224,10 @@ async function syncTenantToTelephony(account) {
 
 
 app.get("/api/state", (req, res) => {
-  res.json(buildState({ includeBuiltins: includeDemoBuiltins(req.accountId) }));
+  res.json(buildState({
+    includeBuiltins: includeDemoBuiltins(req.accountId),
+    accountId: req.accountId,
+  }));
 });
 
 app.post("/api/calls", (req, res, next) => {
@@ -251,13 +254,22 @@ app.post("/api/calls", (req, res, next) => {
   }
 });
 
+function callBelongsToRequest(call, req) {
+  if (!call) return false;
+  return (call.accountId || DEMO_ACCOUNT_ID) === (req.accountId || DEMO_ACCOUNT_ID);
+}
+
 app.post("/api/calls/:id/heartbeat", (req, res) => {
   const call = touchCall(req.params.id);
-  if (!call || call.status !== "active") return res.status(404).json({ error: "Call not found" });
+  if (!call || call.status !== "active" || !callBelongsToRequest(call, req)) {
+    return res.status(404).json({ error: "Call not found" });
+  }
   res.json({ ok: true });
 });
 
 app.post("/api/calls/:id/end", (req, res) => {
+  const existing = getCall(req.params.id);
+  if (!existing || !callBelongsToRequest(existing, req)) return res.status(404).json({ error: "Call not found" });
   const reason = req.body?.status === "failed" ? "failed" : "client";
   const call = endCall(req.params.id, reason);
   if (!call) return res.status(404).json({ error: "Call not found" });
@@ -359,8 +371,9 @@ app.post("/api/realtime/token", async (req, res, next) => {
     if (!callId) return res.status(400).json({ error: "callId is required" });
     const call = getCall(callId);
     if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
+    if (!callBelongsToRequest(call, req)) return res.status(404).json({ error: "Call not found" });
     await ensureMcp();
-    const agent = call.agentId ? getAgent(call.agentId) : null;
+    const agent = call.agentId ? getAgent(call.agentId, req.accountId) : getDefaultAgent(req.accountId);
     const secret = await mintRealtimeClientSecret({ lang, agent });
     res.json({ ...secret, callId });
   } catch (error) {
@@ -373,6 +386,9 @@ app.post("/api/realtime/utterance", (req, res, next) => {
     const { callId, role, text, lang } = req.body || {};
     if (!callId) return res.status(400).json({ error: "callId is required" });
     if (role !== "user" && role !== "assistant") return res.status(400).json({ error: "role is required" });
+    const call = getCall(callId);
+    if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
+    if (!callBelongsToRequest(call, req)) return res.status(404).json({ error: "Call not found" });
     res.json(recordRealtimeUtterance({ callId, role, text, lang }));
   } catch (error) {
     next(error);
@@ -384,6 +400,9 @@ app.post("/api/realtime/tool", async (req, res, next) => {
     const { callId, name, args, arguments: rawArgs } = req.body || {};
     if (!callId) return res.status(400).json({ error: "callId is required" });
     if (!name) return res.status(400).json({ error: "name is required" });
+    const call = getCall(callId);
+    if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
+    if (!callBelongsToRequest(call, req)) return res.status(404).json({ error: "Call not found" });
     let parsed = args;
     if (parsed == null && typeof rawArgs === "string") {
       try {
@@ -616,6 +635,9 @@ app.post("/api/chat", async (req, res, next) => {
   try {
     const { callId, text, lang } = req.body || {};
     if (!callId) return res.status(400).json({ error: "callId is required" });
+    const call = getCall(callId);
+    if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
+    if (!callBelongsToRequest(call, req)) return res.status(404).json({ error: "Call not found" });
     const result = await handleTurn({ callId, text, lang });
     res.json(result);
   } catch (error) {
@@ -722,7 +744,7 @@ async function seedDemo() {
   ];
   try {
     for (const text of samples) {
-      const call = startCall({ source: "seed" });
+      const call = startCall({ source: "seed", accountId: DEMO_ACCOUNT_ID });
       await handleTurn({ callId: call.id, text, lang: "en" });
       endCall(call.id, "seed");
     }

@@ -1,6 +1,9 @@
 const MAX_EVENTS = 80;
 const MAX_TOOL_CALLS = 80;
 
+/** Untagged legacy events belong to the public demo tenant. */
+const DEMO_ACCOUNT_ID = "acct_demo";
+
 const endedListeners = new Set();
 
 const state = {
@@ -35,6 +38,21 @@ function pushCapped(list, item, max) {
   if (list.length > max) list.splice(0, list.length - max);
 }
 
+function resolveAccountId(explicit, callId) {
+  if (explicit) return explicit;
+  if (callId) {
+    const call = getCall(callId);
+    if (call?.accountId) return call.accountId;
+  }
+  return DEMO_ACCOUNT_ID;
+}
+
+function sameAccount(entryAccountId, accountId) {
+  const left = entryAccountId || DEMO_ACCOUNT_ID;
+  const right = accountId || DEMO_ACCOUNT_ID;
+  return left === right;
+}
+
 export function resetStore() {
   state.calls = [];
   state.securityEvents = [];
@@ -58,7 +76,7 @@ export function startCall({ source = "browser", agentId = null, agentName = null
     voice,
     lang: null,
     toolAllow,
-    accountId,
+    accountId: accountId || DEMO_ACCOUNT_ID,
   };
   state.calls.push(call);
   state.callsToday += 1;
@@ -120,6 +138,7 @@ export function recordSecurity(event) {
     id: nextId("sec"),
     at: new Date().toISOString(),
     callId: event.callId || null,
+    accountId: resolveAccountId(event.accountId, event.callId),
     kind: event.kind,
     decision: event.decision,
     summary: event.summary,
@@ -137,6 +156,7 @@ export function recordToolCall(event) {
     id: nextId("tool"),
     at: new Date().toISOString(),
     callId: event.callId || null,
+    accountId: resolveAccountId(event.accountId, event.callId),
     name: event.name,
     group: event.group,
     args: event.args || {},
@@ -162,34 +182,48 @@ function publicCall(call) {
     agentName: call.agentName || null,
     voice: call.voice || null,
     lang: call.lang || null,
-    accountId: call.accountId || null,
+    accountId: call.accountId || DEMO_ACCOUNT_ID,
     messages: call.messages.map((message) => ({ ...message, tools: [...message.tools] })),
   };
 }
 
-export function listActivePublicCalls() {
+export function listActivePublicCalls(accountId = null) {
   return state.calls
     .filter((call) => call.status === "active" && call.source !== "seed")
+    .filter((call) => (accountId == null ? true : sameAccount(call.accountId, accountId)))
     .map(publicCall);
 }
 
-export function currentConversation() {
-  const active = [...state.calls].reverse().find((call) => call.status === "active");
-  const call = active || state.calls[state.calls.length - 1] || null;
+export function currentConversation(accountId = null) {
+  const pool = accountId == null
+    ? state.calls
+    : state.calls.filter((call) => sameAccount(call.accountId, accountId));
+  const active = [...pool].reverse().find((call) => call.status === "active");
+  const call = active || pool[pool.length - 1] || null;
   return publicCall(call);
 }
 
-export function getSnapshot() {
-  const activeCalls = state.calls.filter((call) => call.status === "active").length;
+export function getSnapshot(accountId = null) {
+  const tid = accountId || DEMO_ACCOUNT_ID;
+  const calls = state.calls.filter((call) => sameAccount(call.accountId, tid));
+  const securityEvents = state.securityEvents.filter((event) => sameAccount(event.accountId, tid));
+  const toolCalls = state.toolCalls.filter((event) => sameAccount(event.accountId, tid));
+  const activeCalls = calls.filter((call) => call.status === "active").length;
+  const callsToday = calls.filter((call) => {
+    const day = String(call.startedAt || "").slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    return day === today;
+  }).length;
   return {
     status: "online",
+    accountId: tid,
     activeCalls,
-    callsToday: state.callsToday,
-    denies: state.securityEvents.filter((event) => event.decision === "deny").length,
-    toolCallCount: state.toolCalls.length,
-    conversation: currentConversation(),
-    recentCalls: state.calls.slice(-8).map(publicCall),
-    securityEvents: [...state.securityEvents].reverse(),
-    toolCalls: [...state.toolCalls].reverse(),
+    callsToday,
+    denies: securityEvents.filter((event) => event.decision === "deny").length,
+    toolCallCount: toolCalls.length,
+    conversation: currentConversation(tid),
+    recentCalls: calls.slice(-8).map(publicCall),
+    securityEvents: [...securityEvents].reverse(),
+    toolCalls: [...toolCalls].reverse(),
   };
 }

@@ -244,6 +244,7 @@ async function handleTwilioMedia(twilioWs, url) {
           agentName: agent?.name || null,
           voice: openai.voice,
           toolAllow: agent ? agent.enabledTools : null,
+          accountId: agent?.accountId || null,
         });
         openai.ws.on("message", (data) => onOpenAiMessage(String(data)));
         openai.ws.on("close", () => closeAll("realtime-closed"));
