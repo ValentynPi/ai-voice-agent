@@ -242,29 +242,54 @@ async function loadPhoneConnect() {
     } else {
       bits.push(`<p class="sub">Not connected to a phone number yet.</p>`);
     }
-    if (unassigned.length) {
+    const unassignedPickerHtml = () => {
       const options = unassigned.map((n) =>
         `<option value="${n.sid}">${formatPhone(n.phone_number)}${n.friendly_name ? ` — ${n.friendly_name}` : ""}</option>`
       ).join("");
-      bits.push(`<label style="display:block;margin-top:12px">Unassigned number
+      return `<label style="display:block;margin-top:12px">Unassigned number
         <select id="phonePick">${options}</select>
       </label>
       <div class="head-actions" style="margin-top:12px;flex-wrap:wrap;gap:8px">
         <button class="btn small primary" type="button" id="phoneConnectBtn">Connect in one click</button>
         ${deep ? `<a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony</a>` : ""}
       </div>
-      <p class="quiet" style="margin-top:8px">Sets Voice URL to Agents <span class="mono">/twilio/voice?agentId=${id}</span>.</p>`);
+      <p class="quiet" style="margin-top:8px">Sets Voice URL to Agents <span class="mono">/twilio/voice?agentId=${id}</span>.</p>`;
+    };
+
+    if (unassigned.length) {
+      if (bound.length) {
+        // Already connected: keep Connected list primary; reveal picker only on demand.
+        bits.push(`<div class="head-actions" style="margin-top:4px;flex-wrap:wrap;gap:8px">
+          <button class="btn small ghost" type="button" id="phoneAddAnotherBtn">Add another number</button>
+          ${deep ? `<a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony</a>` : ""}
+        </div>
+        <div id="phoneAddAnotherPanel" hidden>${unassignedPickerHtml()}</div>`);
+      } else {
+        bits.push(unassignedPickerHtml());
+      }
     } else if (!numbers.length) {
       bits.push(`<p class="sub" style="margin-top:12px">No numbers yet. Buy a demo number on the telephony console, then refresh.</p>
         <div class="head-actions" style="margin-top:12px">
           <a class="btn small primary" href="${payload.buy_url || payload.console_url || "/phone-numbers"}" target="_blank" rel="noopener">Buy a number</a>
         </div>`);
-    } else {
+    } else if (!bound.length) {
       bits.push(`<p class="sub" style="margin-top:12px">Every number is already assigned. Disconnect one, or buy another demo number.</p>
         ${deep ? `<div class="head-actions" style="margin-top:12px"><a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony with this agent</a></div>` : ""}`);
+    } else {
+      bits.push(`${deep ? `<div class="head-actions" style="margin-top:4px"><a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony</a></div>` : ""}`);
     }
     bits.push(`<p class="quiet" id="phoneConnectNote" style="margin-top:12px"></p>`);
     phoneConnectBody.innerHTML = bits.join("");
+
+    phoneConnectBody.querySelector("#phoneAddAnotherBtn")?.addEventListener("click", () => {
+      const panel = phoneConnectBody.querySelector("#phoneAddAnotherPanel");
+      const btn = phoneConnectBody.querySelector("#phoneAddAnotherBtn");
+      if (!panel) return;
+      const open = panel.hasAttribute("hidden");
+      if (open) panel.removeAttribute("hidden");
+      else panel.setAttribute("hidden", "");
+      if (btn) btn.textContent = open ? "Hide number picker" : "Add another number";
+    });
 
     phoneConnectBody.querySelector("#phoneConnectBtn")?.addEventListener("click", async () => {
       const pick = phoneConnectBody.querySelector("#phonePick");
