@@ -48,7 +48,10 @@ let greetingFallbackTimer = 0;
 let greetingFallbackWaits = 0;
 let silentGreetingTimer = 0;
 
-langSelect.value = localStorage.getItem("sol-lang") || "en";
+{
+  const stored = localStorage.getItem("sol-lang") || "en";
+  langSelect.value = stored === "es" || stored === "en" ? stored : "en";
+}
 loadAgentChrome();
 langSelect.addEventListener("change", () => {
   localStorage.setItem("sol-lang", langSelect.value);
@@ -85,7 +88,7 @@ composer.addEventListener("submit", (event) => {
 async function loadAgentChrome() {
   if (!pageAgentId) return;
   try {
-    const response = await fetch(`/api/agents/${encodeURIComponent(pageAgentId)}`);
+    const response = await fetch(`/api/agents/${encodeURIComponent(pageAgentId)}`, { credentials: "same-origin" });
     if (!response.ok) return;
     const body = await response.json();
     const agent = body.agent;
@@ -208,7 +211,7 @@ function pushSession(tools) {
 
 function sendSessionLanguage() {
   if (!realtime?.session) return;
-  fetch("/api/tools")
+  fetch("/api/tools", { credentials: "same-origin" })
     .then((response) => (response.ok ? response.json() : null))
     .then((body) => {
       if (!realtime) return;
@@ -375,15 +378,26 @@ function markGreetingAudio() {
   setPhase("speaking", "Speaking");
 }
 
-async function connectRealtime() {
+async function connectRealtime(activeCallId = callId) {
+  if (!activeCallId) {
+    throw new Error("callId is required before requesting a Realtime token");
+  }
   const tokenResponse = await fetch("/api/realtime/token", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callId, lang: langSelect.value }),
+    body: JSON.stringify({ callId: activeCallId, lang: langSelect.value || "en" }),
   });
-  if (!tokenResponse.ok) return false;
+  if (!tokenResponse.ok) {
+    const errBody = await tokenResponse.json().catch(() => ({}));
+    const detail = errBody.error || `HTTP ${tokenResponse.status}`;
+    if (tokenResponse.status === 401) {
+      throw new Error(`${detail}. Open Sign in, then try Start call again.`);
+    }
+    throw new Error(`Realtime token failed: ${detail}`);
+  }
   const token = await tokenResponse.json();
-  if (!token.value) return false;
+  if (!token.value) throw new Error("Realtime token response was missing a client secret");
 
   const pc = new RTCPeerConnection();
   const dc = pc.createDataChannel("oai-events");
@@ -489,28 +503,45 @@ async function startCall() {
   try {
     const response = await fetch("/api/calls", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(pageAgentId ? { agentId: pageAgentId } : {}),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      hintEl.textContent = payload.error || "Could not open a call. Is the server running?";
+      const detail = payload.error || "Could not open a call. Is the server running?";
+      if (response.status === 401) {
+        hintEl.replaceChildren();
+        hintEl.append(document.createTextNode(detail + " "));
+        const next = encodeURIComponent(location.pathname + location.search);
+        const link = document.createElement("a");
+        link.href = `/signin?next=${next}`;
+        link.textContent = "Sign in";
+        hintEl.append(link, document.createTextNode(", then try Start call again."));
+      } else {
+        hintEl.textContent = detail;
+      }
       return;
     }
-    callId = payload.call.id;
+    const openedId = payload?.call?.id;
+    if (!openedId) {
+      hintEl.textContent = "Could not open a call (missing call id).";
+      return;
+    }
+    callId = openedId;
     callActive = true;
     callBtn.textContent = "End call";
     callBtn.classList.add("live");
     callMeta.textContent = callId;
     setPhase("thinking", "Connecting");
     heartbeat = setInterval(() => {
-      if (callId) fetch(`/api/calls/${callId}/heartbeat`, { method: "POST" });
+      if (callId) fetch(`/api/calls/${callId}/heartbeat`, { method: "POST", credentials: "same-origin" });
     }, 5000);
 
     let connected = false;
     let failure = "OpenAI Realtime voice marin is unavailable. Sol will not use a browser voice. You can still type and read the reply.";
     try {
-      connected = await connectRealtime();
+      connected = await connectRealtime(callId);
     } catch (error) {
       closeRealtime();
       const micBlocked = /NotAllowedError|Permission|not-allowed|denied/i.test(`${error.name || ""} ${error.message || ""}`);
@@ -520,8 +551,21 @@ async function startCall() {
     }
     if (!connected) {
       closeRealtime();
-      modeBadge.textContent = "Marin unavailable";
-      setPhase("idle", "Voice unavailable");
+      const authFail = /sign in/i.test(failure);
+      if (authFail) {
+        if (heartbeat) clearInterval(heartbeat);
+        heartbeat = null;
+        const failedId = callId;
+        callId = null;
+        callActive = false;
+        callBtn.textContent = "Start call";
+        callBtn.classList.remove("live");
+        if (failedId) {
+          fetch(`/api/calls/${failedId}/end`, { method: "POST", credentials: "same-origin" }).catch(() => {});
+        }
+      }
+      modeBadge.textContent = authFail ? "Sign in required" : "Marin unavailable";
+      setPhase("idle", authFail ? "Sign in required" : "Voice unavailable");
       hintEl.textContent = failure;
     }
   } finally {
@@ -544,7 +588,7 @@ async function endCall() {
   if (!id) return;
   let saved = false;
   try {
-    const response = await fetch(`/api/calls/${id}/end`, { method: "POST" });
+    const response = await fetch(`/api/calls/${id}/end`, { method: "POST", credentials: "same-origin" });
     saved = response.ok;
   } catch {
     saved = false;
@@ -621,6 +665,7 @@ async function submitRealtimeText(text) {
   try {
     const response = await fetch("/api/realtime/utterance", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
     });
@@ -671,6 +716,7 @@ async function submitFallback(text) {
     setPhase("thinking", "Thinking");
     const response = await fetch("/api/chat", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callId, text, lang: langSelect.value }),
     });
@@ -789,6 +835,7 @@ async function onCallerAudio(text, itemId) {
   }, 1500);
   const response = await fetch("/api/realtime/utterance", {
     method: "POST",
+      credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
   });
@@ -819,6 +866,7 @@ async function onAssistantAudio(text) {
   if (callId) {
     await fetch("/api/realtime/utterance", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callId, role: "assistant", text }),
     });
@@ -831,6 +879,7 @@ async function onToolCall(toolCall) {
   setPhase("thinking", "Thinking");
   const response = await fetch("/api/realtime/tool", {
     method: "POST",
+      credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       callId,
