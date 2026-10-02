@@ -27,6 +27,7 @@ let agent = null;
 let knowledge = [];
 let discovered = [];
 let knowledgeReady = false;
+let demoBuiltins = false;
 
 function note(message, tone) {
   banner.hidden = false;
@@ -97,7 +98,27 @@ function renderKnowledge() {
   }
 }
 
+function paintToolsCopy() {
+  const sub = document.querySelector("#toolsSub");
+  const allLabel = document.querySelector("#toolModeAllLabel");
+  const customLabel = document.querySelector("#toolModeCustomLabel");
+  if (demoBuiltins) {
+    if (sub) {
+      sub.innerHTML = 'Built-in salon tools (weather, hours, CRM, bookings) are available on the public demo. Optional MCP tools are connected on the <a href="/tools">Tools</a> page.';
+    }
+    if (allLabel) allLabel.textContent = "Use every enabled MCP tool (plus built-ins)";
+    if (customLabel) customLabel.textContent = "Only selected MCP tools (plus built-ins)";
+  } else {
+    if (sub) {
+      sub.innerHTML = 'Optional MCP tools are connected on the <a href="/tools">Tools</a> page. New accounts start with no tools until you connect MCP.';
+    }
+    if (allLabel) allLabel.textContent = "Use every enabled MCP tool";
+    if (customLabel) customLabel.textContent = "Only selected MCP tools";
+  }
+}
+
 function renderTools() {
+  paintToolsCopy();
   toolChecks.replaceChildren();
   const selected = new Set(agent?.enabledTools || []);
   const byAlias = new Map();
@@ -111,7 +132,9 @@ function renderTools() {
   if (!tools.length) {
     const empty = document.createElement("p");
     empty.className = "sub";
-    empty.textContent = "No optional MCP tools yet. Built-ins still work. Connect a server on the Tools page to add more.";
+    empty.textContent = demoBuiltins
+      ? "No optional MCP tools yet. Demo built-ins still work. Connect a server on the Tools page to add more."
+      : "No tools yet. Connect an MCP server on the Tools page — new accounts start empty.";
     toolChecks.append(empty);
     return;
   }
@@ -173,6 +196,7 @@ async function load() {
     knowledge = knowledgeBody.knowledge || [];
     knowledgeReady = true;
     discovered = stateBody.mcp?.tools || [];
+    demoBuiltins = Boolean(stateBody.demoBuiltins);
     const voices = agentBody?.voices || (await readJson(await fetch("/api/agents"))).voices;
     paint(agentBody ? { ...agentBody.agent, voices } : { voices });
     renderKnowledge();

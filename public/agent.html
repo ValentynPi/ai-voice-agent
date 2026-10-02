@@ -99,9 +99,9 @@
             </section>
             <section class="panel slim">
               <h2>Tools</h2>
-              <p class="sub">Built-in salon tools (weather, hours, CRM, bookings) are always available. Optional MCP tools are connected on the <a href="/tools">Tools</a> page.</p>
-              <label class="choice"><input type="radio" name="toolMode" value="all" checked /> Use every enabled MCP tool (plus built-ins)</label>
-              <label class="choice"><input type="radio" name="toolMode" value="custom" /> Only selected MCP tools (plus built-ins)</label>
+              <p class="sub" id="toolsSub">Optional MCP tools are connected on the <a href="/tools">Tools</a> page. New accounts start with no tools until you connect MCP.</p>
+              <label class="choice"><input type="radio" name="toolMode" value="all" checked /> <span id="toolModeAllLabel">Use every enabled MCP tool</span></label>
+              <label class="choice"><input type="radio" name="toolMode" value="custom" /> <span id="toolModeCustomLabel">Only selected MCP tools</span></label>
               <div class="check-list" id="toolChecks"></div>
             </section>
           </div>

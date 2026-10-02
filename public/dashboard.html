@@ -39,16 +39,16 @@
         <div>
           <p class="kicker">Build</p>
           <h1>Tools</h1>
-          <p class="lede">Built-in salon tools run without MCP. Optionally paste a remote MCP server URL — the token stays on the server — to offer extra tools on the next test call.</p>
+          <p class="lede" id="toolsLede">Connect a remote MCP server — the token stays on the server — to offer tools on the next test call. The public demo also ships fictional salon built-ins.</p>
         </div>
       </header>
       <main class="page">
-        <section class="panel" aria-labelledby="builtin-heading">
+        <section class="panel" id="builtinPanel" aria-labelledby="builtin-heading" hidden>
           <header class="panel-head">
             <h2 id="builtin-heading">Built-in tools</h2>
-            <span>Always on for agents</span>
+            <span>Demo only</span>
           </header>
-          <p class="hint">Weather, salon hours, CRM, orders, and bookings ship with the desk. No MCP connection required.</p>
+          <p class="hint">Weather, salon hours, CRM, orders, and bookings for the Maison Sol demo. Not included on signed-in accounts.</p>
           <div id="builtinTools" class="mcp-tools"></div>
         </section>
         <section class="panel mcp-panel" aria-labelledby="mcp-heading">

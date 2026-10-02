@@ -5,7 +5,7 @@ import { getSnapshot } from "./store.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
 import { listToolCatalog } from "./tools/registry.js";
 
-export function buildState() {
+export function buildState({ includeBuiltins = true } = {}) {
   const openai = Boolean(process.env.OPENAI_API_KEY);
   return {
     ...getSnapshot(),
@@ -14,8 +14,9 @@ export function buildState() {
     realtimeModel: openai ? realtimeModel() : null,
     voice: openai ? voiceName() : null,
     database: databaseInfo(),
-    tools: listToolCatalog(),
+    tools: listToolCatalog({ includeBuiltins }),
     toolStorage: toolCatalogInfo(),
     mcp: publicMcp(),
+    demoBuiltins: Boolean(includeBuiltins),
   };
 }

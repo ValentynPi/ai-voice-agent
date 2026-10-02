@@ -42,6 +42,7 @@ import {
   createSession,
   destroySession,
   getAccount,
+  includeDemoBuiltins,
   passwordHashFor,
   setSessionCookie,
 } from "./accounts.js";
@@ -223,7 +224,7 @@ async function syncTenantToTelephony(account) {
 
 
 app.get("/api/state", (req, res) => {
-  res.json(buildState());
+  res.json(buildState({ includeBuiltins: includeDemoBuiltins(req.accountId) }));
 });
 
 app.post("/api/calls", (req, res, next) => {
@@ -428,17 +429,26 @@ app.patch("/api/mcp/tools/:name", (req, res, next) => {
 });
 
 app.get("/api/tools", (req, res) => {
+  const includeBuiltins = includeDemoBuiltins(req.accountId);
   res.json({
-    tools: listToolCatalog(),
+    tools: listToolCatalog({ includeBuiltins }),
     realtime: realtimeToolSpecs(),
     storage: toolCatalogInfo(),
+    demoMode: Boolean(req.isDemoMode),
+    demoBuiltins: includeBuiltins,
   });
 });
 
 app.post("/api/tools", (req, res, next) => {
   try {
     createCustomTool(req.body || {});
-    res.status(201).json({ tools: listToolCatalog(), storage: toolCatalogInfo() });
+    const includeBuiltins = includeDemoBuiltins(req.accountId);
+    res.status(201).json({
+      tools: listToolCatalog({ includeBuiltins }),
+      storage: toolCatalogInfo(),
+      demoMode: Boolean(req.isDemoMode),
+      demoBuiltins: includeBuiltins,
+    });
   } catch (error) {
     next(error);
   }
@@ -446,8 +456,24 @@ app.post("/api/tools", (req, res, next) => {
 
 app.patch("/api/tools/:name", (req, res, next) => {
   try {
+    const includeBuiltins = includeDemoBuiltins(req.accountId);
+    if (!includeBuiltins) {
+      const catalog = listToolCatalog({ includeBuiltins: true });
+      const target = catalog.find((tool) => tool.name === req.params.name && tool.builtin);
+      if (target) {
+        const error = new Error("Built-in salon tools are only available on the public demo");
+        error.status = 403;
+        error.expose = true;
+        throw error;
+      }
+    }
     updateTool(req.params.name, req.body || {});
-    res.json({ tools: listToolCatalog(), storage: toolCatalogInfo() });
+    res.json({
+      tools: listToolCatalog({ includeBuiltins }),
+      storage: toolCatalogInfo(),
+      demoMode: Boolean(req.isDemoMode),
+      demoBuiltins: includeBuiltins,
+    });
   } catch (error) {
     next(error);
   }
@@ -456,7 +482,14 @@ app.patch("/api/tools/:name", (req, res, next) => {
 app.delete("/api/tools/:name", (req, res, next) => {
   try {
     removeCustomTool(req.params.name);
-    res.json({ ok: true, tools: listToolCatalog(), storage: toolCatalogInfo() });
+    const includeBuiltins = includeDemoBuiltins(req.accountId);
+    res.json({
+      ok: true,
+      tools: listToolCatalog({ includeBuiltins }),
+      storage: toolCatalogInfo(),
+      demoMode: Boolean(req.isDemoMode),
+      demoBuiltins: includeBuiltins,
+    });
   } catch (error) {
     next(error);
   }

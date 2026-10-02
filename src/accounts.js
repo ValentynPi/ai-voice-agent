@@ -239,6 +239,11 @@ export function resolveAccountId(req) {
   return DEMO_ACCOUNT_ID;
 }
 
+/** Maison Sol built-in tools (weather/CRM/orders) only for the public demo tenant. */
+export function includeDemoBuiltins(accountId) {
+  return !accountId || accountId === DEMO_ACCOUNT_ID;
+}
+
 export function attachAccount(req, _res, next) {
   try {
     const token = sessionCookieValue(req);
