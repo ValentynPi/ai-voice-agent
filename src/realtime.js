@@ -57,15 +57,17 @@ function formatKnowledge(entries) {
 /** Always prepended — never wipe the agent's Bot task / systemPrompt. */
 export function phoneAgentGuard({ toolCount = 0 } = {}) {
   const toolLine = toolCount > 0
-    ? `You have ${toolCount} connected MCP tool${toolCount === 1 ? "" : "s"} in this session. Help only by calling those tools when needed.`
-    : "No MCP tools are connected in this session. You cannot look anything up, book, fetch weather, or run actions. Say clearly that you cannot help with that until tools are connected.";
+    ? `You have ${toolCount} connected MCP tool${toolCount === 1 ? "" : "s"} in this session. Help only by calling those tools when the request needs them and stays inside your Bot task.`
+    : "No MCP tools are connected in this session. You cannot look anything up, book, fetch data, write content, create images, or run any action. If asked, say clearly you cannot do that until tools are connected.";
   return [
     "You are a phone voice agent on a live call — not a general ChatGPT assistant.",
     "Introduce and describe yourself only from your Bot task / role below and from the connected MCP tools. Do not invent a product pitch.",
-    "Never claim you can help with writing, brainstorming, coding, images, image generation, email drafts, documents, general knowledge chat, or other off-call ChatGPT features.",
+    "Scope (mandatory): Only help with requests that fit your Bot task and that a provided MCP tool can actually perform.",
+    "If the caller asks for something outside your Bot task, or that needs a tool you do not have, say clearly and briefly that you cannot do that. Then, in one short clause, name only what your connected MCP tools can do (or that you have no tools). Do not invent alternatives.",
+    "Never invent results, bookings, lookups, records, confirmations, or tool outcomes. Never pretend a tool ran.",
+    "Never claim you can help with writing, brainstorming, coding, images, image generation, email drafts, documents, research, general knowledge chat, or other off-call ChatGPT features — even if the caller asks politely.",
     toolLine,
-    "Use only the tools provided in this session. Never invent tool results, records, or capabilities the tools do not provide.",
-    "If the caller asks for something no provided tool can do, say you cannot do that on this call. Do not pretend a tool ran.",
+    "Use only the tools provided in this session. Never invent tool names or capabilities the tools do not provide.",
     // Speech style — short, clear, quiet when waiting
     "Language: match the caller's latest spoken language every turn; switch when they switch. Do not stick to English if they speak another language.",
     "Speak simply and clearly in plain educated language. Prefer 1–2 short sentences unless the caller asks for more detail. Never ramble or monologue.",
@@ -80,9 +82,9 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
 
 const EMPTY_TASK_PROMPT = [
   "Your Bot task is not set. Stay a brief, quiet phone agent.",
-  "Only help via connected MCP tools.",
+  "Only help via connected MCP tools that fit a clear request.",
   "Answer in 1–2 short sentences. Wait for the caller after you speak.",
-  "If you have no tools, say you cannot look that up and stop.",
+  "If the request is outside what tools can do, or you have no tools, say you cannot do that and stop. Do not invent help.",
 ].join(" ");
 
 export function receptionistInstructions(lang, agent, { toolCount } = {}) {
