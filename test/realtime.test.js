@@ -51,6 +51,9 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /Never claim you can help with writing/i);
   assert.match(weak.instructions, /MCP tool/i);
   assert.match(weak.instructions, /not a general ChatGPT assistant/i);
+  assert.match(weak.instructions, /1–2 short sentences|1-2 short sentences/i);
+  assert.match(weak.instructions, /wait for the caller/i);
+  assert.match(weak.instructions, /Do not narrate tool use/i);
 
   const empty = buildRealtimeSession("gpt-realtime-2.1", "en", {
     systemPrompt: "",
