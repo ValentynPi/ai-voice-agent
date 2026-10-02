@@ -45,7 +45,7 @@ function render(payload) {
       ? "Synced from the telephony host."
       : "Listed from this server’s local store.";
   const mode = payload.mode === "connected" ? "Connected Twilio account." : "Demo mode (not bought on Twilio).";
-  lede.textContent = `${source} ${mode} Connect an agent so Voice URL includes ?agentId=. Buy numbers on the telephony console.`;
+  lede.textContent = `${source} ${mode} Primary: copy the agent Voice URL (…/twilio/voice?agentId=…) and paste it on Telephony → Active numbers → Voice URL. One-click Apply below is optional.`;
 
   list.replaceChildren();
   if (!numbers.length) {
@@ -141,7 +141,7 @@ function row(number) {
   const apply = document.createElement("button");
   apply.className = "btn small primary";
   apply.type = "button";
-  apply.textContent = "Apply";
+  apply.textContent = "Apply (optional)";
   apply.addEventListener("click", async () => {
     errorEl.hidden = true;
     apply.disabled = true;

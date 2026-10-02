@@ -88,15 +88,23 @@ Agents, knowledge, call history, analytics, and telephony store rows (`tenant_id
 | `/` on telephony | Demo Twilio console: numbers, calls, TwiML apps, logs, API keys. |
 | `/phone-numbers` | Agents: Phone Numbers UI (lists via `/api/phone-numbers`, proxied from telephony when split). Telephony: active numbers console page. |
 
-### Connect an agent to a demo phone number
+### Connect an agent to a phone number (by Voice URL)
 
-1. Create or open an agent on Agents → **Connect to phone number**.
-2. Pick an **unassigned** number and click **Connect in one click** (or assign from Agents → Phone Numbers).
-3. That updates the number’s Voice URL on the telephony host to  
-   `https://ai-voice-agent-valmax.fly.dev/twilio/voice?agentId=<your-agent-id>`  
-   (and Status callback to `/twilio/status` on Agents).
-4. Verify: Agents Phone Numbers shows the agent; telephony Active numbers shows the same `agent_id` in Voice URL.
-5. Optional: open telephony with `?agentId=…`, then **Apply Voice URL to all numbers** on Overview, or run **Demo call to Agents** with that agent selected.
+Primary path — paste the agent Voice URL into telephony:
+
+1. Open the agent on Agents. The **Connect by Voice URL** panel shows a copyable URL:  
+   `https://ai-voice-agent-valmax.fly.dev/twilio/voice?agentId=<your-agent-id>`
+2. Copy it. On the telephony console open **Active numbers** → the number → **Voice URL**.
+3. Paste the URL, leave method **POST**, and **Save number**.  
+   Saving a URL that includes `?agentId=` binds that number to the agent (parsed agent id is shown in the drawer).
+4. Optional: use the same URL as a TwiML App Voice URL.
+5. Verify: telephony Active numbers shows the `agent_id`; Agents → Phone Numbers lists the bound number.
+
+Optional shortcuts (same Voice URL under the hood):
+
+- Agent page → **Optional: connect in one click** (picks an unassigned number).
+- Agents → Phone Numbers → **Apply (optional)**.
+- Telephony Overview → **Apply Voice URL to all numbers**, or open with `?agentId=…`.
 
 Inbound / demo Media Streams use the `agentId` query (and Stream Parameter), not only the default Maison Sol agent.
 

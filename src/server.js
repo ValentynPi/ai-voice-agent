@@ -517,6 +517,8 @@ app.delete("/api/tools/:name", (req, res, next) => {
 mountTwilio(app);
 
 async function agentsPhoneNumbersPayload(req) {
+  const publicUrl = String(process.env.PUBLIC_URL || "").replace(/\/$/, "") || null;
+  const agentsPublic = AGENTS_PUBLIC_URL || publicUrl;
   // Prefer the telephony host store when split; otherwise list from this process.
   if (TELEPHONY_PUBLIC_URL && SERVICE === "agents") {
     const headers = { Accept: "application/json", "X-Tenant-Id": req.accountId || DEMO_ACCOUNT_ID };
@@ -545,6 +547,8 @@ async function agentsPhoneNumbersPayload(req) {
       ...body,
       source: "telephony",
       telephony_public_url: TELEPHONY_PUBLIC_URL,
+      agents_public_url: body.agents_public_url || agentsPublic,
+      public_url: publicUrl,
       console_url: `${TELEPHONY_PUBLIC_URL}/phone-numbers`,
       buy_url: `${TELEPHONY_PUBLIC_URL}/phone-numbers/search`,
     };
@@ -555,6 +559,8 @@ async function agentsPhoneNumbersPayload(req) {
     ...local,
     source: "local",
     telephony_public_url: TELEPHONY_PUBLIC_URL || null,
+    agents_public_url: local.agents_public_url || agentsPublic,
+    public_url: publicUrl,
     console_url: TELEPHONY_PUBLIC_URL
       ? `${TELEPHONY_PUBLIC_URL}/phone-numbers`
       : `${consoleBase}/phone-numbers`,

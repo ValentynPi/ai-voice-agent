@@ -185,6 +185,19 @@ function absoluteUrl(value) {
   return raw;
 }
 
+function parseAgentIdFromVoiceUrl(voiceUrl) {
+  const raw = String(voiceUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const url = raw.startsWith("/") ? new URL(raw, location.origin) : new URL(raw);
+    return String(url.searchParams.get("agentId") || url.searchParams.get("agent") || "").trim();
+  } catch {
+    const match = raw.match(/[?&]agentId=([^&]+)/i) || raw.match(/[?&]agent=([^&]+)/i);
+    if (!match) return "";
+    try { return decodeURIComponent(match[1]).trim(); } catch { return String(match[1] || "").trim(); }
+  }
+}
+
 function brainVoiceUrl(agentId = "") {
   const brain = normalizeAgentsBaseUrl(account?.agents_public_url || "");
   let root = "";
@@ -286,14 +299,14 @@ async function overview() {
     </section>
     <section class="cx-card" id="brainCard">
       <h2>Connect to Agents</h2>
-      <p>Twilio (demo or live) is the frontend. Paste the Agents brain URL so Voice URL / Status callback hit OpenAI Realtime via Media Streams — not this telephony host.</p>
+      <p>Primary: copy an agent’s Voice URL from Agents (<span class="mono">…/twilio/voice?agentId=…</span>) and paste it into a number’s Voice URL field below. Status callback should hit Agents <span class="mono">/twilio/status</span> — not this telephony host.</p>
       <form class="cx-form" id="brainForm">
         <label>Agents brain URL<input name="agents_url" value="${esc(savedBrain)}" placeholder="https://ai-voice-agent-valmax.fly.dev" spellcheck="false"></label>
         <label>Agent<select name="agent_id" id="agentPick"><option value="">Default agent</option></select></label>
         <div class="cx-actions">
           <button class="cx-btn primary" type="submit">Save connection</button>
           <button class="cx-btn ghost" type="button" id="loadAgents">Load agents</button>
-          <button class="cx-btn ghost" type="button" id="applyVoiceUrls">Apply Voice URL to all numbers</button>
+          <button class="cx-btn ghost" type="button" id="applyVoiceUrls">Optional: apply Voice URL to all numbers</button>
           <button class="cx-btn ghost" type="button" id="demoCall">Demo call to Agents</button>
         </div>
       </form>
@@ -475,7 +488,7 @@ async function numbersPage() {
     </tr>
   `).join("") : emptyRow(6, "No numbers on this account.");
   view.innerHTML = `
-    ${head("Phone Numbers", "Active numbers", account.demo ? "These rows live in SQLite. Buying one here does not create it on Twilio. Agent binding is stored in Voice URL (?agentId=)." : "These rows come from the connected Twilio account.", `<a class="cx-btn primary" href="${cxPath("/phone-numbers/search")}" data-cx>Buy a number</a>`)}
+    ${head("Phone Numbers", "Active numbers", account.demo ? "These rows live in SQLite. Buying one here does not create it on Twilio. Connect by pasting Agents …/twilio/voice?agentId=… into Voice URL." : "These rows come from the connected Twilio account. Connect by pasting Agents …/twilio/voice?agentId=… into Voice URL.", `<a class="cx-btn primary" href="${cxPath("/phone-numbers/search")}" data-cx>Buy a number</a>`)}
     <div class="cx-table-wrap"><table class="cx-table"><thead><tr><th>Number</th><th>Friendly name</th><th>Agent</th><th>Voice URL</th><th>Capabilities</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
   `;
   for (const row of view.querySelectorAll("[data-number]")) {
@@ -489,42 +502,67 @@ async function numbersPage() {
 
 async function openNumber(sid) {
   const number = await api(resourcePath(`/IncomingPhoneNumbers/${sid}`));
-  const linkedAgent = number.agent_id || "";
+  const linkedAgent = number.agent_id || parseAgentIdFromVoiceUrl(number.voice_url) || "";
   const savedAgent = localStorage.getItem("cx-agent-id") || "";
   openDrawer(formatPhone(number.phone_number), number.sid, `
     ${number.demo ? `<p class="cx-note">Demo number. It is stored on this server and was not purchased on Twilio.</p>` : `<p class="cx-note">This number is on the connected Twilio account. Saving updates it there.</p>`}
+    <p class="cx-lede" style="margin-bottom:12px">Primary connect path: paste an Agents Voice URL ending in <span class="mono">?agentId=&lt;id&gt;</span>, then save. Binding is read from that query.</p>
     <dl class="cx-dl">
       <dt>Friendly name</dt><dd>${esc(number.friendly_name)}</dd>
-      <dt>Agent</dt><dd>${linkedAgent ? `<span class="mono">${esc(linkedAgent)}</span>` : "Unassigned (default Maison Sol)"}</dd>
       <dt>Capabilities</dt><dd>${esc(caps(number.capabilities))}</dd>
       <dt>Status</dt><dd>${esc(statusLabel(number.status))}</dd>
-      <dt>Voice method</dt><dd>${esc(number.voice_method)}</dd>
       <dt>Created</dt><dd>${esc(formatWhen(number.date_created))}</dd>
     </dl>
-    <div class="cx-form" style="margin-bottom:16px">
-      <label>Connect agent
-        <select id="drawerAgentPick">
-          <option value="">Unassigned (default agent)</option>
-        </select>
-      </label>
-      <div class="cx-actions" style="margin-top:10px">
-        <button class="cx-btn primary" type="button" id="assignDrawerAgent">Apply agent</button>
-        <button class="cx-btn ghost" type="button" id="clearAgent" ${linkedAgent ? "" : "disabled"}>Clear agentId</button>
-      </div>
-      <p class="cx-lede" id="drawerAgentNote" style="margin-top:8px"></p>
-    </div>
     <form class="cx-form" id="numberForm">
       <label>Friendly name<input name="friendly_name" value="${esc(number.friendly_name)}" required></label>
-      <label>Voice URL<input name="voice_url" value="${esc(absoluteUrl(number.voice_url))}" placeholder="${esc(account.voice_webhook_url)}"></label>
+      <label>Voice URL (connect control)<input name="voice_url" id="drawerVoiceUrl" value="${esc(absoluteUrl(number.voice_url))}" placeholder="${esc(account.voice_webhook_url)}?agentId=…" spellcheck="false"></label>
+      <p class="cx-lede" id="parsedAgentNote" style="margin-top:-4px">Parsed agent id: ${linkedAgent ? `<span class="mono">${esc(linkedAgent)}</span>` : "<em>none (default agent)</em>"}</p>
       <label>Voice method<select name="voice_method"><option ${number.voice_method === "GET" ? "" : "selected"}>POST</option><option ${number.voice_method === "GET" ? "selected" : ""}>GET</option></select></label>
       <label>Status callback URL<input name="status_callback" value="${esc(absoluteUrl(number.status_callback))}" placeholder="${esc(account.status_callback_url)}"></label>
       <label>Status callback method<select name="status_callback_method"><option ${number.status_callback_method === "GET" ? "" : "selected"}>POST</option><option ${number.status_callback_method === "GET" ? "selected" : ""}>GET</option></select></label>
-      <button class="cx-btn primary" type="submit">Save number</button>
+      <div class="cx-actions">
+        <button class="cx-btn primary" type="submit">Save number</button>
+        <button class="cx-btn ghost" type="button" data-copy="${esc(absoluteUrl(number.voice_url))}">Copy Voice URL</button>
+      </div>
     </form>
+    <details style="margin-top:18px">
+      <summary class="cx-lede" style="cursor:pointer">Optional: one-click apply agent</summary>
+      <div class="cx-form" style="margin-top:10px">
+        <label>Agent
+          <select id="drawerAgentPick">
+            <option value="">Unassigned (default agent)</option>
+          </select>
+        </label>
+        <div class="cx-actions" style="margin-top:10px">
+          <button class="cx-btn ghost" type="button" id="assignDrawerAgent">Apply agent (writes Voice URL)</button>
+          <button class="cx-btn ghost" type="button" id="clearAgent" ${linkedAgent ? "" : "disabled"}>Clear agentId</button>
+        </div>
+        <p class="cx-lede" id="drawerAgentNote" style="margin-top:8px"></p>
+      </div>
+    </details>
   `, (root) => {
     const pick = root.querySelector("#drawerAgentPick");
     const noteEl = root.querySelector("#drawerAgentNote");
+    const voiceInput = root.querySelector("#drawerVoiceUrl");
+    const parsedNote = root.querySelector("#parsedAgentNote");
     const preferred = linkedAgent || savedAgent || "";
+
+    const refreshParsed = () => {
+      const id = parseAgentIdFromVoiceUrl(voiceInput?.value || "");
+      if (parsedNote) {
+        parsedNote.innerHTML = id
+          ? `Parsed agent id: <span class="mono">${esc(id)}</span> — saving binds this number to that agent.`
+          : `Parsed agent id: <em>none (default agent)</em> — saving clears the agentId query.`;
+      }
+      const clearBtn = root.querySelector("#clearAgent");
+      if (clearBtn) clearBtn.disabled = !id;
+      const copyBtn = root.querySelector("#numberForm [data-copy]");
+      if (copyBtn && voiceInput) copyBtn.dataset.copy = voiceInput.value || "";
+    };
+    voiceInput?.addEventListener("input", refreshParsed);
+    refreshParsed();
+    bindCopies(root);
+
     (async () => {
       try {
         const brain = normalizeAgentsBaseUrl(account?.agents_public_url || localStorage.getItem("cx-agents-url") || "");
@@ -533,8 +571,8 @@ async function openNumber(sid) {
           pick.innerHTML = `<option value="">Unassigned (default agent)</option>` +
             (preferred ? `<option value="${esc(preferred)}" selected>${esc(preferred)}</option>` : "");
           if (noteEl) noteEl.textContent = brain
-            ? "No agents returned from Agents. You can still clear agentId."
-            : "Set Agents brain URL on Overview to load the agent list.";
+            ? "No agents returned from Agents. Paste a Voice URL above instead."
+            : "Set Agents brain URL on Overview to load the agent list, or paste a Voice URL above.";
           return;
         }
         pick.innerHTML = `<option value="">Unassigned (default agent)</option>` + agents.map((agent) =>
@@ -547,6 +585,13 @@ async function openNumber(sid) {
           orphan.selected = true;
           pick.append(orphan);
         }
+        pick.addEventListener("change", () => {
+          const next = pick.value || "";
+          if (voiceInput) {
+            voiceInput.value = brainVoiceUrl(next);
+            refreshParsed();
+          }
+        });
       } catch (error) {
         if (noteEl) noteEl.textContent = error.message || "Could not load agents.";
         if (preferred) {
@@ -583,17 +628,20 @@ async function openNumber(sid) {
     root.querySelector("#numberForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
+      const voiceUrl = String(form.get("voice_url") || "");
+      const parsedId = parseAgentIdFromVoiceUrl(voiceUrl);
       try {
         await api(resourcePath(`/IncomingPhoneNumbers/${sid}`), {
           method: "POST",
           body: JSON.stringify({
             friendly_name: form.get("friendly_name"),
-            voice_url: form.get("voice_url"),
+            voice_url: voiceUrl,
             voice_method: form.get("voice_method"),
             status_callback: form.get("status_callback"),
             status_callback_method: form.get("status_callback_method"),
           }),
         });
+        if (parsedId) localStorage.setItem("cx-agent-id", parsedId);
         closeDrawer();
         await numbersPage();
       } catch (error) {

@@ -230,6 +230,39 @@ function telephonyDeepLink(base, id) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Absolute Voice URL for this agent — paste into telephony number / TwiML App. */
+function buildAgentVoiceUrl(id, agentsBase) {
+  const base = String(agentsBase || location.origin).replace(/\/$/, "");
+  try {
+    const url = new URL(`${base}/twilio/voice`);
+    url.searchParams.set("agentId", id);
+    return url.toString();
+  } catch {
+    return `${base}/twilio/voice?agentId=${encodeURIComponent(id)}`;
+  }
+}
+
+async function resolveAgentsBase(payload) {
+  const fromPayload = String(payload?.agents_public_url || "").replace(/\/$/, "");
+  if (fromPayload) return fromPayload;
+  try {
+    const health = await readJson(await fetch("/api/health"));
+    const fromHealth = String(health.public_url || health.agents_public_url || "").replace(/\/$/, "");
+    if (fromHealth) return fromHealth;
+  } catch {
+    /* fall through */
+  }
+  return location.origin.replace(/\/$/, "");
+}
+
 async function assignNumber(sid, id) {
   return readJson(await fetch("/api/phone-numbers/assign", {
     method: "POST",
@@ -238,81 +271,103 @@ async function assignNumber(sid, id) {
   }));
 }
 
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    try {
+      const area = document.createElement("textarea");
+      area.value = value;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.append(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function loadPhoneConnect() {
   const phoneConnectBody = document.querySelector("#phoneConnectBody");
   if (!phoneConnectBody) return;
   const id = agent?.id || (!isNew ? agentId : "");
   if (!id) {
-    phoneConnectBody.innerHTML = `<p class="sub">Save the agent first to connect a number.</p>`;
+    phoneConnectBody.innerHTML = `<p class="sub">Save the agent first to get a Voice URL.</p>`;
     return;
   }
-  phoneConnectBody.innerHTML = `<p class="sub">Loading numbers…</p>`;
+  phoneConnectBody.innerHTML = `<p class="sub">Loading…</p>`;
   try {
-    const payload = await readJson(await fetch("/api/phone-numbers"));
+    const payload = await readJson(await fetch("/api/phone-numbers")).catch((error) => {
+      // Voice URL still works without telephony list.
+      return { incoming_phone_numbers: [], _error: error };
+    });
+    const agentsBase = await resolveAgentsBase(payload);
+    const voiceUrl = buildAgentVoiceUrl(id, agentsBase);
     const numbers = payload.incoming_phone_numbers || [];
     const bound = numbers.filter((n) => n.agent_id === id);
     const unassigned = numbers.filter((n) => !n.agent_id);
     const deep = telephonyDeepLink(payload.console_url || payload.telephony_public_url, id);
     const bits = [];
+
+    bits.push(`<div class="voice-url-box" id="agentVoiceUrlBox">
+      <p class="voice-url-label">Voice URL</p>
+      <code id="agentVoiceUrl">${escapeHtml(voiceUrl)}</code>
+      <div class="head-actions">
+        <button class="btn small primary" type="button" id="copyVoiceUrl">Copy Voice URL</button>
+        ${deep ? `<a class="btn small ghost" href="${escapeHtml(deep)}" target="_blank" rel="noopener">Open telephony</a>` : ""}
+      </div>
+      <p class="voice-url-hint">Paste into <strong>Telephony → Active numbers → Voice URL</strong> (or a TwiML App Voice URL), then save. Method: POST.</p>
+    </div>`);
+
     if (bound.length) {
-      bits.push(`<p class="sub" style="margin-bottom:8px"><strong>Connected</strong></p>`);
+      bits.push(`<p class="sub" style="margin:14px 0 8px"><strong>Bound numbers</strong> (Voice URL already includes this agentId)</p>`);
       for (const n of bound) {
         bits.push(`<div class="head-actions" style="margin-bottom:8px;flex-wrap:wrap;gap:8px">
-          <span><strong>${formatPhone(n.phone_number)}</strong> <span class="quiet">${n.friendly_name || ""}</span></span>
-          <button class="btn small ghost" type="button" data-disconnect="${n.sid}">Disconnect</button>
+          <span><strong>${escapeHtml(formatPhone(n.phone_number))}</strong> <span class="quiet">${escapeHtml(n.friendly_name || "")}</span></span>
+          <button class="btn small ghost" type="button" data-disconnect="${escapeHtml(n.sid)}">Clear binding</button>
         </div>
-        <p class="quiet mono" style="margin:0 0 12px;font-size:12px;word-break:break-all">${n.voice_url || ""}</p>`);
+        <p class="quiet mono" style="margin:0 0 12px;font-size:12px;word-break:break-all">${escapeHtml(n.voice_url || "")}</p>`);
       }
+    } else if (payload._error) {
+      bits.push(`<p class="quiet" style="margin-top:12px">Could not list numbers (${escapeHtml(payload._error.message || "telephony unreachable")}). You can still paste the Voice URL on telephony.</p>`);
+    } else if (!numbers.length) {
+      bits.push(`<p class="sub" style="margin-top:12px">No numbers yet. Buy a demo number on telephony, then paste this Voice URL on that number.</p>
+        <div class="head-actions" style="margin-top:8px">
+          <a class="btn small ghost" href="${escapeHtml(payload.buy_url || payload.console_url || "/phone-numbers")}" target="_blank" rel="noopener">Buy a number</a>
+        </div>`);
     } else {
-      bits.push(`<p class="sub">Not connected to a phone number yet.</p>`);
+      bits.push(`<p class="sub" style="margin-top:12px">No number bound to this agent yet. Paste the Voice URL above on an Active number, or use one-click below.</p>`);
     }
-    const unassignedPickerHtml = () => {
-      const options = unassigned.map((n) =>
-        `<option value="${n.sid}">${formatPhone(n.phone_number)}${n.friendly_name ? ` — ${n.friendly_name}` : ""}</option>`
-      ).join("");
-      return `<label style="display:block;margin-top:12px">Unassigned number
-        <select id="phonePick">${options}</select>
-      </label>
-      <div class="head-actions" style="margin-top:12px;flex-wrap:wrap;gap:8px">
-        <button class="btn small primary" type="button" id="phoneConnectBtn">Connect in one click</button>
-        ${deep ? `<a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony</a>` : ""}
-      </div>
-      <p class="quiet" style="margin-top:8px">Sets Voice URL to Agents <span class="mono">/twilio/voice?agentId=${id}</span>.</p>`;
-    };
 
     if (unassigned.length) {
-      if (bound.length) {
-        // Already connected: keep Connected list primary; reveal picker only on demand.
-        bits.push(`<div class="head-actions" style="margin-top:4px;flex-wrap:wrap;gap:8px">
-          <button class="btn small ghost" type="button" id="phoneAddAnotherBtn">Add another number</button>
-          ${deep ? `<a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony</a>` : ""}
+      const options = unassigned.map((n) =>
+        `<option value="${escapeHtml(n.sid)}">${escapeHtml(formatPhone(n.phone_number))}${n.friendly_name ? ` — ${escapeHtml(n.friendly_name)}` : ""}</option>`
+      ).join("");
+      bits.push(`<details class="secondary-connect" id="oneClickConnect">
+        <summary>Optional: connect in one click</summary>
+        <label style="display:block;margin-top:10px">Unassigned number
+          <select id="phonePick">${options}</select>
+        </label>
+        <div class="head-actions" style="margin-top:10px">
+          <button class="btn small ghost" type="button" id="phoneConnectBtn">Connect in one click</button>
         </div>
-        <div id="phoneAddAnotherPanel" hidden>${unassignedPickerHtml()}</div>`);
-      } else {
-        bits.push(unassignedPickerHtml());
-      }
-    } else if (!numbers.length) {
-      bits.push(`<p class="sub" style="margin-top:12px">No numbers yet. Buy a demo number on the telephony console, then refresh.</p>
-        <div class="head-actions" style="margin-top:12px">
-          <a class="btn small primary" href="${payload.buy_url || payload.console_url || "/phone-numbers"}" target="_blank" rel="noopener">Buy a number</a>
-        </div>`);
-    } else if (!bound.length) {
-      bits.push(`<p class="sub" style="margin-top:12px">Every number is already assigned. Disconnect one, or buy another demo number.</p>
-        ${deep ? `<div class="head-actions" style="margin-top:12px"><a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony with this agent</a></div>` : ""}`);
-    } else {
-      bits.push(`${deep ? `<div class="head-actions" style="margin-top:4px"><a class="btn small ghost" href="${deep}" target="_blank" rel="noopener">Open telephony</a></div>` : ""}`);
+        <p class="quiet" style="margin-top:8px">Writes the same Voice URL to the number on the telephony host.</p>
+      </details>`);
     }
+
     bits.push(`<p class="quiet" id="phoneConnectNote" style="margin-top:12px"></p>`);
     phoneConnectBody.innerHTML = bits.join("");
 
-    phoneConnectBody.querySelector("#phoneAddAnotherBtn")?.addEventListener("click", () => {
-      const panel = phoneConnectBody.querySelector("#phoneAddAnotherPanel");
-      const btn = phoneConnectBody.querySelector("#phoneAddAnotherBtn");
-      if (!panel) return;
-      const open = panel.hasAttribute("hidden");
-      if (open) panel.removeAttribute("hidden");
-      else panel.setAttribute("hidden", "");
-      if (btn) btn.textContent = open ? "Hide number picker" : "Add another number";
+    phoneConnectBody.querySelector("#copyVoiceUrl")?.addEventListener("click", async () => {
+      const noteEl = phoneConnectBody.querySelector("#phoneConnectNote");
+      const ok = await copyText(voiceUrl);
+      if (noteEl) noteEl.textContent = ok ? "Copied. Paste into telephony number Voice URL and save." : "Could not copy — select the URL and copy manually.";
     });
 
     phoneConnectBody.querySelector("#phoneConnectBtn")?.addEventListener("click", async () => {
@@ -322,7 +377,7 @@ async function loadPhoneConnect() {
       noteEl.textContent = "Connecting…";
       try {
         const result = await assignNumber(pick.value, id);
-        noteEl.textContent = `Connected. Voice URL → ${result.number?.voice_url || ""}`;
+        noteEl.textContent = `Connected. Voice URL → ${result.number?.voice_url || voiceUrl}`;
         await loadPhoneConnect();
       } catch (error) {
         noteEl.textContent = error.message || "Could not connect.";
@@ -332,17 +387,17 @@ async function loadPhoneConnect() {
     for (const btn of phoneConnectBody.querySelectorAll("[data-disconnect]")) {
       btn.addEventListener("click", async () => {
         const noteEl = phoneConnectBody.querySelector("#phoneConnectNote");
-        noteEl.textContent = "Disconnecting…";
+        noteEl.textContent = "Clearing…";
         try {
           await assignNumber(btn.dataset.disconnect, "");
           await loadPhoneConnect();
         } catch (error) {
-          noteEl.textContent = error.message || "Could not disconnect.";
+          noteEl.textContent = error.message || "Could not clear binding.";
         }
       });
     }
   } catch (error) {
-    phoneConnectBody.innerHTML = `<p class="sub">Could not load numbers: ${error.message || "unknown error"}. Is the telephony host up?</p>`;
+    phoneConnectBody.innerHTML = `<p class="sub">Could not build Voice URL: ${escapeHtml(error.message || "unknown error")}.</p>`;
   }
 }
 
