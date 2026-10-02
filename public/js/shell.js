@@ -39,6 +39,12 @@ async function paintAccount() {
   try {
     const response = await fetch("/api/auth/me", { credentials: "same-origin" });
     const body = await response.json();
+    const onAuthPage = location.pathname === "/signin" || location.pathname === "/signup";
+    if (body.security?.authRequired && !body.signedIn && !onAuthPage) {
+      const next = encodeURIComponent(location.pathname + location.search);
+      location.replace(`/signin?next=${next}`);
+      return;
+    }
     slot.replaceChildren();
     const label = document.createElement("p");
     label.className = "account-label";
@@ -46,18 +52,22 @@ async function paintAccount() {
       label.textContent = body.account.email;
       const actions = document.createElement("div");
       actions.className = "account-actions";
+      const settings = document.createElement("a");
+      settings.className = "btn ghost tiny";
+      settings.href = "/settings";
+      settings.textContent = "Security";
       const out = document.createElement("button");
       out.type = "button";
       out.className = "btn ghost tiny";
       out.textContent = "Sign out";
       out.addEventListener("click", async () => {
         await fetch("/api/auth/signout", { method: "POST", credentials: "same-origin" });
-        location.href = "/agents";
+        location.href = "/signin";
       });
-      actions.append(out);
+      actions.append(settings, out);
       slot.append(label, actions);
     } else {
-      label.textContent = "Public demo";
+      label.textContent = body.security?.authRequired ? "Sign in required" : "Public demo";
       const actions = document.createElement("div");
       actions.className = "account-actions";
       const signin = document.createElement("a");

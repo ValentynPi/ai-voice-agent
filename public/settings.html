@@ -39,10 +39,16 @@
         <div>
           <p class="kicker">Workspace</p>
           <h1>Settings</h1>
-          <p class="lede">Runtime facts for this server. Secrets stay on the server and are not shown here. Agents override the default voice.</p>
+          <p class="lede">Account security and runtime facts. Secrets stay on the server and are never shown here.</p>
         </div>
       </header>
       <main class="page">
+        <section class="panel slim" id="securityPanel">
+          <h2>Security</h2>
+          <p class="sub">Voice Desk requires a signed-in session. Your agents, knowledge, history, and MCP tools stay on your tenant.</p>
+          <dl class="defs" id="securitySettings"></dl>
+          <div class="head-actions" style="margin-top:14px" id="securityActions"></div>
+        </section>
         <section class="panel slim">
           <h2>Voice runtime</h2>
           <dl class="defs" id="settings"></dl>

@@ -32,6 +32,7 @@ import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from 
 import { attachMediaBridge } from "./twilio/media-bridge.js";
 import { mountTwilio } from "./twilio/routes.js";
 import { createBrainProxy } from "./twilio/brain-proxy.js";
+import { agentsAuthEnabled, createAgentsAuthGate, createSameOriginGuard, isSignedIn } from "./auth-gate.js";
 import { assignPublicNumber, publicPhoneNumbersPayload, telephonySharedSecret } from "./twilio/public-list.js";
 import {
   DEMO_ACCOUNT_ID,
@@ -127,6 +128,9 @@ app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use(attachAccount);
 app.use(createBrainProxy({ service: SERVICE, agentsPublicUrl: AGENTS_PUBLIC_URL }));
+const AUTH_GATE_ON = agentsAuthEnabled(SERVICE);
+app.use(createAgentsAuthGate({ enabled: AUTH_GATE_ON }));
+app.use(createSameOriginGuard({ enabled: AUTH_GATE_ON }));
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -142,12 +146,20 @@ app.get("/api/health", (req, res) => {
 });
 
 app.get("/api/auth/me", (req, res) => {
-  const account = req.account || getAccount(DEMO_ACCOUNT_ID);
+  const signedIn = isSignedIn(req);
+  const authRequired = AUTH_GATE_ON;
+  const account = signedIn ? req.account : (authRequired ? null : getAccount(DEMO_ACCOUNT_ID));
   res.json({
     account,
-    signedIn: Boolean(req.account),
-    demoMode: Boolean(req.isDemoMode),
-    accountId: req.accountId,
+    signedIn,
+    demoMode: !signedIn,
+    accountId: signedIn ? req.account.id : (authRequired ? null : DEMO_ACCOUNT_ID),
+    security: {
+      sessionCookie: "vd_session",
+      cookieFlags: ["HttpOnly", "SameSite=Lax", "Secure in production"],
+      tenantIsolation: "Agents, knowledge, history, and tools are scoped to your account id.",
+      authRequired,
+    },
   });
 });
 
@@ -189,6 +201,12 @@ app.post("/api/auth/signout", (req, res) => {
 app.post("/api/auth/demo", (req, res) => {
   destroySession(req.sessionToken);
   clearSessionCookie(res, { secure: cookieSecure(req) });
+  if (AUTH_GATE_ON) {
+    return res.status(403).json({
+      error: "Public demo browsing is disabled. Create an account or sign in.",
+      signin: "/signin",
+    });
+  }
   res.json({ ok: true, account: getAccount(DEMO_ACCOUNT_ID), signedIn: false, demoMode: true });
 });
 

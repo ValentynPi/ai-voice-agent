@@ -3,6 +3,7 @@
  * so the interactive dialer can stay same-origin on the telephony console.
  */
 import { normalizeAgentsBaseUrl } from "./public-url.js";
+import { telephonySharedSecret } from "./public-list.js";
 
 const PROXY_POST = new Set([
   "/api/calls",
@@ -59,6 +60,8 @@ export function createBrainProxy({ service, agentsPublicUrl }) {
 
     const headers = { Accept: "application/json" };
     if (req.accountId) headers["X-Tenant-Id"] = String(req.accountId);
+    const secret = telephonySharedSecret();
+    if (secret) headers["X-Telephony-Secret"] = secret;
     const init = {
       method: req.method,
       headers,

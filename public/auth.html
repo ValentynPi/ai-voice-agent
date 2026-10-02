@@ -68,10 +68,10 @@
       <p class="error" id="error" hidden></p>
       <div class="actions">
         <button class="btn primary" type="submit" id="submit">Create account</button>
-        <a class="btn ghost" href="/agents">Cancel</a>
+        <a class="btn ghost" id="cancelLink" href="/signin">Cancel</a>
       </div>
       <p class="switch" id="switch">Already have an account? <a href="/signin">Sign in</a></p>
-      <p class="switch"><a href="/api/auth/demo" id="demoLink">Continue with public demo</a> (Maison Sol seed)</p>
+      <p class="switch" id="demoWrap"><a href="#" id="demoLink">Continue with public demo</a> (local / all-mode only)</p>
     </form>
     <script type="module" src="/js/auth.js"></script>
   </body>
