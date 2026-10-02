@@ -1,3 +1,4 @@
+import { DEMO_ACCOUNT_ID } from "../accounts.js";
 import { listActivePublicCalls } from "../store.js";
 import { httpError, page, publicBase } from "./http.js";
 import { parseAgentIdFromVoiceUrl, resolveAgentsPublicUrl } from "./public-url.js";
@@ -277,16 +278,18 @@ function dedupeCalls(calls) {
   });
 }
 
-function localSupplement() {
+function localSupplement(tenantId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId || DEMO_ACCOUNT_ID;
   const active = listActivePublicCalls()
+    .filter((call) => (call.accountId || DEMO_ACCOUNT_ID) === tid)
     .map((call) => previewBrowserCall(call))
     .filter(Boolean);
   const activeSids = new Set(active.map((call) => call.sid));
-  const stored = listStoredCalls(demoAccountSid()).filter((call) => !activeSids.has(call.sid));
+  const stored = listStoredCalls(demoAccountSid(), tid).filter((call) => !activeSids.has(call.sid));
   return [...stored, ...active];
 }
 
-export async function listPhoneNumbers(accountSid, query) {
+export async function listPhoneNumbers(accountSid, query = {}) {
   const ctx = resolve(accountSid);
   const path = uriFor(accountSid, "/IncomingPhoneNumbers");
   if (ctx.mode === "connected") {
@@ -338,6 +341,7 @@ export async function buyPhoneNumber(accountSid, input) {
     friendlyName: input.friendlyName,
     voiceUrl: input.voiceUrl,
     statusCallback: input.statusCallback,
+    tenantId: input.tenantId,
   });
 }
 
@@ -371,10 +375,10 @@ export async function searchNumbers(accountSid, country, query) {
   return page("available_phone_numbers", result.numbers, path, { message: result.message });
 }
 
-export async function listCallResources(accountSid, query) {
+export async function listCallResources(accountSid, query = {}) {
   const ctx = resolve(accountSid);
   const path = uriFor(accountSid, "/Calls");
-  const local = localSupplement().filter((call) => {
+  const local = localSupplement(query.tenantId).filter((call) => {
     if (ctx.mode === "demo") return call.account_sid === ctx.demoSid;
     return call.media === "browser-realtime" || call.from === "client:browser";
   });
@@ -433,7 +437,7 @@ export async function listRecordingResources(accountSid, callSid) {
   return page("recordings", recordingsFor(call), path);
 }
 
-export async function listAppResources(accountSid) {
+export async function listAppResources(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   const ctx = resolve(accountSid);
   const path = uriFor(accountSid, "/Applications");
   if (ctx.mode === "connected") {
@@ -441,7 +445,7 @@ export async function listAppResources(accountSid) {
     const items = (data.applications || []).map((row) => mapLiveApp(row, accountSid));
     return page("applications", items, path);
   }
-  return page("applications", listApps(accountSid), path);
+  return page("applications", listApps(accountSid, tenantId), path);
 }
 
 export async function getAppResource(accountSid, appSid) {
@@ -486,10 +490,10 @@ export async function changeAppResource(accountSid, appSid, input) {
   return updateDemoApp(accountSid, appSid, input);
 }
 
-export function listEventResources(accountSid) {
+export function listEventResources(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   const ctx = resolve(accountSid);
   const sid = ctx.mode === "connected" ? ctx.demoSid : accountSid;
-  const items = listEvents(sid).map((event) => ({ ...event, account_sid: accountSid }));
+  const items = listEvents(sid, tenantId).map((event) => ({ ...event, account_sid: accountSid }));
   return page("events", items, uriFor(accountSid, "/Monitor/Events"));
 }
 

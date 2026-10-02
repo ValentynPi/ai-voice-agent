@@ -1,6 +1,17 @@
+import { DEMO_ACCOUNT_ID } from "../accounts.js";
 import { accountView, assignAgentToNumber, listPhoneNumbers, parseAgentIdFromVoiceUrl } from "./service.js";
 import { isSid } from "./ids.js";
 import { httpError } from "./http.js";
+
+/** Tenant for telephony rows: signed-in account, X-Tenant-Id (Agents proxy), or demo. */
+export function resolveTenantId(req) {
+  if (req?.accountId) return req.accountId;
+  const header = String(req?.get?.("x-tenant-id") || "").trim();
+  if (/^acct_[a-z0-9]+$/i.test(header)) return header;
+  const query = String(req?.query?.tenant_id || req?.query?.account_id || "").trim();
+  if (/^acct_[a-z0-9]+$/i.test(query)) return query;
+  return DEMO_ACCOUNT_ID;
+}
 
 /** Optional shared secret so Agents can pull the telephony number list. */
 export function telephonySharedSecret() {
@@ -55,7 +66,8 @@ export async function assignPublicNumber(req, { sid, agentId } = {}) {
 /** Sanitized IncomingPhoneNumbers for cross-host Agents UI. */
 export async function publicPhoneNumbersPayload(req = null) {
   const account = accountView(req);
-  const listed = await listPhoneNumbers(account.account_sid, {});
+  const tenantId = resolveTenantId(req);
+  const listed = await listPhoneNumbers(account.account_sid, { tenantId });
   const numbers = (listed.incoming_phone_numbers || []).map(sanitizeNumber);
   const telephonyUrl = String(process.env.TELEPHONY_PUBLIC_URL || "").replace(/\/$/, "");
   const agentsUrl = String(process.env.AGENTS_PUBLIC_URL || "").replace(/\/$/, "");
@@ -64,6 +76,7 @@ export async function publicPhoneNumbersPayload(req = null) {
     source: "telephony",
     mode: account.mode,
     demo: account.demo,
+    tenant_id: tenantId,
     account_sid: account.account_sid,
     friendly_name: account.friendly_name,
     telephony_public_url: telephonyUrl || null,

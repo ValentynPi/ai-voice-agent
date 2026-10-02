@@ -32,6 +32,19 @@ import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from 
 import { attachMediaBridge } from "./twilio/media-bridge.js";
 import { mountTwilio } from "./twilio/routes.js";
 import { assignPublicNumber, publicPhoneNumbersPayload, telephonySharedSecret } from "./twilio/public-list.js";
+import {
+  DEMO_ACCOUNT_ID,
+  attachAccount,
+  authenticateAccount,
+  clearSessionCookie,
+  cookieSecure,
+  createAccount,
+  createSession,
+  destroySession,
+  getAccount,
+  passwordHashFor,
+  setSessionCookie,
+} from "./accounts.js";
 
 onCallEnded(saveCallRecord);
 
@@ -110,6 +123,7 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
+app.use(attachAccount);
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -124,6 +138,90 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+app.get("/api/auth/me", (req, res) => {
+  const account = req.account || getAccount(DEMO_ACCOUNT_ID);
+  res.json({
+    account,
+    signedIn: Boolean(req.account),
+    demoMode: Boolean(req.isDemoMode),
+    accountId: req.accountId,
+  });
+});
+
+app.post("/api/auth/signup", async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const account = createAccount({
+      email: body.email,
+      password: body.password,
+      name: body.name || "",
+    });
+    await syncTenantToTelephony(account);
+    const session = createSession(account.id);
+    setSessionCookie(res, session.token, { secure: cookieSecure(req) });
+    res.status(201).json({ account, signedIn: true, demoMode: false });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auth/signin", (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const account = authenticateAccount(body.email, body.password);
+    const session = createSession(account.id);
+    setSessionCookie(res, session.token, { secure: cookieSecure(req) });
+    res.json({ account, signedIn: true, demoMode: false });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auth/signout", (req, res) => {
+  destroySession(req.sessionToken);
+  clearSessionCookie(res, { secure: cookieSecure(req) });
+  res.json({ ok: true, account: getAccount(DEMO_ACCOUNT_ID), signedIn: false, demoMode: true });
+});
+
+app.post("/api/auth/demo", (req, res) => {
+  destroySession(req.sessionToken);
+  clearSessionCookie(res, { secure: cookieSecure(req) });
+  res.json({ ok: true, account: getAccount(DEMO_ACCOUNT_ID), signedIn: false, demoMode: true });
+});
+
+async function syncTenantToTelephony(account) {
+  if (!TELEPHONY_PUBLIC_URL || SERVICE !== "agents") return;
+  const secret = telephonySharedSecret();
+  // Without a shared secret, skip mirror (local demos / open telephony).
+  if (!secret) return;
+  const hash = passwordHashFor(account.id);
+  if (!hash) return;
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    "X-Telephony-Secret": secret,
+  };
+  try {
+    const response = await fetch(`${TELEPHONY_PUBLIC_URL}/api/public/tenants`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        id: account.id,
+        email: account.email,
+        name: account.name,
+        password_hash: hash,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      console.error(`Telephony tenant sync failed (${response.status})`);
+    }
+  } catch (error) {
+    console.error("Telephony tenant sync unreachable:", error.message || error);
+  }
+}
+
+
 app.get("/api/state", (req, res) => {
   res.json(buildState());
 });
@@ -131,13 +229,20 @@ app.get("/api/state", (req, res) => {
 app.post("/api/calls", (req, res, next) => {
   try {
     const requested = req.body?.agentId;
-    const agent = requested ? requireAgent(requested) : getDefaultAgent();
+    const agent = requested ? requireAgent(requested, req.accountId) : getDefaultAgent(req.accountId);
+    if (requested && !agent) {
+      const error = new Error("Agent not found");
+      error.status = 404;
+      error.expose = true;
+      throw error;
+    }
     const call = startCall({
       source: "browser",
       agentId: agent?.id || null,
       agentName: agent?.name || null,
       voice: agent?.voice || null,
       toolAllow: agent ? agent.enabledTools : null,
+      accountId: req.accountId,
     });
     res.status(201).json({ call });
   } catch (error) {
@@ -160,28 +265,28 @@ app.post("/api/calls/:id/end", (req, res) => {
 
 app.get("/api/history", (req, res) => {
   const agentId = req.query.agentId ? String(req.query.agentId) : "";
-  let calls = listHistory(listActivePublicCalls());
+  let calls = listHistory(listActivePublicCalls(), req.accountId);
   if (agentId) calls = calls.filter((call) => call.agentId === agentId);
   res.json({ calls });
 });
 
 app.get("/api/history/:id", (req, res) => {
-  const call = getHistoryCall(req.params.id, listActivePublicCalls());
+  const call = getHistoryCall(req.params.id, listActivePublicCalls(), req.accountId);
   if (!call) return res.status(404).json({ error: "Call not found" });
   res.json({ call });
 });
 
 app.get("/api/analytics", (req, res) => {
-  res.json(callAnalytics());
+  res.json(callAnalytics(req.accountId));
 });
 
 app.get("/api/agents", (req, res) => {
-  res.json({ agents: listAgents(), voices: voiceChoices() });
+  res.json({ agents: listAgents(req.accountId), voices: voiceChoices(), accountId: req.accountId, demoMode: req.isDemoMode });
 });
 
 app.post("/api/agents", (req, res, next) => {
   try {
-    res.status(201).json({ agent: createAgent(req.body || {}) });
+    res.status(201).json({ agent: createAgent(req.body || {}, req.accountId) });
   } catch (error) {
     next(error);
   }
@@ -189,7 +294,7 @@ app.post("/api/agents", (req, res, next) => {
 
 app.get("/api/agents/:id", (req, res, next) => {
   try {
-    res.json({ agent: requireAgent(req.params.id), voices: voiceChoices() });
+    res.json({ agent: requireAgent(req.params.id, req.accountId), voices: voiceChoices() });
   } catch (error) {
     next(error);
   }
@@ -197,7 +302,7 @@ app.get("/api/agents/:id", (req, res, next) => {
 
 app.patch("/api/agents/:id", (req, res, next) => {
   try {
-    res.json({ agent: updateAgent(req.params.id, req.body || {}) });
+    res.json({ agent: updateAgent(req.params.id, req.body || {}, req.accountId) });
   } catch (error) {
     next(error);
   }
@@ -205,7 +310,7 @@ app.patch("/api/agents/:id", (req, res, next) => {
 
 app.post("/api/agents/:id/duplicate", (req, res, next) => {
   try {
-    res.status(201).json({ agent: duplicateAgent(req.params.id) });
+    res.status(201).json({ agent: duplicateAgent(req.params.id, req.accountId) });
   } catch (error) {
     next(error);
   }
@@ -213,19 +318,19 @@ app.post("/api/agents/:id/duplicate", (req, res, next) => {
 
 app.delete("/api/agents/:id", (req, res, next) => {
   try {
-    res.json(deleteAgent(req.params.id));
+    res.json(deleteAgent(req.params.id, req.accountId));
   } catch (error) {
     next(error);
   }
 });
 
 app.get("/api/knowledge", (req, res) => {
-  res.json({ knowledge: listKnowledge() });
+  res.json({ knowledge: listKnowledge(req.accountId) });
 });
 
 app.post("/api/knowledge", (req, res, next) => {
   try {
-    res.status(201).json({ knowledge: createKnowledge(req.body || {}) });
+    res.status(201).json({ knowledge: createKnowledge(req.body || {}, req.accountId) });
   } catch (error) {
     next(error);
   }
@@ -233,7 +338,7 @@ app.post("/api/knowledge", (req, res, next) => {
 
 app.patch("/api/knowledge/:id", (req, res, next) => {
   try {
-    res.json({ knowledge: updateKnowledge(req.params.id, req.body || {}) });
+    res.json({ knowledge: updateKnowledge(req.params.id, req.body || {}, req.accountId) });
   } catch (error) {
     next(error);
   }
@@ -241,7 +346,7 @@ app.patch("/api/knowledge/:id", (req, res, next) => {
 
 app.delete("/api/knowledge/:id", (req, res, next) => {
   try {
-    res.json(deleteKnowledge(req.params.id));
+    res.json(deleteKnowledge(req.params.id, req.accountId));
   } catch (error) {
     next(error);
   }
@@ -362,7 +467,7 @@ mountTwilio(app);
 async function agentsPhoneNumbersPayload(req) {
   // Prefer the telephony host store when split; otherwise list from this process.
   if (TELEPHONY_PUBLIC_URL && SERVICE === "agents") {
-    const headers = { Accept: "application/json" };
+    const headers = { Accept: "application/json", "X-Tenant-Id": req.accountId || DEMO_ACCOUNT_ID };
     const secret = telephonySharedSecret();
     if (secret) headers["X-Telephony-Secret"] = secret;
     let response;
@@ -428,7 +533,7 @@ app.post("/api/phone-numbers/assign", async (req, res, next) => {
     if (agentId) {
       // Validate agent exists on this Agents host when we have the desk.
       if (serveAgents) {
-        const agent = getAgent(String(agentId).trim());
+        const agent = getAgent(String(agentId).trim(), req.accountId);
         if (!agent) {
           const error = new Error("Unknown agent");
           error.status = 404;
@@ -441,6 +546,7 @@ app.post("/api/phone-numbers/assign", async (req, res, next) => {
       const headers = {
         Accept: "application/json",
         "Content-Type": "application/json",
+        "X-Tenant-Id": req.accountId || DEMO_ACCOUNT_ID,
       };
       const secret = telephonySharedSecret();
       if (secret) headers["X-Telephony-Secret"] = secret;
@@ -510,6 +616,8 @@ if (serveTelephony && SERVICE === "telephony") {
   app.get("/develop/twiml-apps", sendConsolePage);
   app.get("/monitor/logs", sendConsolePage);
   app.get("/account/keys", sendConsolePage);
+  app.get("/signin", sendPage("auth.html"));
+  app.get("/signup", sendPage("auth.html"));
   app.get(/^\/console(?:\/.*)?$/, (req, res) => {
     const target = telephonyTarget(req.path) || req.path.replace(/^\/console/, "") || "/";
     const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
@@ -533,9 +641,11 @@ if (serveTelephony && SERVICE === "telephony") {
   app.get("/analytics", sendPage("analytics.html"));
   app.get("/settings", sendPage("settings.html"));
   app.get("/call", (req, res) => {
-    const agent = getDefaultAgent();
+    const agent = getDefaultAgent(req.accountId);
     res.redirect(agent ? `/agents/${agent.id}/test` : "/agents");
   });
+  app.get("/signin", sendPage("auth.html"));
+  app.get("/signup", sendPage("auth.html"));
   // Agents Phone Numbers UI lists via /api/phone-numbers (proxied from telephony when split).
   app.get("/phone-numbers", sendPage("phone.html"));
   app.get(/^\/console(?:\/.*)?$/, redirectToTelephony);

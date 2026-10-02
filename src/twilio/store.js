@@ -1,3 +1,4 @@
+import { DEMO_ACCOUNT_ID } from "../accounts.js";
 import { getDb } from "../db.js";
 import { cleanE164, cleanText, cleanWebhookUrl, httpError } from "./http.js";
 import {
@@ -58,6 +59,7 @@ export function mapNumber(row) {
   return {
     sid: row.sid,
     account_sid: row.account_sid,
+    tenant_id: row.tenant_id || DEMO_ACCOUNT_ID,
     friendly_name: row.friendly_name,
     phone_number: row.phone_number,
     voice_url: row.voice_url || "",
@@ -163,10 +165,13 @@ function mapEvent(row) {
   };
 }
 
-export function listNumbers(accountSid, { phoneNumber = "", friendlyName = "" } = {}) {
+export function listNumbers(accountSid, { phoneNumber = "", friendlyName = "", tenantId = null } = {}) {
+  const tid = tenantId || DEMO_ACCOUNT_ID;
   const rows = getDb().prepare(`
-    SELECT * FROM twilio_numbers WHERE account_sid = ? ORDER BY date_created, phone_number
-  `).all(accountSid).map(mapNumber);
+    SELECT * FROM twilio_numbers
+    WHERE account_sid = ? AND tenant_id = ?
+    ORDER BY date_created, phone_number
+  `).all(accountSid, tid).map(mapNumber);
   return rows.filter((row) => {
     if (phoneNumber && !row.phone_number.includes(phoneNumber.replace(/\s/g, ""))) return false;
     if (friendlyName && !row.friendly_name.toLowerCase().includes(friendlyName.toLowerCase())) return false;
@@ -181,10 +186,12 @@ export function getNumber(accountSid, sid) {
   return row ? mapNumber(row) : null;
 }
 
-export function primaryNumber(accountSid) {
+export function primaryNumber(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   const row = getDb().prepare(`
-    SELECT * FROM twilio_numbers WHERE account_sid = ? ORDER BY date_created LIMIT 1
-  `).get(accountSid);
+    SELECT * FROM twilio_numbers
+    WHERE account_sid = ? AND tenant_id = ?
+    ORDER BY date_created LIMIT 1
+  `).get(accountSid, tenantId || DEMO_ACCOUNT_ID);
   return row ? mapNumber(row) : null;
 }
 
@@ -192,7 +199,7 @@ function method(value) {
   return String(value || "POST").toUpperCase() === "GET" ? "GET" : "POST";
 }
 
-export function createDemoNumber({ accountSid, phoneNumber, friendlyName, voiceUrl, statusCallback }) {
+export function createDemoNumber({ accountSid, phoneNumber, friendlyName, voiceUrl, statusCallback, tenantId = DEMO_ACCOUNT_ID }) {
   const phone = cleanE164(phoneNumber);
   if (!phone) throw httpError(400, "phone_number must be E.164, like +34964000214");
   const known = DEMO_INVENTORY.find((item) => item.phone_number === phone);
@@ -206,15 +213,17 @@ export function createDemoNumber({ accountSid, phoneNumber, friendlyName, voiceU
   const name = cleanText(friendlyName, 64) || known.friendly_name || phone;
   const voice = voiceUrl == null ? "/twilio/voice" : cleanWebhookUrl(voiceUrl);
   const status = statusCallback == null ? "/twilio/status" : cleanWebhookUrl(statusCallback);
+  const tid = tenantId || DEMO_ACCOUNT_ID;
   getDb().prepare(`
     INSERT INTO twilio_numbers (
-      sid, account_sid, phone_number, friendly_name, voice_url, voice_method, voice_fallback_url,
+      sid, account_sid, tenant_id, phone_number, friendly_name, voice_url, voice_method, voice_fallback_url,
       status_callback, status_callback_method, sms_url, sms_method, capabilities_json, status, demo,
       date_created, date_updated
-    ) VALUES (?, ?, ?, ?, ?, 'POST', NULL, ?, 'POST', NULL, 'POST', ?, 'in-use', 1, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, 'POST', NULL, ?, 'POST', NULL, 'POST', ?, 'in-use', 1, ?, ?)
   `).run(
     sid,
     accountSid,
+    tid,
     phone,
     name,
     voice,
@@ -300,13 +309,13 @@ function normalizeDirection(value) {
   return "inbound";
 }
 
-export function listStoredCalls(accountSid) {
+export function listStoredCalls(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   return getDb().prepare(`
     SELECT * FROM twilio_calls
-    WHERE account_sid = ?
+    WHERE account_sid = ? AND tenant_id = ?
     ORDER BY COALESCE(start_time, date_created) DESC
     LIMIT 200
-  `).all(accountSid).map(mapCall);
+  `).all(accountSid, tenantId || DEMO_ACCOUNT_ID).map(mapCall);
 }
 
 export function getStoredCall(sid) {
@@ -322,14 +331,16 @@ export function getStoredCallForAccount(accountSid, sid) {
 export function upsertCall(input) {
   const now = new Date().toISOString();
   const existing = getDb().prepare("SELECT date_created FROM twilio_calls WHERE sid = ?").get(input.sid);
+  const tid = input.tenantId || DEMO_ACCOUNT_ID;
   getDb().prepare(`
     INSERT INTO twilio_calls (
-      sid, account_sid, parent_call_sid, from_number, to_number, phone_number_sid, direction, status,
+      sid, account_sid, tenant_id, parent_call_sid, from_number, to_number, phone_number_sid, direction, status,
       start_time, end_time, duration, recording_url, recording_sid, price, local_call_id, media,
       annotation, demo, date_created, date_updated
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(sid) DO UPDATE SET
       status = excluded.status,
+      tenant_id = COALESCE(excluded.tenant_id, twilio_calls.tenant_id),
       end_time = COALESCE(excluded.end_time, twilio_calls.end_time),
       duration = COALESCE(excluded.duration, twilio_calls.duration),
       recording_url = COALESCE(excluded.recording_url, twilio_calls.recording_url),
@@ -343,6 +354,7 @@ export function upsertCall(input) {
   `).run(
     input.sid,
     input.accountSid,
+    tid,
     input.parentCallSid || null,
     input.from,
     input.to,
@@ -367,7 +379,8 @@ export function upsertCall(input) {
 
 function browserCallInput(call, { status, durationMs, endedAt } = {}) {
   const accountSid = demoAccountSid();
-  const number = primaryNumber(accountSid);
+  const tenantId = call.accountId || DEMO_ACCOUNT_ID;
+  const number = primaryNumber(accountSid, tenantId);
   const seconds = durationMs == null ? null : Math.max(0, Math.round(Number(durationMs) / 1000));
   const twilioStatus = status === "failed" ? "failed" : status === "in-progress" ? "in-progress" : "completed";
   const now = new Date().toISOString();
@@ -417,6 +430,7 @@ export function mirrorBrowserCall(call, { status, durationMs, endedAt } = {}) {
   return upsertCall({
     sid: preview.sid,
     accountSid: preview.account_sid,
+    tenantId: call.accountId || DEMO_ACCOUNT_ID,
     from: preview.from,
     to: preview.to,
     phoneNumberSid: preview.phone_number_sid,
@@ -449,10 +463,10 @@ export function recordingsFor(call) {
   }];
 }
 
-export function listApps(accountSid) {
+export function listApps(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   return getDb().prepare(`
-    SELECT * FROM twilio_apps WHERE account_sid = ? ORDER BY friendly_name
-  `).all(accountSid).map(mapApp);
+    SELECT * FROM twilio_apps WHERE account_sid = ? AND tenant_id = ? ORDER BY friendly_name
+  `).all(accountSid, tenantId || DEMO_ACCOUNT_ID).map(mapApp);
 }
 
 export function getApp(accountSid, sid) {
@@ -465,14 +479,16 @@ export function createDemoApp(accountSid, input) {
   if (!name) throw httpError(400, "Friendly name is required");
   const now = new Date().toISOString();
   const sid = randomSid("AP");
+  const tid = input.tenantId || DEMO_ACCOUNT_ID;
   getDb().prepare(`
     INSERT INTO twilio_apps (
-      sid, account_sid, friendly_name, voice_url, voice_method, status_callback,
+      sid, account_sid, tenant_id, friendly_name, voice_url, voice_method, status_callback,
       status_callback_method, sms_url, sms_method, demo, date_created, date_updated
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'POST', 1, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'POST', 1, ?, ?)
   `).run(
     sid,
     accountSid,
+    tid,
     name,
     input.voiceUrl == null ? "/twilio/voice" : cleanWebhookUrl(input.voiceUrl),
     method(input.voiceMethod),
@@ -510,10 +526,10 @@ export function updateDemoApp(accountSid, sid, input) {
   return getApp(accountSid, sid);
 }
 
-export function listEvents(accountSid) {
+export function listEvents(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   return getDb().prepare(`
-    SELECT * FROM twilio_events WHERE account_sid = ? ORDER BY date_created DESC LIMIT 200
-  `).all(accountSid).map(mapEvent);
+    SELECT * FROM twilio_events WHERE account_sid = ? AND tenant_id = ? ORDER BY date_created DESC LIMIT 200
+  `).all(accountSid, tenantId || DEMO_ACCOUNT_ID).map(mapEvent);
 }
 
 export function getEvent(accountSid, sid) {
@@ -524,14 +540,16 @@ export function getEvent(accountSid, sid) {
 export function recordEvent(input) {
   const sid = input.sid || randomSid("NO");
   const now = new Date().toISOString();
+  const tid = input.tenantId || DEMO_ACCOUNT_ID;
   getDb().prepare(`
     INSERT INTO twilio_events (
-      sid, account_sid, request_method, request_url, call_sid, request_json, response_status,
+      sid, account_sid, tenant_id, request_method, request_url, call_sid, request_json, response_status,
       response_body, log_level, message, signature, date_created
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     sid,
     input.accountSid,
+    tid,
     input.method,
     input.url,
     input.callSid || null,

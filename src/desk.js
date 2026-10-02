@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { DEMO_ACCOUNT_ID } from "./accounts.js";
 import { getDb } from "./db.js";
 import { DEFAULT_AGENT_ID, VOICE_CHOICES } from "./defaults.js";
 import { mirrorBrowserCall } from "./twilio/store.js";
@@ -124,25 +125,39 @@ const AGENT_COLUMNS = `
   model_notes, enabled_tools_json, created_at, updated_at
 `;
 
-export function listAgents() {
-  const rows = getDb().prepare(`SELECT ${AGENT_COLUMNS} FROM agents ORDER BY updated_at DESC, name`).all();
+function tenantId(accountId) {
+  return accountId || DEMO_ACCOUNT_ID;
+}
+
+export function listAgents(accountId = DEMO_ACCOUNT_ID) {
+  const rows = getDb().prepare(`
+    SELECT ${AGENT_COLUMNS} FROM agents
+    WHERE account_id = ?
+    ORDER BY updated_at DESC, name
+  `).all(tenantId(accountId));
   return rows.map((row) => mapAgent(row, knowledgeFor(row.id, false)));
 }
 
-export function getAgent(id) {
-  const row = getDb().prepare(`SELECT ${AGENT_COLUMNS} FROM agents WHERE id = ?`).get(id);
+export function getAgent(id, accountId = null) {
+  const row = accountId
+    ? getDb().prepare(`SELECT ${AGENT_COLUMNS} FROM agents WHERE id = ? AND account_id = ?`).get(id, tenantId(accountId))
+    : getDb().prepare(`SELECT ${AGENT_COLUMNS} FROM agents WHERE id = ?`).get(id);
   if (!row) return null;
   return mapAgent(row, knowledgeFor(row.id, true));
 }
 
-export function requireAgent(id) {
-  const agent = getAgent(id);
+export function requireAgent(id, accountId = null) {
+  const agent = getAgent(id, accountId);
   if (!agent) throw httpError(404, "Agent not found");
   return agent;
 }
 
-export function getDefaultAgent() {
-  return getAgent(DEFAULT_AGENT_ID) || listAgents()[0] || null;
+export function getDefaultAgent(accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
+  if (tid === DEMO_ACCOUNT_ID) {
+    return getAgent(DEFAULT_AGENT_ID, tid) || listAgents(tid)[0] || null;
+  }
+  return listAgents(tid)[0] || null;
 }
 
 export function voiceChoices() {
@@ -174,16 +189,19 @@ function agentInput(input, { requirePrompt = true } = {}) {
   };
 }
 
-function setKnowledge(database, agentId, ids) {
+function setKnowledge(database, agentId, ids, accountId = DEMO_ACCOUNT_ID) {
   database.prepare("DELETE FROM agent_knowledge WHERE agent_id = ?").run(agentId);
   const insert = database.prepare("INSERT INTO agent_knowledge (agent_id, knowledge_id) VALUES (?, ?)");
-  const known = new Set(database.prepare("SELECT id FROM knowledge_bases").all().map((row) => row.id));
+  const known = new Set(
+    database.prepare("SELECT id FROM knowledge_bases WHERE account_id = ?").all(tenantId(accountId)).map((row) => row.id),
+  );
   for (const id of ids) {
     if (known.has(id)) insert.run(agentId, id);
   }
 }
 
-export function createAgent(input = {}) {
+export function createAgent(input = {}, accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
   const fields = agentInput(input);
   const id = newId("agt");
   const now = new Date().toISOString();
@@ -194,11 +212,12 @@ export function createAgent(input = {}) {
   try {
     database.prepare(`
       INSERT INTO agents (
-        id, name, description, system_prompt, greeting,
+        id, account_id, name, description, system_prompt, greeting,
         voice, language, model_notes, enabled_tools_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
+      tid,
       fields.name,
       fields.description,
       fields.systemPrompt,
@@ -210,17 +229,18 @@ export function createAgent(input = {}) {
       now,
       now,
     );
-    setKnowledge(database, id, knowledgeIds);
+    setKnowledge(database, id, knowledgeIds, tid);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
   }
-  return requireAgent(id);
+  return requireAgent(id, tid);
 }
 
-export function updateAgent(id, input = {}) {
-  const current = requireAgent(id);
+export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
+  const current = requireAgent(id, tid);
   const has = (key) => Object.prototype.hasOwnProperty.call(input, key);
   const next = {
     name: has("name") ? cleanBlock(input.name, 80) : current.name,
@@ -257,17 +277,18 @@ export function updateAgent(id, input = {}) {
       new Date().toISOString(),
       id,
     );
-    if (has("knowledgeIds")) setKnowledge(database, id, knowledgeIds);
+    if (has("knowledgeIds")) setKnowledge(database, id, knowledgeIds, tid);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
   }
-  return requireAgent(id);
+  return requireAgent(id, tid);
 }
 
-export function duplicateAgent(id) {
-  const current = requireAgent(id);
+export function duplicateAgent(id, accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
+  const current = requireAgent(id, tid);
   const name = `Copy of ${current.name}`.slice(0, 80);
   return createAgent({
     name,
@@ -279,11 +300,11 @@ export function duplicateAgent(id) {
     modelNotes: current.modelNotes,
     enabledTools: current.enabledTools,
     knowledgeIds: current.knowledgeIds,
-  });
+  }, tid);
 }
 
-export function deleteAgent(id) {
-  const current = requireAgent(id);
+export function deleteAgent(id, accountId = DEMO_ACCOUNT_ID) {
+  const current = requireAgent(id, tenantId(accountId));
   const database = getDb();
   database.exec("BEGIN");
   try {
@@ -315,19 +336,20 @@ function mapKnowledge(row) {
   };
 }
 
-export function listKnowledge() {
+export function listKnowledge(accountId = DEMO_ACCOUNT_ID) {
   return getDb().prepare(`
     SELECT id, title, body, source_url, created_at, updated_at
     FROM knowledge_bases
+    WHERE account_id = ?
     ORDER BY updated_at DESC, title
-  `).all().map(mapKnowledge);
+  `).all(tenantId(accountId)).map(mapKnowledge);
 }
 
-export function getKnowledge(id) {
+export function getKnowledge(id, accountId = DEMO_ACCOUNT_ID) {
   const row = getDb().prepare(`
     SELECT id, title, body, source_url, created_at, updated_at
-    FROM knowledge_bases WHERE id = ?
-  `).get(id);
+    FROM knowledge_bases WHERE id = ? AND account_id = ?
+  `).get(id, tenantId(accountId));
   return row ? mapKnowledge(row) : null;
 }
 
@@ -339,19 +361,21 @@ function knowledgeInput(input) {
   return { title, body, sourceUrl: cleanUrl(input.sourceUrl) };
 }
 
-export function createKnowledge(input = {}) {
+export function createKnowledge(input = {}, accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
   const fields = knowledgeInput(input);
   const id = newId("kb");
   const now = new Date().toISOString();
   getDb().prepare(`
-    INSERT INTO knowledge_bases (id, title, body, source_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, fields.title, fields.body, fields.sourceUrl || null, now, now);
-  return getKnowledge(id);
+    INSERT INTO knowledge_bases (id, account_id, title, body, source_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, tid, fields.title, fields.body, fields.sourceUrl || null, now, now);
+  return getKnowledge(id, tid);
 }
 
-export function updateKnowledge(id, input = {}) {
-  const current = getKnowledge(id);
+export function updateKnowledge(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
+  const current = getKnowledge(id, tid);
   if (!current) throw httpError(404, "Knowledge entry not found");
   const has = (key) => Object.prototype.hasOwnProperty.call(input, key);
   const fields = knowledgeInput({
@@ -364,11 +388,11 @@ export function updateKnowledge(id, input = {}) {
     SET title = ?, body = ?, source_url = ?, updated_at = ?
     WHERE id = ?
   `).run(fields.title, fields.body, fields.sourceUrl || null, new Date().toISOString(), id);
-  return getKnowledge(id);
+  return getKnowledge(id, tid);
 }
 
-export function deleteKnowledge(id) {
-  const current = getKnowledge(id);
+export function deleteKnowledge(id, accountId = DEMO_ACCOUNT_ID) {
+  const current = getKnowledge(id, tenantId(accountId));
   if (!current) throw httpError(404, "Knowledge entry not found");
   const database = getDb();
   database.exec("BEGIN");
@@ -413,12 +437,14 @@ export function saveCallRecord(call) {
   const endedMs = Date.parse(endedAt);
   const durationMs = Number.isFinite(startedMs) && Number.isFinite(endedMs) ? Math.max(0, endedMs - startedMs) : 0;
   const status = call.endReason === "failed" || call.endReason === "error" ? "failed" : "completed";
+  const accountId = call.accountId || DEMO_ACCOUNT_ID;
   getDb().prepare(`
     INSERT INTO call_records (
-      id, agent_id, agent_name, source, status, started_at, ended_at, duration_ms,
+      id, account_id, agent_id, agent_name, source, status, started_at, ended_at, duration_ms,
       transcript_json, summary, voice, language, end_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
+      account_id = excluded.account_id,
       agent_id = excluded.agent_id,
       agent_name = excluded.agent_name,
       source = excluded.source,
@@ -433,6 +459,7 @@ export function saveCallRecord(call) {
       end_reason = excluded.end_reason
   `).run(
     call.id,
+    accountId,
     call.agentId || null,
     call.agentName || null,
     call.source || "browser",
@@ -459,6 +486,7 @@ function mapRecord(row) {
   }
   return {
     id: row.id,
+    accountId: row.account_id || DEMO_ACCOUNT_ID,
     agentId: row.agent_id,
     agentName: row.agent_name,
     source: row.source,
@@ -478,6 +506,7 @@ function liveRecord(call) {
   const startedMs = Date.parse(call.startedAt);
   return {
     id: call.id,
+    accountId: call.accountId || DEMO_ACCOUNT_ID,
     agentId: call.agentId || null,
     agentName: call.agentName || null,
     source: call.source || "browser",
@@ -493,30 +522,39 @@ function liveRecord(call) {
   };
 }
 
-export function listHistory(activeCalls = []) {
+export function listHistory(activeCalls = [], accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
   const stored = getDb().prepare(`
     SELECT * FROM call_records
+    WHERE account_id = ?
     ORDER BY started_at DESC
     LIMIT 200
-  `).all().map(mapRecord);
+  `).all(tid).map(mapRecord);
   const seen = new Set(stored.map((row) => row.id));
   const live = [];
   for (const call of activeCalls) {
     if (!call || seen.has(call.id) || call.source === "seed" || call.status !== "active") continue;
+    if ((call.accountId || DEMO_ACCOUNT_ID) !== tid) continue;
     live.push(liveRecord(call));
   }
   return [...live, ...stored];
 }
 
-export function getHistoryCall(id, activeCalls = []) {
-  const row = getDb().prepare("SELECT * FROM call_records WHERE id = ?").get(id);
+export function getHistoryCall(id, activeCalls = [], accountId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId(accountId);
+  const row = getDb().prepare("SELECT * FROM call_records WHERE id = ? AND account_id = ?").get(id, tid);
   if (row) return mapRecord(row);
-  const live = (activeCalls || []).find((call) => call?.id === id && call.status === "active" && call.source !== "seed");
+  const live = (activeCalls || []).find(
+    (call) => call?.id === id && call.status === "active" && call.source !== "seed"
+      && (call.accountId || DEMO_ACCOUNT_ID) === tid,
+  );
   return live ? liveRecord(live) : null;
 }
 
-export function callAnalytics() {
-  const rows = getDb().prepare("SELECT status, started_at, duration_ms FROM call_records").all();
+export function callAnalytics(accountId = DEMO_ACCOUNT_ID) {
+  const rows = getDb().prepare(
+    "SELECT status, started_at, duration_ms FROM call_records WHERE account_id = ?",
+  ).all(tenantId(accountId));
   const total = rows.length;
   const completed = rows.filter((row) => row.status === "completed").length;
   const failed = rows.filter((row) => row.status === "failed").length;

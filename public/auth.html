@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Account · Voice Desk</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560&family=Outfit:wght@360;480;560&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/app.css" />
+    <link rel="stylesheet" href="/css/shell.css" />
+    <style>
+      body.auth-page {
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        margin: 0;
+        background:
+          radial-gradient(900px 420px at 100% -10%, rgba(230, 194, 122, 0.08), transparent 55%),
+          #0c0f14;
+        color: #e8eef7;
+        font-family: "Plus Jakarta Sans", sans-serif;
+      }
+      .auth-card {
+        width: min(420px, calc(100vw - 32px));
+        padding: 28px 24px;
+        border-radius: 16px;
+        border: 1px solid rgba(232, 237, 245, 0.08);
+        background: #141922;
+        display: grid;
+        gap: 14px;
+      }
+      .auth-card h1 { margin: 0; font-size: 24px; letter-spacing: -0.03em; }
+      .auth-card .lede { margin: 0; color: #93a0b4; font-size: 14px; line-height: 1.45; }
+      .auth-card label { display: grid; gap: 6px; font-size: 13px; color: #93a0b4; }
+      .auth-card input {
+        min-height: 40px;
+        padding: 0 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(232, 237, 245, 0.12);
+        background: #0c0f14;
+        color: #e8eef7;
+        font: inherit;
+      }
+      .auth-card .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+      .auth-card .error { color: #e08b78; font-size: 13px; margin: 0; }
+      .auth-card .switch { margin: 0; font-size: 13px; color: #93a0b4; }
+      .auth-card .switch a { color: #e6c27a; }
+    </style>
+  </head>
+  <body class="auth-page">
+    <form class="auth-card" id="authForm">
+      <div>
+        <p class="kicker" style="margin:0 0 6px;color:#e6c27a;font-size:12px;letter-spacing:0.08em;text-transform:uppercase">Voice Desk</p>
+        <h1 id="title">Create account</h1>
+        <p class="lede" id="lede">New accounts start empty — no Maison Sol agents, knowledge, or phone numbers.</p>
+      </div>
+      <label>Name (optional)<input id="name" name="name" autocomplete="name" maxlength="80" /></label>
+      <label>Email<input id="email" name="email" type="email" required autocomplete="email" /></label>
+      <label>Password<input id="password" name="password" type="password" required minlength="8" autocomplete="new-password" /></label>
+      <p class="error" id="error" hidden></p>
+      <div class="actions">
+        <button class="btn primary" type="submit" id="submit">Create account</button>
+        <a class="btn ghost" href="/agents">Cancel</a>
+      </div>
+      <p class="switch" id="switch">Already have an account? <a href="/signin">Sign in</a></p>
+      <p class="switch"><a href="/api/auth/demo" id="demoLink">Continue with public demo</a> (Maison Sol seed)</p>
+    </form>
+    <script type="module" src="/js/auth.js"></script>
+  </body>
+</html>

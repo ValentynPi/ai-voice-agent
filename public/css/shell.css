@@ -265,3 +265,21 @@ table.data .quiet, .quiet { color: var(--muted); font-weight: 450; font-size: 13
   .workspace { height: auto; overflow: visible; }
   .page, .page-head, .workspace .stage { padding-left: 16px; padding-right: 16px; }
 }
+
+.account-slot { display: grid; gap: 6px; margin-bottom: 4px; }
+.account-label {
+  margin: 0;
+  color: var(--cream);
+  font-size: 12px;
+  font-weight: 560;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.tiny {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 8px;
+}

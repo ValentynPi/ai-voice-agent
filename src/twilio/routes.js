@@ -23,7 +23,8 @@ import {
   updateCredentials,
 } from "./service.js";
 import { statusWebhook, voiceWebhook } from "./webhooks.js";
-import { assertTelephonySecret, assignPublicNumber, publicPhoneNumbersPayload } from "./public-list.js";
+import { assertTelephonySecret, assignPublicNumber, publicPhoneNumbersPayload, resolveTenantId } from "./public-list.js";
+import { upsertSyncedAccount } from "../accounts.js";
 
 function queryValue(req, ...names) {
   for (const name of names) {
@@ -100,7 +101,7 @@ export function mountTwilio(app) {
       if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization, X-Tenant-Id");
         res.setHeader("Vary", "Origin");
       }
       res.json(await publicPhoneNumbersPayload(req));
@@ -113,7 +114,7 @@ export function mountTwilio(app) {
     if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization, X-Tenant-Id");
       res.setHeader("Vary", "Origin");
     }
     res.status(204).end();
@@ -127,7 +128,7 @@ export function mountTwilio(app) {
       if (origin) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization, X-Tenant-Id");
         res.setHeader("Vary", "Origin");
       }
       const body = req.body || {};
@@ -143,10 +144,28 @@ export function mountTwilio(app) {
     if (origin) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Telephony-Secret, Authorization, X-Tenant-Id");
       res.setHeader("Vary", "Origin");
     }
     res.status(204).end();
+  });
+
+
+  // Cross-host: Agents signup mirrors the tenant onto telephony SQLite.
+  app.post("/api/public/tenants", (req, res, next) => {
+    try {
+      assertTelephonySecret(req);
+      const body = req.body || {};
+      const account = upsertSyncedAccount({
+        id: body.id,
+        email: body.email,
+        passwordHash: body.password_hash || body.passwordHash,
+        name: body.name || "",
+      });
+      res.status(201).json({ ok: true, account: { id: account.id, email: account.email, name: account.name } });
+    } catch (error) {
+      next(error);
+    }
   });
 
   const router = Router();
@@ -224,6 +243,7 @@ export function mountTwilio(app) {
         phoneNumber: queryValue(req, "PhoneNumber", "phoneNumber"),
         friendlyName: queryValue(req, "FriendlyName", "friendlyName"),
         pageSize: pageSize(req),
+        tenantId: resolveTenantId(req),
       }));
     } catch (error) {
       next(error);
@@ -234,6 +254,7 @@ export function mountTwilio(app) {
     try {
       const body = readBody(req);
       if (!body.phoneNumber) throw httpError(400, "phone_number is required");
+      body.tenantId = resolveTenantId(req);
       const number = await buyPhoneNumber(req.params.sid, body);
       res.status(201).json(number);
     } catch (error) {
@@ -271,7 +292,7 @@ export function mountTwilio(app) {
 
   router.get("/Accounts/:sid/Calls", async (req, res, next) => {
     try {
-      res.json(await listCallResources(req.params.sid, callQuery(req)));
+      res.json(await listCallResources(req.params.sid, { ...callQuery(req), tenantId: resolveTenantId(req) }));
     } catch (error) {
       next(error);
     }
@@ -306,7 +327,7 @@ export function mountTwilio(app) {
 
   router.get("/Accounts/:sid/Applications", async (req, res, next) => {
     try {
-      res.json(await listAppResources(req.params.sid));
+      res.json(await listAppResources(req.params.sid, resolveTenantId(req)));
     } catch (error) {
       next(error);
     }
@@ -339,7 +360,7 @@ export function mountTwilio(app) {
 
   router.get("/Accounts/:sid/Monitor/Events", (req, res, next) => {
     try {
-      res.json(listEventResources(req.params.sid));
+      res.json(listEventResources(req.params.sid, resolveTenantId(req)));
     } catch (error) {
       next(error);
     }

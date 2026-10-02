@@ -20,8 +20,9 @@ npm start
 ```
 
 - Home: http://localhost:3000/
+- Sign up (empty tenant): http://localhost:3000/signup
 - Agents: http://localhost:3000/agents
-- Default test call: http://localhost:3000/agents/agt_maison_sol/test
+- Default demo test call: http://localhost:3000/agents/agt_maison_sol/test
 - Tools (MCP): http://localhost:3000/tools
 - Health: http://localhost:3000/api/health
 
@@ -50,11 +51,33 @@ Copy `.env.example` to `.env` if you want a key locally. `npm start` reads `.env
 
 Set the key on Fly with `fly secrets set OPENAI_API_KEY=...`. Do not put it in `fly.toml`. Model and voice ids are already in `fly.toml`.
 
+
+## Accounts (multi-tenant)
+
+Lightweight email + password accounts with an HttpOnly session cookie (`vd_session`).
+
+| Mode | What you see |
+| --- | --- |
+| **Public demo** (not signed in) | Seeded Maison Sol agent, knowledge, and demo phone numbers under tenant `acct_demo`. |
+| **New account** (Sign up) | Empty Agents, empty Knowledge, empty Phone Numbers, empty Call History. No Maison Sol seed. |
+
+### Create the first account
+
+1. Open Agents: https://ai-voice-agent-valmax.fly.dev/signup (or http://localhost:3000/signup).
+2. Enter email + password (min 8 characters) and submit.
+3. You land on `/agents` with **No agents yet** — create your own.
+4. Phone Numbers stay empty until you buy a demo number on the telephony console **while signed in with the same email** (Agents signup mirrors the tenant to telephony when `TELEPHONY_SHARED_SECRET` is set on both apps).
+
+Sign in: `/signin`. Sign out from the sidebar. **Continue with public demo** clears the session and returns to Maison Sol.
+
+Agents, knowledge, call history, analytics, and telephony store rows (`tenant_id`) are scoped by `account_id`. Unsigned visitors keep using the demo tenant so existing demos and tests still work.
+
 ## Product map
 
 | Path | What it is |
 | --- | --- |
 | `/` | Home. Opens the default agent's test call. |
+| `/signup` / `/signin` | Create an empty account or sign in (cookie session). |
 | `/agents` | Create, edit, duplicate, and delete agents. |
 | `/agents/:id/test` | Browser test call for that agent. |
 | `/history` | Stored web test calls and transcripts. |

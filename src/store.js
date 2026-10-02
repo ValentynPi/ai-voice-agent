@@ -43,7 +43,7 @@ export function resetStore() {
   state.seq = 0;
 }
 
-export function startCall({ source = "browser", agentId = null, agentName = null, voice = null, toolAllow = null } = {}) {
+export function startCall({ source = "browser", agentId = null, agentName = null, voice = null, toolAllow = null, accountId = null } = {}) {
   const call = {
     id: nextId("call"),
     source,
@@ -58,6 +58,7 @@ export function startCall({ source = "browser", agentId = null, agentName = null
     voice,
     lang: null,
     toolAllow,
+    accountId,
   };
   state.calls.push(call);
   state.callsToday += 1;
@@ -161,6 +162,7 @@ function publicCall(call) {
     agentName: call.agentName || null,
     voice: call.voice || null,
     lang: call.lang || null,
+    accountId: call.accountId || null,
     messages: call.messages.map((message) => ({ ...message, tools: [...message.tools] })),
   };
 }
