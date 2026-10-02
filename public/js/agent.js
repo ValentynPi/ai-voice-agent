@@ -10,8 +10,7 @@ const banner = document.querySelector("#banner");
 const nameInput = document.querySelector("#name");
 const descriptionInput = document.querySelector("#description");
 const promptInput = document.querySelector("#systemPrompt");
-const greetingEn = document.querySelector("#greetingEn");
-const greetingEs = document.querySelector("#greetingEs");
+const greetingInput = document.querySelector("#greeting");
 const voiceSelect = document.querySelector("#voice");
 const languageSelect = document.querySelector("#language");
 const notesInput = document.querySelector("#modelNotes");
@@ -54,8 +53,8 @@ function paint(next) {
   nameInput.value = next?.name || "";
   descriptionInput.value = next?.description || "";
   promptInput.value = next?.systemPrompt || (isNew ? DEFAULT_PROMPT : "");
-  greetingEn.value = next?.greetingEn || (isNew ? "Hello, thanks for calling. How can I help you today?" : "");
-  greetingEs.value = next?.greetingEs || (isNew ? "Hola, gracias por llamar. ¿En qué puedo ayudarte?" : "");
+  greetingInput.value = next?.greeting || next?.greetingEn || next?.greetingEs
+    || (isNew ? "Hello, thanks for calling. How can I help you today?" : "");
   languageSelect.value = next?.language || "multi";
   notesInput.value = next?.modelNotes || "";
   fillVoices(next?.voices, next?.voice || "marin");
@@ -152,8 +151,7 @@ function payload() {
     name: nameInput.value,
     description: descriptionInput.value,
     systemPrompt: promptInput.value,
-    greetingEn: greetingEn.value,
-    greetingEs: greetingEs.value,
+    greeting: greetingInput.value,
     voice: voiceSelect.value,
     language: languageSelect.value,
     modelNotes: notesInput.value,

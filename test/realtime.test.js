@@ -43,8 +43,7 @@ test("agent settings narrow voice, greeting, tools, and knowledge", () => {
     voice: "cedar",
     language: "es",
     systemPrompt: "You are North Desk.",
-    greetingEn: "Hello there",
-    greetingEs: "Hola norte",
+    greeting: "Hola norte",
     enabledTools: ["get_note"],
     knowledge: [{ title: "Hours", body: "Closed Monday." }],
   };
@@ -56,6 +55,7 @@ test("agent settings narrow voice, greeting, tools, and knowledge", () => {
   assert.match(session.instructions, /Knowledge base/);
   const greeting = greetingEvent("es", agent);
   assert.match(greeting.response.instructions, /Hola norte/);
+  assert.match(greeting.response.instructions, /Detect which language/);
   assert.equal(session.tools.some((tool) => tool.name === "get_note"), false);
   assert.deepEqual(
     selectSessionTools([{ name: "get_note" }, { name: "salon_lookup" }], agent),
@@ -65,16 +65,18 @@ test("agent settings narrow voice, greeting, tools, and knowledge", () => {
   assert.deepEqual(selectSessionTools([{ name: "get_note" }], { enabledTools: null }), [{ name: "get_note" }]);
 });
 
-test("greeting asks marin to speak first in the selected language", () => {
+test("greeting asks marin to speak first in the greeting's language", () => {
   const english = greetingEvent("en");
   assert.equal(english.type, "response.create");
   assert.equal(english.response.tool_choice, "none");
   assert.deepEqual(english.response.output_modalities, ["audio"]);
-  assert.match(english.response.instructions, /Speak in English only/);
+  assert.match(english.response.instructions, /Detect which language/);
   assert.match(english.response.instructions, /Hello, this is Sol at Maison Sol in Castellón/);
-  const spanish = greetingEvent("es");
-  assert.match(spanish.response.instructions, /Speak in Spanish only/);
-  assert.match(spanish.response.instructions, /Hola, soy Sol/);
+  const spanishAgent = { greeting: "Hola, soy Sol en Maison Sol." };
+  const spanish = greetingEvent("en", spanishAgent);
+  assert.match(spanish.response.instructions, /Detect which language/);
+  assert.match(spanish.response.instructions, /Hola, soy Sol en Maison Sol/);
+  assert.doesNotMatch(spanish.response.instructions, /Speak in English only/);
 });
 
 test("voice desk greets through realtime and does not use browser speech", () => {
@@ -165,7 +167,7 @@ test("realtime token falls back when the first model id is rejected", async () =
       assert.equal(body.voice, "marin");
       assert.equal(body.session.audio.output.voice, "marin");
       assert.equal(body.greeting.type, "response.create");
-      assert.match(body.greeting.response.instructions, /Speak in English only/);
+      assert.match(body.greeting.response.instructions, /Detect which language/);
       assert.equal(body.greeting.response.tool_choice, "none");
       assert.deepEqual(seen, ["gpt-5.1", "gpt-realtime-2.1"]);
       assert.doesNotMatch(JSON.stringify(body), /test-key/);

@@ -107,8 +107,7 @@ function mapAgent(row, knowledge) {
     name: row.name,
     description: row.description || "",
     systemPrompt: row.system_prompt,
-    greetingEn: row.greeting_en || "",
-    greetingEs: row.greeting_es || "",
+    greeting: row.greeting || "",
     voice: row.voice || "marin",
     language: row.language || "multi",
     modelNotes: row.model_notes || "",
@@ -121,7 +120,7 @@ function mapAgent(row, knowledge) {
 }
 
 const AGENT_COLUMNS = `
-  id, name, description, system_prompt, greeting_en, greeting_es, voice, language,
+  id, name, description, system_prompt, greeting, voice, language,
   model_notes, enabled_tools_json, created_at, updated_at
 `;
 
@@ -150,6 +149,15 @@ export function voiceChoices() {
   return VOICE_CHOICES;
 }
 
+function resolveGreeting(input, fallback = "") {
+  if (Object.prototype.hasOwnProperty.call(input, "greeting")) {
+    return cleanBlock(input.greeting, 1000);
+  }
+  const english = cleanBlock(input.greetingEn, 1000);
+  const spanish = cleanBlock(input.greetingEs, 1000);
+  return english || spanish || cleanBlock(fallback, 1000);
+}
+
 function agentInput(input, { requirePrompt = true } = {}) {
   const name = cleanBlock(input.name, 80);
   if (!name) throw httpError(400, "Name is required");
@@ -159,8 +167,7 @@ function agentInput(input, { requirePrompt = true } = {}) {
     name,
     description: cleanBlock(input.description, 400),
     systemPrompt,
-    greetingEn: cleanBlock(input.greetingEn, 1000),
-    greetingEs: cleanBlock(input.greetingEs, 1000),
+    greeting: resolveGreeting(input),
     voice: cleanVoice(input.voice || "marin"),
     language: cleanLanguage(input.language || "multi"),
     modelNotes: cleanBlock(input.modelNotes, 500),
@@ -187,16 +194,15 @@ export function createAgent(input = {}) {
   try {
     database.prepare(`
       INSERT INTO agents (
-        id, name, description, system_prompt, greeting_en, greeting_es,
+        id, name, description, system_prompt, greeting,
         voice, language, model_notes, enabled_tools_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       fields.name,
       fields.description,
       fields.systemPrompt,
-      fields.greetingEn,
-      fields.greetingEs,
+      fields.greeting,
       fields.voice,
       fields.language,
       fields.modelNotes,
@@ -220,8 +226,9 @@ export function updateAgent(id, input = {}) {
     name: has("name") ? cleanBlock(input.name, 80) : current.name,
     description: has("description") ? cleanBlock(input.description, 400) : current.description,
     systemPrompt: has("systemPrompt") ? cleanBlock(input.systemPrompt, 8000) : current.systemPrompt,
-    greetingEn: has("greetingEn") ? cleanBlock(input.greetingEn, 1000) : current.greetingEn,
-    greetingEs: has("greetingEs") ? cleanBlock(input.greetingEs, 1000) : current.greetingEs,
+    greeting: (has("greeting") || has("greetingEn") || has("greetingEs"))
+      ? resolveGreeting(input, current.greeting)
+      : current.greeting,
     voice: has("voice") ? cleanVoice(input.voice) : current.voice,
     language: has("language") ? cleanLanguage(input.language) : current.language,
     modelNotes: has("modelNotes") ? cleanBlock(input.modelNotes, 500) : current.modelNotes,
@@ -235,15 +242,14 @@ export function updateAgent(id, input = {}) {
   try {
     database.prepare(`
       UPDATE agents SET
-        name = ?, description = ?, system_prompt = ?, greeting_en = ?, greeting_es = ?,
+        name = ?, description = ?, system_prompt = ?, greeting = ?,
         voice = ?, language = ?, model_notes = ?, enabled_tools_json = ?, updated_at = ?
       WHERE id = ?
     `).run(
       next.name,
       next.description,
       next.systemPrompt,
-      next.greetingEn,
-      next.greetingEs,
+      next.greeting,
       next.voice,
       next.language,
       next.modelNotes,
@@ -267,8 +273,7 @@ export function duplicateAgent(id) {
     name,
     description: current.description,
     systemPrompt: current.systemPrompt,
-    greetingEn: current.greetingEn,
-    greetingEs: current.greetingEs,
+    greeting: current.greeting,
     voice: current.voice,
     language: current.language,
     modelNotes: current.modelNotes,

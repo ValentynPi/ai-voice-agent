@@ -1,4 +1,4 @@
-import { GREETING_EN, GREETING_ES } from "./defaults.js";
+import { DEFAULT_GREETING } from "./defaults.js";
 import { refusal } from "./format.js";
 import { invokeMcpTool, listEnabledMcpRealtimeTools } from "./mcp/connection.js";
 import { realtimeCandidates, noteRealtimeModel, voiceName } from "./models.js";
@@ -75,28 +75,21 @@ export function realtimeToolSpecs() {
   return listEnabledMcpRealtimeTools();
 }
 
-function greetingLine(lang, agent) {
-  const spanish = lang === "es";
-  const fallback = spanish ? GREETING_ES : GREETING_EN;
-  if (!agent) return fallback;
-  const english = String(agent.greetingEn || "").trim();
-  const spanishLine = String(agent.greetingEs || "").trim();
-  if (agent.language === "es" && lang !== "en") return spanishLine || english || fallback;
-  if (agent.language === "en" && lang !== "es") return english || spanishLine || fallback;
-  return spanish ? (spanishLine || english || fallback) : (english || spanishLine || fallback);
+function greetingLine(agent) {
+  if (!agent) return DEFAULT_GREETING;
+  const legacy = String(agent.greetingEn || agent.greetingEs || "").trim();
+  return String(agent.greeting || "").trim() || legacy || DEFAULT_GREETING;
 }
 
-export function greetingEvent(lang, agent) {
-  const spanish = lang === "es";
-  const line = greetingLine(lang, agent);
-  const language = spanish ? "Spanish" : "English";
+export function greetingEvent(_lang, agent) {
+  const line = greetingLine(agent);
   return {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
       input: [],
-      instructions: `The call just connected. The caller has not spoken. Speak in ${language} only. Say exactly the following, then stop and wait. Do not call tools.\n\n${line}`,
+      instructions: `The call just connected. The caller has not spoken. Detect which language the following greeting is written in and speak only in that language. Say exactly the following, then stop and wait. Do not call tools.\n\n${line}`,
     },
   };
 }

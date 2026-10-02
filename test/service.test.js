@@ -185,8 +185,7 @@ test("agents proxies phone-number assign to telephony", async () => {
             body: JSON.stringify({
               name: "Bind Me",
               systemPrompt: "You are a short voice agent.",
-              greetingEn: "Hello",
-              greetingEs: "Hola",
+              greeting: "Hello",
             }),
           }).then((r) => r.json());
           const agentId = created.agent.id;

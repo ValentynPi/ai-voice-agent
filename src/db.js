@@ -5,8 +5,7 @@ import {
   DEFAULT_AGENT_ID,
   DEFAULT_KB_ID,
   DEFAULT_SYSTEM_PROMPT,
-  GREETING_EN,
-  GREETING_ES,
+  DEFAULT_GREETING,
 } from "./defaults.js";
 import { ensureTwilioTables } from "./twilio/schema.js";
 import { CUSTOMERS, HOURS, ORDERS, SALON, SERVICES, STAFF } from "./tools/demo-data.js";
@@ -187,8 +186,7 @@ function migrate(database) {
       name TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       system_prompt TEXT NOT NULL,
-      greeting_en TEXT NOT NULL DEFAULT '',
-      greeting_es TEXT NOT NULL DEFAULT '',
+      greeting TEXT NOT NULL DEFAULT '',
       voice TEXT NOT NULL DEFAULT 'marin',
       language TEXT NOT NULL DEFAULT 'multi',
       model_notes TEXT NOT NULL DEFAULT '',
@@ -226,8 +224,33 @@ function migrate(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_call_records_started ON call_records (started_at);
   `);
+  migrateAgentGreeting(database);
   ensureTwilioTables(database);
   seedProduct(database);
+}
+
+function agentColumns(database) {
+  return new Set(database.prepare("PRAGMA table_info(agents)").all().map((row) => row.name));
+}
+
+/** One greeting field; copy from legacy greeting_en / greeting_es when present. */
+function migrateAgentGreeting(database) {
+  const cols = agentColumns(database);
+  if (!cols.has("greeting")) {
+    database.exec("ALTER TABLE agents ADD COLUMN greeting TEXT NOT NULL DEFAULT ''");
+  }
+  const next = agentColumns(database);
+  if (next.has("greeting_en") || next.has("greeting_es")) {
+    database.exec(`
+      UPDATE agents SET greeting = TRIM(COALESCE(
+        NULLIF(TRIM(greeting), ''),
+        NULLIF(TRIM(COALESCE(greeting_en, '')), ''),
+        NULLIF(TRIM(COALESCE(greeting_es, '')), ''),
+        ''
+      ))
+      WHERE TRIM(COALESCE(greeting, '')) = ''
+    `);
+  }
 }
 
 function salonKnowledge() {
@@ -253,16 +276,15 @@ function seedProduct(database) {
   try {
     database.prepare(`
       INSERT INTO agents (
-        id, name, description, system_prompt, greeting_en, greeting_es,
+        id, name, description, system_prompt, greeting,
         voice, language, model_notes, enabled_tools_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'marin', 'multi', ?, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'marin', 'multi', ?, NULL, ?, ?)
     `).run(
       DEFAULT_AGENT_ID,
       "Maison Sol",
-      "Receptionist for the fictional salon in Castellón de la Plana. Speaks first, in English or Spanish.",
+      "Receptionist for the fictional salon in Castellón de la Plana. Speaks first; opening language follows the greeting text.",
       DEFAULT_SYSTEM_PROMPT,
-      GREETING_EN,
-      GREETING_ES,
+      DEFAULT_GREETING,
       "Spoken calls use the Realtime model from the server environment and this agent's voice. Typed fallback uses the chat model when a key is set.",
       now,
       now,
