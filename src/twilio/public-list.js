@@ -3,13 +3,15 @@ import { accountView, assignAgentToNumber, listPhoneNumbers, parseAgentIdFromVoi
 import { isSid } from "./ids.js";
 import { httpError } from "./http.js";
 
-/** Tenant for telephony rows: signed-in account, X-Tenant-Id (Agents proxy), or demo. */
+/** Tenant for telephony rows: X-Tenant-Id (Agents proxy) wins, then signed-in account, else demo. */
 export function resolveTenantId(req) {
-  if (req?.accountId) return req.accountId;
   const header = String(req?.get?.("x-tenant-id") || "").trim();
   if (/^acct_[a-z0-9]+$/i.test(header)) return header;
   const query = String(req?.query?.tenant_id || req?.query?.account_id || "").trim();
   if (/^acct_[a-z0-9]+$/i.test(query)) return query;
+  // Prefer a real session over the anonymous demo fallback on req.accountId.
+  if (req?.account?.id) return req.account.id;
+  if (req?.accountId && req.accountId !== DEMO_ACCOUNT_ID) return req.accountId;
   return DEMO_ACCOUNT_ID;
 }
 

@@ -128,3 +128,22 @@ test("sign in restores the empty account session", async () => {
     assert.deepEqual(agents.agents, []);
   });
 });
+
+
+test("phone numbers list respects the signed-in tenant", async () => {
+  await withServer(async (base) => {
+    const demo = await fetch(`${base}/api/phone-numbers`).then((r) => r.json());
+    assert.ok((demo.incoming_phone_numbers || []).length >= 1);
+
+    const signup = await fetch(`${base}/api/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "phones@example.com", password: "password123" }),
+    });
+    const body = await signup.json();
+    const cookie = cookieFrom(signup);
+    const numbers = await fetch(`${base}/api/phone-numbers`, { headers: { cookie } }).then((r) => r.json());
+    assert.deepEqual(numbers.incoming_phone_numbers || [], []);
+    assert.equal(numbers.tenant_id, body.account.id);
+  });
+});
