@@ -38,6 +38,32 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.doesNotMatch(JSON.stringify(session), /sk-/);
 });
 
+
+test("realtime instructions guard against ChatGPT-style capability claims", () => {
+  const weak = buildRealtimeSession("gpt-realtime-2.1", "en", {
+    systemPrompt: "You are Weather.",
+    greeting: "Hi, I am Weather.",
+    enabledTools: null,
+  });
+  assert.match(weak.instructions, /phone voice agent/i);
+  assert.match(weak.instructions, /Bot task/);
+  assert.match(weak.instructions, /You are Weather/);
+  assert.match(weak.instructions, /Never claim you can help with writing/i);
+  assert.match(weak.instructions, /MCP tool/i);
+  assert.match(weak.instructions, /not a general ChatGPT assistant/i);
+
+  const empty = buildRealtimeSession("gpt-realtime-2.1", "en", {
+    systemPrompt: "",
+    greeting: "Hello.",
+  });
+  assert.match(empty.instructions, /Bot task is not set|Stay a brief phone agent/i);
+  assert.match(empty.instructions, /Never claim you can help with writing/i);
+
+  const greet = greetingEvent("en", { greeting: "Hi, I am Weather." });
+  assert.match(greet.response.instructions, /Do not add offers, capability lists/);
+  assert.match(greet.response.instructions, /Hi, I am Weather/);
+});
+
 test("agent settings narrow voice, greeting, tools, and knowledge", () => {
   const agent = {
     voice: "cedar",
