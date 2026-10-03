@@ -17,6 +17,8 @@
  * - On an active-response error, requeue and drain after the next settle.
  */
 
+import { callerTurnLine, detectCallerLanguage, spokenFailure } from "./caller-language.js";
+
 export const TOOL_TURN_TIMEOUT_MS = 10000;
 export const TOOL_FETCH_TIMEOUT_MS = 15000;
 
@@ -148,10 +150,11 @@ export function functionOutputEvent(callId, output) {
 }
 
 export function toolFollowUpEvent(name, failed, userText = "") {
-  const line = failureLine(name, userText);
+  const line = spokenFailure(name, userText);
+  const turn = callerTurnLine(userText);
   const instructions = failed
-    ? `The tool failed, timed out, or is missing. Say this in the caller's language, then stop: ${line} Do not invent a result. Do not call tools.`
-    : "Speak the tool result to the caller in their language. One to three short sentences. Use only facts from the tool result. If it includes current conditions, speak the temperature and condition. An airport or aerodrome of the city the caller named is the right place: say the weather and do not ask them to clarify. Ask for a different place only when the result says the match is a different city. If the result is an error, say you can't get that right now and do not invent data. Do not call tools.";
+    ? `${turn} The tool failed, timed out, or is missing. Say this in the caller's language, then stop: ${line} Do not invent a result. Do not call tools.`
+    : `${turn} Speak the tool result to the caller in their language. One to two short sentences. Use only facts from the tool result. If it includes current conditions, speak the temperature and condition. An airport or aerodrome of the city the caller named is the right place: say the weather and do not ask them to clarify. Ask for a different place only when the result says the match is a different city. If the result is an error, say you can't get that right now and do not invent data. Do not call tools.`;
   return {
     type: "response.create",
     response: {
@@ -163,15 +166,23 @@ export function toolFollowUpEvent(name, failed, userText = "") {
 }
 
 export function silenceFallbackEvent(userText) {
+  const missed = {
+    uk: "Вибачте, я не розчув. Повторіть, будь ласка.",
+    es: "Perdona, no te he oído. ¿Puedes repetirlo?",
+    en: "Sorry, I didn't catch that. Could you say it again?",
+    ru: "Извините, я не расслышал. Повторите, пожалуйста.",
+    fr: "Pardon, je n'ai pas compris. Pouvez-vous répéter ?",
+  };
+  const code = detectCallerLanguage(userText) || "en";
   const line = isWeatherTopic(userText)
-    ? "I can't get the weather right now."
-    : "Sorry, I didn't catch that. Could you say it again?";
+    ? spokenFailure("weather", userText)
+    : (missed[code] || missed.en);
   return {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
-      instructions: `You produced no speech. Say this in the caller's language, then stop: ${line} Do not invent weather, records, or tool results. Do not call tools.`,
+      instructions: `${callerTurnLine(userText)} You produced no speech. Say this in the caller's language, then stop: ${line} Do not invent weather, records, or tool results. Do not call tools.`,
     },
   };
 }

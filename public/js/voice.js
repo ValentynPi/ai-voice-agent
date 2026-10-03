@@ -1,4 +1,5 @@
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
+import { composeSessionInstructions, detectCallerLanguage, sessionAudioForCaller } from "./caller-language.js";
 import {
   TOOL_FETCH_TIMEOUT_MS,
   completeTool,
@@ -61,8 +62,8 @@ let greetingFallbackWaits = 0;
 let silentGreetingTimer = 0;
 
 {
-  const stored = localStorage.getItem("sol-lang") || "en";
-  langSelect.value = stored === "es" || stored === "en" ? stored : "en";
+  const stored = localStorage.getItem("sol-lang") || "multi";
+  langSelect.value = stored === "es" || stored === "en" || stored === "multi" ? stored : "multi";
 }
 loadAgentChrome();
 langSelect.addEventListener("change", () => {
@@ -178,32 +179,22 @@ function sendEvent(event) {
 }
 
 function instructionsForLang(instructions) {
-  // Never hard-lock the model to English/Spanish from the UI dropdown.
-  // Prefer following the caller's latest spoken language every turn.
-  const follow = [
-    "Language rule (mandatory): Always reply in the language of the caller's most recent spoken turn.",
-    "If the caller switches language mid-call, switch immediately. Do not stay in English after they speak another language.",
-  ].join(" ");
-  let next = String(instructions || "")
-    .replaceAll("Reply in English.", " ")
-    .replaceAll("Reply in Spanish.", " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!next.includes("Language rule (mandatory)")) {
-    next = next ? `${next}\n\n${follow}` : follow;
-  }
-  if (langSelect.value === "es") {
-    next = `${next} Soft UI preference only before the caller speaks: Spanish.`;
-  } else if (langSelect.value === "en") {
-    next = `${next} Soft UI preference only before the caller speaks: English.`;
-  }
-  return next;
+  return composeSessionInstructions(instructions, {
+    uiLang: langSelect.value,
+    callerText: realtime?.callerText || "",
+  });
 }
 
 function sessionAudio() {
-  const audio = { ...(realtime.session?.audio || {}) };
-  audio.output = { ...(audio.output || {}), voice: realtime.voice || "marin" };
-  return audio;
+  return sessionAudioForCaller(realtime.session?.audio, realtime.voice || "marin", realtime?.callerText || "");
+}
+
+function rememberCallerLanguage(text) {
+  if (!realtime) return;
+  realtime.callerText = text;
+  const code = detectCallerLanguage(text);
+  if (code) realtime.callerLanguage = code;
+  pushSession(realtime.session?.tools);
 }
 
 function pushSession(tools) {
@@ -398,7 +389,7 @@ async function connectRealtime(activeCallId = callId) {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callId: activeCallId, lang: langSelect.value || "en" }),
+    body: JSON.stringify({ callId: activeCallId, lang: langSelect.value || "multi" }),
   });
   if (!tokenResponse.ok) {
     const errBody = await tokenResponse.json().catch(() => ({}));
@@ -675,11 +666,12 @@ async function submit(raw) {
 
 async function submitRealtimeText(text) {
   try {
+    rememberCallerLanguage(text);
     const response = await fetch("/api/realtime/utterance", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
+      body: JSON.stringify({ callId, role: "user", text, lang: detectCallerLanguage(text) || langSelect.value || "multi" }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Request failed");
@@ -733,7 +725,7 @@ async function submitFallback(text) {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callId, text, lang: langSelect.value }),
+      body: JSON.stringify({ callId, text, lang: detectCallerLanguage(text) || langSelect.value || "multi" }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Request failed");
@@ -842,6 +834,7 @@ async function handleRealtimeEvent(event) {
 
 async function onCallerAudio(text, itemId) {
   if (!callId || text === lastUtterance) return;
+  rememberCallerLanguage(text);
   lastUtterance = text;
   setTimeout(() => {
     if (lastUtterance === text) lastUtterance = "";
@@ -850,7 +843,7 @@ async function onCallerAudio(text, itemId) {
     method: "POST",
       credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
+    body: JSON.stringify({ callId, role: "user", text, lang: detectCallerLanguage(text) || langSelect.value || "multi" }),
   });
   const payload = await response.json();
   if (!response.ok) return;

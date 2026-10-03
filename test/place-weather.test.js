@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { toolFollowUpEvent } from "../public/js/realtime-turn.js";
 import {
+  canonicalPlaceQuery,
   choosePlace,
   shapePlaceSearch,
 } from "../src/mcp/place-weather.js";
@@ -139,4 +140,16 @@ test("the spoken follow-up accepts an in-city airport", () => {
   assert.match(follow.response.instructions, /Speak the tool result/);
   assert.match(follow.response.instructions, /airport or aerodrome/i);
   assert.match(follow.response.instructions, /Do not call tools/);
+});
+
+test("a Ukrainian Castellón question matches the city airport, not a refusal", () => {
+  const query = "Кастельон-де-ла-Плана";
+  const decision = choosePlace(query, airportSearch().structured.results);
+  assert.equal(decision.action, "use");
+  assert.equal(decision.airport, true);
+  assert.equal(canonicalPlaceQuery(query), "Castellón de la Plana");
+  const shaped = shapePlaceSearch({ query, presented: airportSearch(), weather });
+  assert.match(shaped.text, /Кастельон-де-ла-Плана/);
+  assert.match(shaped.text, /23\.1/);
+  assert.doesNotMatch(shaped.text, /different place/i);
 });

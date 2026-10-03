@@ -11,6 +11,7 @@ import {
   noteCallerSpeech,
   queueResponseCreate,
   silenceFallbackEvent,
+  toolFollowUpEvent,
   withTimeout,
 } from "../public/js/realtime-turn.js";
 
@@ -243,4 +244,25 @@ test("dialer, voice test, and media bridge share the gated turn path", () => {
     bridge,
     /speech_started[\s\S]{0,200}sendTwilio\(\{ event: "clear"[\s\S]{0,120}sendOpenAi\(\{ type: "response\.cancel" \}\);(?![\s\S]*responseGate\.active)/,
   );
+});
+
+test("a Ukrainian Castellón weather turn is not rewritten into English", () => {
+  const uk = "Привіт, скажи мені, будь ласка, яка сьогодні погода в Кастельон-де-ла-Плана?";
+  const follow = toolFollowUpEvent("get_weather", false, uk);
+  assert.match(follow.response.instructions, /Кастельон-де-ла-Плана/);
+  assert.match(follow.response.instructions, /Ukrainian/);
+  assert.match(follow.response.instructions, /Speak the tool result/);
+  assert.doesNotMatch(follow.response.instructions, /Reply in English/);
+  assert.doesNotMatch(follow.response.instructions, /What is the weather in/);
+  const gate = createResponseGate();
+  noteCallerSpeech(gate, uk);
+  ingestRealtimeEvent(gate, { type: "response.created" });
+  ingestRealtimeEvent(gate, weatherCall("uk"));
+  ingestRealtimeEvent(gate, {
+    type: "response.done",
+    response: { status: "completed", output: [{ type: "function_call", name: "get_weather", call_id: "uk" }] },
+  });
+  const sent = completeTool(gate, "uk", gate.epoch, true);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].response.instructions, /Кастельон-де-ла-Плана/);
 });

@@ -1,3 +1,4 @@
+import { detectCallerLanguage, inputTranscription } from "../public/js/caller-language.js";
 import { DEFAULT_GREETING } from "./defaults.js";
 import { refusal } from "./format.js";
 import { invokeMcpTool, listEnabledMcpRealtimeTools } from "./mcp/connection.js";
@@ -15,7 +16,7 @@ export function languageLine(lang, agent) {
       : "multi";
   const follow = [
     "Language rule (mandatory): Always reply in the language of the caller's most recent spoken turn.",
-    "If the caller switches language mid-call (Hebrew, Spanish, English, Arabic, Russian, French, or any other), switch immediately and continue in that language until they switch again.",
+    "If the caller switches language mid-call (Ukrainian, Hebrew, Spanish, English, Arabic, Russian, French, or any other), switch immediately and continue in that language until they switch again.",
     "Never keep replying in English (or the greeting language) after the caller has spoken a different language.",
     "The greeting language applies only to the opening line; after the caller speaks, their latest language wins every turn.",
   ].join(" ");
@@ -71,12 +72,13 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
     "Use only the tools provided in this session. Never invent tool names or capabilities the tools do not provide.",
     // Turn-taking + intelligence
     "When the caller finishes a turn, always answer usefully — never go silent, hang, or leave them waiting without a reply.",
-    "Listen to the full request. If it is unclear, ask one short clarifying question, then act (call MCP tools when needed).",
+    "Listen to the full request. A clear question in Ukrainian, Spanish, English, or any other language is understood as that language. Do not treat it as nonsense and do not ask the caller to switch to English. If a required detail is missing, ask one short clarifying question, then act (call MCP tools when needed).",
+    "Place names stay intact. Кастельон-де-ла-Плана means Castellón de la Plana. Pass Castellón de la Plana to the place tool and answer about that city. Do not refuse a clear city.",
     "Weather places: if the tool returns the city the caller named, or that city's airport or aerodrome, it is the right place. Speak the current conditions from the tool. Do not refuse and do not ask for another city only because the point is an airport. Ask where they mean only when the tool's place is clearly a different city. Never invent weather numbers.",
     "Be precise: use tools when they help; answer from tool output and Bot task knowledge, not guesses.",
     // Speech style
     "Language: match the caller's latest spoken language every turn; switch when they switch. Do not stick to English if they speak another language.",
-    "Speak simply and clearly in plain educated language. Prefer 1–3 short sentences unless the caller asks for more detail. Never ramble or monologue.",
+    "Speak simply and clearly in plain educated language. Prefer 1–2 short sentences unless the caller asks for more detail. Never ramble or monologue.",
     "After the greeting only, stop and wait for the caller. Do not fill pre-caller silence with chatter, tips, or capability lists.",
     "Ask at most one question at a time. Do not stack questions.",
     "Do not narrate tool use (never say you are looking something up or calling a tool). Speak useful results when ready.",
@@ -90,7 +92,7 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
 const EMPTY_TASK_PROMPT = [
   "Your Bot task is not set. Stay a brief, capable phone agent.",
   "Only help via connected MCP tools that fit a clear request.",
-  "Answer in 1–3 short sentences. Always reply when the caller finishes speaking.",
+  "Answer in 1–2 short sentences. Always reply when the caller finishes speaking.",
   "If the request is outside what tools can do, or you have no tools, say you cannot do that and stop. Do not invent help.",
 ].join(" ");
 
@@ -165,8 +167,11 @@ function sessionVoice(agent) {
   return String(agent?.voice || "").trim() || voiceName();
 }
 
-export function buildRealtimeSession(model, lang, agent, { telephony = false } = {}) {
+export function buildRealtimeSession(model, lang, agent, { telephony = false, transcription = "multilingual" } = {}) {
   const pcmu = telephony ? { type: "audio/pcmu" } : null;
+  const transcriptionConfig = transcription === "open"
+    ? { model: "gpt-4o-mini-transcribe" }
+    : inputTranscription();
   return {
     type: "realtime",
     model,
@@ -175,7 +180,7 @@ export function buildRealtimeSession(model, lang, agent, { telephony = false } =
     audio: {
       input: {
         ...(pcmu ? { format: pcmu } : {}),
-        transcription: { model: "gpt-4o-mini-transcribe" },
+        transcription: transcriptionConfig,
         turn_detection: {
           type: "semantic_vad",
           // Auto-answer when the caller finishes — do not wait on transcription (empty/late transcripts caused silence).
@@ -217,6 +222,25 @@ function rejectedForTurnFlags(status, body) {
   return /create_response|interrupt_response|eagerness|turn_detection|unknown|additional/i.test(body);
 }
 
+function rejectedForTranscription(status, body) {
+  if (status !== 400 && status !== 404) return false;
+  return /transcription|languages|gpt-transcribe|input_audio/i.test(body);
+}
+
+/** Next session shape after a rejection. Never pins transcription to English. */
+export function nextSessionAttempt(attempt, status, body) {
+  const message = String(body || "");
+  const code = status || 400;
+  if (rejectedForTranscription(code, message) && attempt?.transcription !== "open") {
+    return { dropTurnFlags: false, transcription: "open" };
+  }
+  if (rejectedForTurnFlags(code, message) && !attempt?.dropTurnFlags && !rejectedForModel(code, message)) {
+    return { ...attempt, dropTurnFlags: true };
+  }
+  if (rejectedForModel(code, message)) return { nextModel: true };
+  return { fatal: true };
+}
+
 export async function mintRealtimeClientSecret({ lang, agent, fetchImpl = fetch } = {}) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) {
@@ -229,9 +253,16 @@ export async function mintRealtimeClientSecret({ lang, agent, fetchImpl = fetch 
   const candidates = realtimeCandidates();
   let lastDetail = "Realtime session was rejected";
   for (const model of candidates) {
-    const shaped = [false, true];
-    for (const dropTurnFlags of shaped) {
-      const session = sessionVariant(buildRealtimeSession(model, lang, agent), dropTurnFlags);
+    let attempt = { dropTurnFlags: false, transcription: "multilingual" };
+    const seen = new Set();
+    while (attempt && !attempt.nextModel && !attempt.fatal) {
+      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}`;
+      if (seen.has(keyAttempt)) break;
+      seen.add(keyAttempt);
+      const session = sessionVariant(
+        buildRealtimeSession(model, lang, agent, { transcription: attempt.transcription }),
+        attempt.dropTurnFlags,
+      );
       const response = await fetchImpl("https://api.openai.com/v1/realtime/client_secrets", {
         method: "POST",
         headers: {
@@ -266,18 +297,23 @@ export async function mintRealtimeClientSecret({ lang, agent, fetchImpl = fetch 
         };
       }
       lastDetail = raw.slice(0, 240);
-      if (!dropTurnFlags && rejectedForTurnFlags(response.status, raw) && !rejectedForModel(response.status, raw)) {
-        console.error(`Realtime session for ${model} rejected turn-detection flags; retrying without them`);
-        continue;
+      const next = nextSessionAttempt(attempt, response.status, raw);
+      if (next.fatal) {
+        const error = new Error("Realtime token request failed");
+        error.status = response.status >= 500 ? 502 : response.status;
+        error.expose = true;
+        throw error;
       }
-      if (rejectedForModel(response.status, raw)) {
+      if (next.nextModel) {
         console.error(`Realtime model ${model} was rejected`);
         break;
       }
-      const error = new Error("Realtime token request failed");
-      error.status = response.status >= 500 ? 502 : response.status;
-      error.expose = true;
-      throw error;
+      if (next.transcription === "open" && attempt.transcription !== "open") {
+        console.error(`Realtime transcription for ${model} rejected multilingual config; retrying without a language pin`);
+      } else if (next.dropTurnFlags && !attempt.dropTurnFlags) {
+        console.error(`Realtime session for ${model} rejected turn-detection flags; retrying without them`);
+      }
+      attempt = next;
     }
   }
 
@@ -329,7 +365,9 @@ export function recordRealtimeUtterance({ callId, role, text, lang }) {
     return { ok: true, duplicate: false };
   }
 
-  const language = lang === "es" || lang === "en" ? lang : "en";
+  const spoken = detectCallerLanguage(clean);
+  const language = spoken || (lang === "es" || lang === "en" ? lang : "en");
+  if (spoken) call.lang = spoken;
   const screen = screenInput(clean);
   recordSecurity({
     callId,

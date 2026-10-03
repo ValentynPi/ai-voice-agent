@@ -75,7 +75,7 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /outside your Bot task/i);
   assert.match(weak.instructions, /say clearly and briefly that you cannot do that/i);
   assert.match(weak.instructions, /Never invent results/i);
-  assert.match(weak.instructions, /1–3 short sentences|1-3 short sentences/i);
+  assert.match(weak.instructions, /1–2 short sentences|1-2 short sentences/i);
   assert.match(weak.instructions, /never go silent/i);
   assert.match(weak.instructions, /I can't get the weather right now/);
   assert.match(weak.instructions, /Never leave the caller in silence after a tool call/);
@@ -289,4 +289,57 @@ test("telephony realtime session uses g711 pcmu for Media Streams", () => {
   assert.equal(session.audio.input.format.type, "audio/pcmu");
   assert.equal(session.audio.output.format.type, "audio/pcmu");
   assert.equal(session.audio.output.voice, "marin");
+});
+
+test("transcription is multilingual and not locked to English", () => {
+  const session = buildRealtimeSession("gpt-realtime-2.1", "en", {
+    systemPrompt: "You are Weather.",
+    language: "en",
+  });
+  const transcription = session.audio.input.transcription;
+  assert.equal(transcription.language, undefined);
+  assert.equal(transcription.model, "gpt-transcribe");
+  assert.ok(transcription.languages.includes("uk"));
+  assert.ok(transcription.languages.includes("es"));
+  assert.ok(transcription.languages.includes("en"));
+  assert.equal(transcription.languages[0], "uk");
+  assert.match(transcription.prompt, /Do not translate/);
+  assert.doesNotMatch(JSON.stringify(transcription), /"language":"en"/);
+  assert.match(session.instructions, /Ukrainian/);
+  assert.match(session.instructions, /Кастельон-де-ла-Плана/);
+  assert.doesNotMatch(session.instructions, /Reply in English\./);
+
+  const open = buildRealtimeSession("gpt-realtime-2.1", "en", null, { transcription: "open" });
+  assert.equal(open.audio.input.transcription.language, undefined);
+  assert.equal(open.audio.input.transcription.model, "gpt-4o-mini-transcribe");
+});
+
+test("language follows the latest caller turn and keeps the Ukrainian city", async () => {
+  const { callerTurnLine, composeSessionInstructions, detectCallerLanguage } = await import("../public/js/caller-language.js");
+  const uk = "Привіт, скажи мені, будь ласка, яка сьогодні погода в Кастельон-де-ла-Плана?";
+  assert.equal(detectCallerLanguage("Hello, what is the weather today?"), "en");
+  assert.equal(detectCallerLanguage("Hola, ¿qué tiempo hace hoy?"), "es");
+  assert.equal(detectCallerLanguage(uk), "uk");
+  assert.equal(detectCallerLanguage("Thanks, what about tomorrow?"), "en");
+
+  const instruction = callerTurnLine(uk);
+  assert.match(instruction, /Ukrainian/);
+  assert.match(instruction, /Кастельон-де-ла-Плана/);
+  assert.match(instruction, /Привіт/);
+  assert.doesNotMatch(instruction, /Reply in English/);
+  assert.doesNotMatch(instruction, /What is the weather/);
+
+  const spanish = callerTurnLine("Hola, ¿qué tiempo hace en Castellón?");
+  assert.match(spanish, /Spanish/);
+  assert.doesNotMatch(spanish, /Ukrainian/);
+
+  const session = buildRealtimeSession("gpt-realtime-2.1", "en", {
+    systemPrompt: "You are Weather.",
+    language: "en",
+  });
+  const composed = composeSessionInstructions(session.instructions, { uiLang: "en", callerText: uk });
+  assert.match(composed, /Кастельон-де-ла-Плана/);
+  assert.match(composed, /Reply only in Ukrainian/);
+  assert.doesNotMatch(composed, /Soft UI preference only before the caller speaks: English/);
+  assert.doesNotMatch(composed, /Reply in English\./);
 });

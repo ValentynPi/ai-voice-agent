@@ -14,9 +14,11 @@ import {
   queueResponseCreate,
   withTimeout,
 } from "../../public/js/realtime-turn.js";
+import { applyCallerTurn, detectCallerLanguage } from "../../public/js/caller-language.js";
 import {
   buildRealtimeSession,
   greetingEvent,
+  nextSessionAttempt,
   recordRealtimeUtterance,
   runRealtimeTool,
 } from "../realtime.js";
@@ -92,8 +94,16 @@ async function openOpenAiRealtime({ lang, agent }) {
   const candidates = realtimeCandidates();
   let lastError = "Realtime session was rejected";
   for (const model of candidates) {
-    for (const dropTurnFlags of [false, true]) {
-      const session = sessionVariant(buildRealtimeSession(model, lang, agent, { telephony: true }), dropTurnFlags);
+    let attempt = { dropTurnFlags: false, transcription: "multilingual" };
+    const seen = new Set();
+    while (attempt && !attempt.nextModel && !attempt.fatal) {
+      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}`;
+      if (seen.has(keyAttempt)) break;
+      seen.add(keyAttempt);
+      const session = sessionVariant(
+        buildRealtimeSession(model, lang, agent, { telephony: true, transcription: attempt.transcription }),
+        attempt.dropTurnFlags,
+      );
       const ws = await connectOpenAiWs(model, key);
       try {
         await waitForEvent(ws, "session.created", 15000);
@@ -108,10 +118,9 @@ async function openOpenAiRealtime({ lang, agent }) {
         } catch {
           /* ignore */
         }
-        if (!dropTurnFlags && /create_response|interrupt_response|eagerness|turn_detection|unknown|additional/i.test(lastError)) {
-          continue;
-        }
-        if (/model/i.test(lastError)) break;
+        const next = nextSessionAttempt(attempt, 400, lastError);
+        if (next?.nextModel || next?.fatal) break;
+        attempt = next;
       }
     }
   }
@@ -333,6 +342,25 @@ async function handleTwilioMedia(twilioWs, url) {
     const userText = transcriptFrom(event, "user");
     if (userText && deskCall?.id) {
       noteCallerSpeech(responseGate, userText);
+      const spoken = detectCallerLanguage(userText);
+      if (spoken) lang = spoken;
+      if (openai?.session) {
+        const patch = applyCallerTurn(openai.session, userText);
+        openai.session = {
+          ...openai.session,
+          instructions: patch.instructions,
+          audio: patch.audio,
+          baseInstructions: patch.baseInstructions,
+        };
+        sendOpenAi({
+          type: "session.update",
+          session: {
+            type: "realtime",
+            instructions: patch.instructions,
+            audio: patch.audio,
+          },
+        });
+      }
       try {
         const outcome = recordRealtimeUtterance({
           callId: deskCall.id,

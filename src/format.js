@@ -226,6 +226,7 @@ export function refusal(lang) {
   if (lang === "es") {
     return "No puedo hacer eso. Puedo ayudarte con el tiempo en Castellón, citas, pedidos o los servicios del salón.";
   }
+  if (lang === "uk") return "Я не можу цього зробити.";
   return "I can't do that. I can help with the Castellón weather, appointments, orders, or salon services.";
 }
 

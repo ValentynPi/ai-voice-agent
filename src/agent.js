@@ -2,6 +2,7 @@ import { includeDemoBuiltins } from "./accounts.js";
 import { getAgent } from "./desk.js";
 import { composeToolReply, detectLang as detect, forSpeech, refusal } from "./format.js";
 import { chatCandidates, noteChatModel } from "./models.js";
+import { detectCallerLanguage } from "../public/js/caller-language.js";
 import { receptionistInstructions } from "./realtime.js";
 import { screenInput, sanitizeText } from "./security.js";
 import { appendMessage, getCall, recordSecurity, touchCall } from "./store.js";
@@ -211,7 +212,8 @@ export async function handleTurn({ callId, text, lang }) {
   touchCall(callId);
 
   const clean = sanitizeText(text);
-  const language = lang === "es" || lang === "en" ? lang : detect(clean);
+  const spoken = detectCallerLanguage(clean);
+  const language = spoken || (lang === "es" || lang === "en" ? lang : detect(clean));
   const screen = screenInput(clean);
   recordSecurity({
     callId,
@@ -235,7 +237,7 @@ export async function handleTurn({ callId, text, lang }) {
   }));
   const persona = call.agentId ? getAgent(call.agentId) : null;
   const includeBuiltins = includeDemoBuiltins(call.accountId);
-  if (language === "en" || language === "es") call.lang = language;
+  if (language) call.lang = language;
   appendMessage(callId, { role: "user", text: clean, tools: [] });
 
   if (screen.decision === "deny") {
