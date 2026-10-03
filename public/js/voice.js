@@ -1,4 +1,14 @@
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
+import {
+  TOOL_FETCH_TIMEOUT_MS,
+  completeTool,
+  createResponseGate,
+  failureLine,
+  functionOutputEvent,
+  ingestRealtimeEvent,
+  noteBargeIn,
+  noteCallerSpeech,
+} from "./realtime-turn.js";
 
 const CHIPS = [
   { label: "Help", text: "What can you help me with?" },
@@ -33,7 +43,7 @@ let busy = false;
 let lastUtterance = "";
 let heartbeat = null;
 let realtime = null;
-const handledToolCalls = new Set();
+let responseGate = createResponseGate();
 let channelOpen = false;
 let sessionReady = false;
 let answerApplied = false;
@@ -494,7 +504,7 @@ function closeRealtime() {
     remoteAudio.pause();
     remoteAudio.srcObject = null;
   }
-  handledToolCalls.clear();
+  responseGate = createResponseGate();
 }
 
 async function startCall() {
@@ -756,17 +766,6 @@ function assistantTranscript(event) {
   return String(event.transcript || "").trim();
 }
 
-function functionCallFrom(event) {
-  if (event.type === "response.function_call_arguments.done" && event.name && event.call_id) {
-    return { name: event.name, callId: event.call_id, arguments: event.arguments };
-  }
-  const item = event.item;
-  if (event.type === "response.output_item.done" && item?.type === "function_call" && item.name && item.call_id) {
-    return { name: item.name, callId: item.call_id, arguments: item.arguments };
-  }
-  return null;
-}
-
 async function handleRealtimeEvent(event) {
   if (event.type === "session.created" || event.type === "session.updated") {
     sessionReady = true;
@@ -774,15 +773,20 @@ async function handleRealtimeEvent(event) {
   }
   if (event.type === "error") {
     const message = event.error?.message || event.message || "Realtime error";
-    if (!failGreeting("error")) {
+    if (/active response/i.test(message)) {
+      // Follow-up response.create was early; ingestRealtimeEvent requeues it for response.done.
+    } else if (!failGreeting("error")) {
       hintEl.textContent = `Realtime error: ${message}. ${agentLabel} is not using a browser voice.`;
       if (micHeldForGreeting) releaseGreetingMic();
     }
   }
   if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting) {
+    noteBargeIn(responseGate);
     interimEl.textContent = "";
     setPhase("listening", "Listening");
   }
+  const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: micHeldForGreeting });
+  for (const follow of turn.send) sendEvent(follow);
   if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
     interimEl.textContent = `${interimEl.textContent}${event.delta}`;
   }
@@ -810,12 +814,14 @@ async function handleRealtimeEvent(event) {
     } else if (micHeldForGreeting && greetingSent && greetingHeardAudio) {
       releaseGreetingMic();
     } else if (callActive && !micHeldForGreeting) {
-      setPhase("listening", "Listening");
+      if (turn.hold) setPhase("thinking", "Thinking");
+      else setPhase("listening", "Listening");
     }
   }
 
   const spoken = userTranscript(event);
   if (spoken) {
+    noteCallerSpeech(responseGate, spoken);
     interimEl.textContent = "";
     await onCallerAudio(spoken, event.item_id);
   }
@@ -823,8 +829,10 @@ async function handleRealtimeEvent(event) {
   const reply = assistantTranscript(event);
   if (reply) await onAssistantAudio(reply);
 
-  const toolCall = functionCallFrom(event);
-  if (toolCall) await onToolCall(toolCall);
+  for (const toolCall of turn.toolCalls) {
+    const epoch = responseGate.epoch;
+    void onToolCall(toolCall, epoch);
+  }
 }
 
 async function onCallerAudio(text, itemId) {
@@ -873,37 +881,44 @@ async function onAssistantAudio(text) {
   }
 }
 
-async function onToolCall(toolCall) {
-  if (handledToolCalls.has(toolCall.callId)) return;
-  handledToolCalls.add(toolCall.callId);
+async function onToolCall(toolCall, epoch) {
   setPhase("thinking", "Thinking");
-  const response = await fetch("/api/realtime/tool", {
-    method: "POST",
+  let output = { error: failureLine(toolCall.name) };
+  let ok = false;
+  try {
+    const response = await fetch("/api/realtime/tool", {
+      method: "POST",
       credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      callId,
-      name: toolCall.name,
-      arguments: typeof toolCall.arguments === "string" ? toolCall.arguments : JSON.stringify(toolCall.arguments || {}),
-    }),
-  });
-  const outcome = await response.json();
-  if (realtime) {
-    realtime.tools = realtime.tools || [];
-    realtime.tools.push({
-      name: outcome.name || toolCall.name,
-      decision: outcome.decision,
-      ok: outcome.ok,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callId,
+        name: toolCall.name,
+        arguments: typeof toolCall.arguments === "string" ? toolCall.arguments : JSON.stringify(toolCall.arguments || {}),
+      }),
+      signal: AbortSignal.timeout(TOOL_FETCH_TIMEOUT_MS),
     });
+    const outcome = await response.json();
+    ok = Boolean(response.ok && outcome.ok);
+    if (realtime) {
+      realtime.tools = realtime.tools || [];
+      realtime.tools.push({
+        name: outcome.name || toolCall.name,
+        decision: outcome.decision,
+        ok,
+      });
+    }
+    output = ok
+      ? (outcome.result ?? {})
+      : { error: outcome.result?.error || outcome.error || failureLine(toolCall.name, "") };
+  } catch {
+    output = { error: failureLine(toolCall.name) };
+    ok = false;
   }
-  const output = outcome.ok ? outcome.result : { error: outcome.result?.error || outcome.error || "denied" };
-  sendEvent({
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: toolCall.callId,
-      output: JSON.stringify(output),
-    },
-  });
-  sendEvent({ type: "response.create" });
+  sendEvent(functionOutputEvent(toolCall.callId, output));
+  for (const follow of completeTool(responseGate, toolCall.callId, epoch, ok)) sendEvent(follow);
+  if (shouldHoldPhase()) setPhase("thinking", "Thinking");
+}
+
+function shouldHoldPhase() {
+  return Boolean(responseGate.active || responseGate.tools.size || responseGate.pendingCreates.length);
 }

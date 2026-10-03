@@ -3,6 +3,17 @@ import { getAgent, getDefaultAgent } from "../desk.js";
 import { ensureMcp } from "../mcp/connection.js";
 import { realtimeCandidates, noteRealtimeModel, voiceName } from "../models.js";
 import {
+  TOOL_FETCH_TIMEOUT_MS,
+  completeTool,
+  createResponseGate,
+  failureLine,
+  functionOutputEvent,
+  ingestRealtimeEvent,
+  noteBargeIn,
+  noteCallerSpeech,
+  withTimeout,
+} from "../../public/js/realtime-turn.js";
+import {
   buildRealtimeSession,
   greetingEvent,
   recordRealtimeUtterance,
@@ -183,7 +194,8 @@ async function handleTwilioMedia(twilioWs, url) {
   let deskCall = null;
   let closed = false;
   let greetingSent = false;
-  const handledTools = new Set();
+  const responseGate = createResponseGate();
+  let greetingDone = false;
   const agentHint = String(url.searchParams.get("agentId") || "").trim();
   let lang = String(url.searchParams.get("lang") || "multi").trim().toLowerCase();
   if (lang !== "es" && lang !== "en" && lang !== "multi") lang = "multi";
@@ -282,6 +294,15 @@ async function handleTwilioMedia(twilioWs, url) {
 
     if (deskCall?.id) touchCall(deskCall.id);
 
+    if (event.type === "input_audio_buffer.speech_started" && greetingDone) noteBargeIn(responseGate);
+    const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: !greetingDone });
+    for (const follow of turn.send) sendOpenAi(follow);
+    for (const toolCall of turn.toolCalls) {
+      const epoch = responseGate.epoch;
+      void runToolCall(toolCall, epoch);
+    }
+    if (event.type === "response.done" && !greetingDone) greetingDone = true;
+
     if (
       (event.type === "response.output_audio.delta" || event.type === "response.audio.delta")
       && event.delta
@@ -303,6 +324,7 @@ async function handleTwilioMedia(twilioWs, url) {
 
     const userText = transcriptFrom(event, "user");
     if (userText && deskCall?.id) {
+      noteCallerSpeech(responseGate, userText);
       try {
         const outcome = recordRealtimeUtterance({
           callId: deskCall.id,
@@ -341,38 +363,32 @@ ${outcome.reply}`,
       return;
     }
 
-    const toolCall = functionCallFrom(event);
-    if (toolCall && deskCall?.id && !handledTools.has(toolCall.callId)) {
-      handledTools.add(toolCall.callId);
-      let args = {};
-      try {
-        args = toolCall.arguments ? JSON.parse(toolCall.arguments) : {};
-      } catch {
-        args = {};
-      }
-      try {
-        const outcome = await runRealtimeTool({ callId: deskCall.id, name: toolCall.name, args });
-        sendOpenAi({
-          type: "conversation.item.create",
-          item: {
-            type: "function_call_output",
-            call_id: toolCall.callId,
-            output: JSON.stringify(outcome.result ?? outcome),
-          },
-        });
-        sendOpenAi({ type: "response.create" });
-      } catch (error) {
-        sendOpenAi({
-          type: "conversation.item.create",
-          item: {
-            type: "function_call_output",
-            call_id: toolCall.callId,
-            output: JSON.stringify({ error: error?.message || "Tool failed" }),
-          },
-        });
-        sendOpenAi({ type: "response.create" });
-      }
+  }
+
+  async function runToolCall(toolCall, epoch) {
+    if (!deskCall?.id) return;
+    let args = {};
+    try {
+      args = toolCall.arguments ? JSON.parse(toolCall.arguments) : {};
+    } catch {
+      args = {};
     }
+    let ok = false;
+    let output = { error: failureLine(toolCall.name) };
+    try {
+      const outcome = await withTimeout(
+        runRealtimeTool({ callId: deskCall.id, name: toolCall.name, args }),
+        TOOL_FETCH_TIMEOUT_MS,
+        () => ({ ok: false, result: { error: failureLine(toolCall.name) } }),
+      );
+      ok = Boolean(outcome?.ok);
+      output = ok ? (outcome.result ?? {}) : { error: outcome?.result?.error || failureLine(toolCall.name) };
+    } catch (error) {
+      ok = false;
+      output = { error: failureLine(toolCall.name) || error?.message || "Tool failed" };
+    }
+    sendOpenAi(functionOutputEvent(toolCall.callId, output));
+    for (const follow of completeTool(responseGate, toolCall.callId, epoch, ok)) sendOpenAi(follow);
   }
 }
 
@@ -395,14 +411,4 @@ function transcriptFrom(event, role) {
   return "";
 }
 
-function functionCallFrom(event) {
-  if (event.type === "response.function_call_arguments.done" && event.name && event.call_id) {
-    return { name: event.name, callId: event.call_id, arguments: event.arguments };
-  }
-  const item = event.item;
-  if (event.type === "response.output_item.done" && item?.type === "function_call" && item.name && item.call_id) {
-    return { name: item.name, callId: item.call_id, arguments: item.arguments };
-  }
-  return null;
-}
 

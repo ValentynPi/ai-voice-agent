@@ -77,6 +77,8 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /Never invent results/i);
   assert.match(weak.instructions, /1–3 short sentences|1-3 short sentences/i);
   assert.match(weak.instructions, /never go silent/i);
+  assert.match(weak.instructions, /I can't get the weather right now/);
+  assert.match(weak.instructions, /Never leave the caller in silence after a tool call/);
   assert.match(weak.instructions, /clarifying question/i);
   assert.match(weak.instructions, /wait for the caller/i);
   assert.match(weak.instructions, /Do not narrate tool use/i);
