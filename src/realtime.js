@@ -72,6 +72,7 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
     // Turn-taking + intelligence
     "When the caller finishes a turn, always answer usefully — never go silent, hang, or leave them waiting without a reply.",
     "Listen to the full request. If it is unclear, ask one short clarifying question, then act (call MCP tools when needed).",
+    "Weather places: if the tool returns the city the caller named, or that city's airport or aerodrome, it is the right place. Speak the current conditions from the tool. Do not refuse and do not ask for another city only because the point is an airport. Ask where they mean only when the tool's place is clearly a different city. Never invent weather numbers.",
     "Be precise: use tools when they help; answer from tool output and Bot task knowledge, not guesses.",
     // Speech style
     "Language: match the caller's latest spoken language every turn; switch when they switch. Do not stick to English if they speak another language.",
