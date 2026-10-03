@@ -11,6 +11,7 @@ import {
   ingestRealtimeEvent,
   noteBargeIn,
   noteCallerSpeech,
+  queueResponseCreate,
   withTimeout,
 } from "../../public/js/realtime-turn.js";
 import {
@@ -317,8 +318,15 @@ async function handleTwilioMedia(twilioWs, url) {
     }
 
     if (event.type === "input_audio_buffer.speech_started" && streamSid) {
-      sendTwilio({ event: "clear", streamSid });
-      sendOpenAi({ type: "response.cancel" });
+      // Only clear/cancel when the model is actually speaking. Cancel-while-idle
+      // errors and false barge-ins during MCP waits were racing the shared gate
+      // (dropped follow-ups, mid-reply cuts, and "didn't understand" turns).
+      // interrupt_response already cancels on the server when that flag is live;
+      // keep an explicit cancel for sessions that dropped turn-detection flags.
+      if (responseGate.active) {
+        sendTwilio({ event: "clear", streamSid });
+        sendOpenAi({ type: "response.cancel" });
+      }
       return;
     }
 
@@ -333,9 +341,9 @@ async function handleTwilioMedia(twilioWs, url) {
           lang,
         });
         if (outcome.blocked) {
-          sendOpenAi({ type: "response.cancel" });
+          if (responseGate.active) sendOpenAi({ type: "response.cancel" });
           if (event.item_id) sendOpenAi({ type: "conversation.item.delete", item_id: event.item_id });
-          sendOpenAi({
+          for (const follow of queueResponseCreate(responseGate, {
             type: "response.create",
             response: {
               output_modalities: ["audio"],
@@ -344,7 +352,7 @@ async function handleTwilioMedia(twilioWs, url) {
 
 ${outcome.reply}`,
             },
-          });
+          })) sendOpenAi(follow);
         }
         // create_response=true on semantic_vad already answers the caller turn.
       } catch (error) {

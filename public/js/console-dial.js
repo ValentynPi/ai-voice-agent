@@ -8,6 +8,8 @@ import {
   ingestRealtimeEvent,
   noteBargeIn,
   noteCallerSpeech,
+  queueResponseCreate,
+  shouldHoldForSpeech,
 } from "./realtime-turn.js";
 
 const CHIPS = [
@@ -720,7 +722,7 @@ async function submitRealtimeText(text) {
       },
     });
     if (!sent) throw new Error("Realtime channel is not open");
-    sendEvent({ type: "response.create" });
+    for (const follow of queueResponseCreate(responseGate, { type: "response.create" })) sendEvent(follow);
     setPhase("thinking", "Thinking");
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
@@ -728,15 +730,18 @@ async function submitRealtimeText(text) {
 }
 
 function speakRefusal(reply) {
-  const sent = sendEvent({
+  const event = {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
       instructions: `Say exactly this and nothing else: ${reply}`,
     },
-  });
-  if (sent) setPhase("speaking", "Speaking");
+  };
+  const queued = queueResponseCreate(responseGate, event);
+  let sent = false;
+  for (const follow of queued) sent = sendEvent(follow) || sent;
+  if (sent || responseGate.pendingCreates.length) setPhase("speaking", "Speaking");
   else hintEl.textContent = "OpenAI Realtime voice marin is unavailable, so that refusal was not spoken.";
 }
 
@@ -875,7 +880,7 @@ async function onCallerAudio(text, itemId) {
   addBubble("user", text, { security: payload.security?.decision });
   if (payload.blocked) {
     if (itemId) sendEvent({ type: "conversation.item.delete", item_id: itemId });
-    sendEvent({ type: "response.cancel" });
+    if (responseGate.active) sendEvent({ type: "response.cancel" });
     addBubble("assistant", payload.reply, { security: "deny" });
     speakRefusal(payload.reply);
     return;
@@ -943,5 +948,5 @@ async function onToolCall(toolCall, epoch) {
 }
 
 function shouldHoldPhase() {
-  return Boolean(responseGate.active || responseGate.tools.size || responseGate.pendingCreates.length);
+  return shouldHoldForSpeech(responseGate);
 }

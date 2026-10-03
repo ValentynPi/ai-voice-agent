@@ -1,9 +1,20 @@
 /**
- * Realtime tool turns must not call response.create while a response is still
- * active. OpenAI rejects that ("conversation already has an active response"),
- * the follow-up is dropped, and the caller hears silence while the UI sits on
- * listening. Queue the spoken follow-up until response.done, and if the tool
- * or the model produces nothing, speak a short failure instead.
+ * Shared Realtime turn gate for browser dialers and the Twilio media bridge.
+ *
+ * OpenAI rejects response.create while a response is still active
+ * ("conversation already has an active response"). A follow-up that is
+ * dropped leaves the caller in silence. Worse, treating every
+ * speech_started as barge-in bumps the tool epoch and clears the queued
+ * spoken follow-up during a tool wait — so weather and other MCP turns
+ * never speak, later turns race, and the model looks like it "didn't
+ * understand" because a silence fallback or stale create collided with
+ * the caller's next audio.
+ *
+ * Rules:
+ * - Queue at most one spoken follow-up until response.done / cancelled.
+ * - Only treat speech_started as barge-in when a response is actually active.
+ * - Never silence-fallback on cancelled/incomplete (interrupted) turns.
+ * - On an active-response error, requeue and drain after the next settle.
  */
 
 export const TOOL_TURN_TIMEOUT_MS = 10000;
@@ -33,6 +44,8 @@ export function createResponseGate() {
     turnFailed: false,
     pendingCreates: [],
     lastSent: null,
+    /** True when a create was rejected as "active response" and is waiting for idle. */
+    waitingForIdle: false,
   };
 }
 
@@ -73,12 +86,31 @@ export function noteCallerSpeech(gate, text) {
   if (clean) gate.userText = clean;
 }
 
+/**
+ * Real barge-in only while a response is active (model speaking / streaming).
+ * Speech during a tool wait must NOT bump the epoch or clear the queued
+ * spoken follow-up — that was dropping replies and leaving both dialers silent.
+ * Returns true when the barge-in invalidated an in-flight turn.
+ */
 export function noteBargeIn(gate) {
+  gate.fallbackArmed = true;
+  if (!gate.active) {
+    // Idle or waiting on MCP: keep queued follow-ups and the tool epoch.
+    // If a create is stuck behind a phantom "active response" race, drop it —
+    // semantic VAD create_response will answer this new caller turn.
+    if (gate.waitingForIdle) {
+      gate.pendingCreates = [];
+      gate.waitingForIdle = false;
+      gate.lastSent = null;
+    }
+    return false;
+  }
   gate.epoch += 1;
   gate.pendingCreates = [];
   gate.lastSent = null;
   gate.heardAudio = false;
-  gate.fallbackArmed = true;
+  gate.waitingForIdle = false;
+  return true;
 }
 
 export function functionCallsFrom(event) {
@@ -145,7 +177,17 @@ export function silenceFallbackEvent(userText) {
 }
 
 export function shouldHoldForSpeech(gate) {
-  return Boolean(gate.active || gate.tools.size > 0 || gate.pendingCreates.length > 0);
+  return Boolean(gate.active || gate.tools.size > 0 || gate.pendingCreates.length > 0 || gate.waitingForIdle);
+}
+
+/**
+ * Queue a response.create (tool follow-up, silence fallback, typed turn, refusal)
+ * so it never races an active response.
+ */
+export function queueResponseCreate(gate, event) {
+  const payload = event && event.type ? event : { type: "response.create" };
+  gate.pendingCreates = [payload];
+  return drain(gate);
 }
 
 function beginTool(gate, callId, name) {
@@ -181,6 +223,7 @@ function drain(gate) {
   gate.pendingCreates = [];
   gate.lastSent = event;
   gate.active = true;
+  gate.waitingForIdle = false;
   return [event];
 }
 
@@ -188,6 +231,7 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
   if (event?.type === "response.created") {
     gate.active = true;
     gate.lastSent = null;
+    gate.waitingForIdle = false;
     return [];
   }
   if (event?.type !== "response.done" && event?.type !== "response.cancelled") return [];
@@ -196,10 +240,14 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
   const hasTool = responseHasTool(event.response) || gate.tools.size > 0;
   gate.heardAudio = false;
   gate.active = false;
+  gate.waitingForIdle = false;
+  // Only a fully completed, silent, tool-less turn gets a spoken fallback.
+  // Cancelled/incomplete means barge-in or interrupt — never inject a create
+  // that would race the caller's next audio (cuts mid-reply / drops understanding).
   if (
     !suppressFallback
     && gate.fallbackArmed
-    && status !== "cancelled"
+    && status === "completed"
     && !spoke
     && !hasTool
     && gate.tools.size === 0
@@ -212,17 +260,27 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
 }
 
 function noteResponseError(gate, message) {
-  const activeRace = /active response/i.test(String(message || ""));
+  const text = String(message || "");
+  const activeRace = /active response/i.test(text);
   if (activeRace) {
     if (gate.lastSent) {
       gate.pendingCreates = [gate.lastSent];
       gate.lastSent = null;
     }
+    // Do not re-drain here — that loops create→error while the blocker is live.
+    // Mark idle-wait; the next response.done / cancelled settles and drains.
+    gate.active = false;
+    gate.waitingForIdle = gate.pendingCreates.length > 0;
+    return [];
+  }
+  // Harmless cancel-when-idle errors must not drop an in-flight create.
+  if (/cancel/i.test(text) && /no active|nothing to cancel|not active/i.test(text)) {
     return [];
   }
   if (gate.lastSent) {
     gate.lastSent = null;
     gate.active = false;
+    gate.waitingForIdle = false;
   }
   return [];
 }
