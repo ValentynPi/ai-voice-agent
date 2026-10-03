@@ -10,6 +10,7 @@ import {
   noteBargeIn,
   noteCallerSpeech,
   queueResponseCreate,
+  queueSessionUpdate,
   silenceFallbackEvent,
   toolFollowUpEvent,
   withTimeout,
@@ -265,4 +266,25 @@ test("a Ukrainian Castellón weather turn is not rewritten into English", () => 
   const sent = completeTool(gate, "uk", gate.epoch, true);
   assert.equal(sent.length, 1);
   assert.match(sent[0].response.instructions, /Кастельон-де-ла-Плана/);
+});
+
+test("session language update waits until the model is done speaking", () => {
+  const gate = createResponseGate();
+  ingestRealtimeEvent(gate, { type: "response.created" });
+  ingestRealtimeEvent(gate, { type: "response.output_audio.delta", delta: "abc" });
+  const early = queueSessionUpdate(gate, {
+    type: "session.update",
+    session: { type: "realtime", instructions: "Reply only in Ukrainian." },
+  });
+  assert.equal(early.length, 0, "must not rewrite the session mid-reply");
+  assert.ok(gate.pendingSession);
+  noteBargeIn(gate);
+  const done = ingestRealtimeEvent(gate, {
+    type: "response.done",
+    response: { status: "cancelled", output: [] },
+  });
+  assert.equal(done.send.length, 1);
+  assert.equal(done.send[0].type, "session.update");
+  assert.match(done.send[0].session.instructions, /Ukrainian/);
+  assert.equal(gate.pendingSession, null);
 });

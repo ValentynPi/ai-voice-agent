@@ -45,6 +45,8 @@ export function createResponseGate() {
     turnOk: false,
     turnFailed: false,
     pendingCreates: [],
+    /** session.update held until the model is not speaking, so it cannot cut a reply. */
+    pendingSession: null,
     lastSent: null,
     /** True when a create was rejected as "active response" and is waiting for idle. */
     waitingForIdle: false,
@@ -201,6 +203,17 @@ export function queueResponseCreate(gate, event) {
   return drain(gate);
 }
 
+/**
+ * Language session.update must not land while audio is playing.
+ * The salon demo never rewrites the session mid-reply; doing so cuts speech
+ * and makes the next words sound confused. Flush once the response is idle.
+ */
+export function queueSessionUpdate(gate, event) {
+  if (!event || event.type !== "session.update") return [];
+  gate.pendingSession = event;
+  return drain(gate);
+}
+
 function beginTool(gate, callId, name) {
   if (!callId || gate.seen.has(callId) || gate.tools.has(callId)) return false;
   gate.seen.add(callId);
@@ -229,13 +242,20 @@ function responseHasTool(response) {
 }
 
 function drain(gate) {
-  if (gate.active || gate.pendingCreates.length === 0 || gate.tools.size > 0) return [];
+  if (gate.active || gate.tools.size > 0 || gate.waitingForIdle) return [];
+  const events = [];
+  if (gate.pendingSession) {
+    events.push(gate.pendingSession);
+    gate.pendingSession = null;
+  }
+  if (gate.pendingCreates.length === 0) return events;
   const event = gate.pendingCreates[0];
   gate.pendingCreates = [];
   gate.lastSent = event;
   gate.active = true;
   gate.waitingForIdle = false;
-  return [event];
+  events.push(event);
+  return events;
 }
 
 function settleResponse(gate, event, { suppressFallback = false } = {}) {

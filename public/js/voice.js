@@ -10,6 +10,7 @@ import {
   noteBargeIn,
   noteCallerSpeech,
   queueResponseCreate,
+  queueSessionUpdate,
   shouldHoldForSpeech,
 } from "./realtime-turn.js";
 
@@ -199,7 +200,8 @@ function rememberCallerLanguage(text) {
 
 function pushSession(tools) {
   if (!realtime?.session) return false;
-  return sendEvent({
+  // Hold the update until the model is idle so it cannot cut the current reply.
+  const queued = queueSessionUpdate(responseGate, {
     type: "session.update",
     session: {
       type: "realtime",
@@ -210,6 +212,9 @@ function pushSession(tools) {
       output_modalities: ["audio"],
     },
   });
+  let sent = false;
+  for (const event of queued) sent = sendEvent(event) || sent;
+  return sent || Boolean(responseGate.pendingSession);
 }
 
 function sendSessionLanguage() {

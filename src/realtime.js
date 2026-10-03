@@ -30,8 +30,14 @@ export function languageLine(lang, agent) {
 }
 
 function todayLine() {
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid" }).format(new Date());
-  return `Today is ${today}.`;
+  const today = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Madrid",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date());
+  return `Today is ${today} (Europe/Madrid). Use this when they say today or tomorrow.`;
 }
 
 function formatKnowledge(entries) {
@@ -78,7 +84,9 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
     "Be precise: use tools when they help; answer from tool output and Bot task knowledge, not guesses.",
     // Speech style
     "Language: match the caller's latest spoken language every turn; switch when they switch. Do not stick to English if they speak another language.",
-    "Speak simply and clearly in plain educated language. Prefer 1–2 short sentences unless the caller asks for more detail. Never ramble or monologue.",
+    "How you speak: warm, polite, and natural, like a capable person on a phone call — not a confused assistant. Answer the caller's actual question. Prefer 1–2 short sentences unless they ask for more. Never ramble or monologue.",
+    "Stay in one language at a time. Never mix two languages in one sentence. Noise, a cough, or one unclear word is not a language switch. Ukrainian stays Ukrainian, never Russian.",
+    "If a connected tool can answer, call it and speak the result. Do not refuse a clear request, do not stall, and do not ask them to repeat something you understood.",
     "After the greeting only, stop and wait for the caller. Do not fill pre-caller silence with chatter, tips, or capability lists.",
     "Ask at most one question at a time. Do not stack questions.",
     "Do not narrate tool use (never say you are looking something up or calling a tool). Speak useful results when ready.",
@@ -147,7 +155,8 @@ export function greetingEvent(_lang, agent) {
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
-      input: [],
+      // Do not send input: []. Clearing the prompt while the mic is held
+      // returns no audio (the salon demo greeting stays silent that way).
       instructions: [
         "The call just connected. The caller has not spoken.",
         "Detect which language the following greeting is written in and speak only in that language.",
@@ -167,12 +176,12 @@ function sessionVoice(agent) {
   return String(agent?.voice || "").trim() || voiceName();
 }
 
-export function buildRealtimeSession(model, lang, agent, { telephony = false, transcription = "multilingual" } = {}) {
+export function buildRealtimeSession(model, lang, agent, { telephony = false, transcription = "multilingual", reasoning = "minimal" } = {}) {
   const pcmu = telephony ? { type: "audio/pcmu" } : null;
   const transcriptionConfig = transcription === "open"
     ? { model: "gpt-4o-mini-transcribe" }
     : inputTranscription();
-  return {
+  const session = {
     type: "realtime",
     model,
     output_modalities: ["audio"],
@@ -186,8 +195,8 @@ export function buildRealtimeSession(model, lang, agent, { telephony = false, tr
           // Auto-answer when the caller finishes — do not wait on transcription (empty/late transcripts caused silence).
           create_response: true,
           interrupt_response: true,
-          // Wait a bit longer so the model hears the full utterance before cutting in.
-          eagerness: "low",
+          // Salon demo uses auto (medium, ~4s max). "low" waits up to 8s and feels like silence.
+          eagerness: "auto",
         },
       },
       output: {
@@ -198,6 +207,12 @@ export function buildRealtimeSession(model, lang, agent, { telephony = false, tr
     tools: selectSessionTools(realtimeToolSpecs(), agent),
     tool_choice: "auto",
   };
+  // gpt-realtime-2.1 reasons by default and pauses before short phone replies.
+  // minimal matches the non-reasoning salon demo: answer immediately, still use tools.
+  if (reasoning && reasoning !== "off") {
+    session.reasoning = { effort: reasoning };
+  }
+  return session;
 }
 
 function sessionVariant(session, dropTurnFlags) {
@@ -227,12 +242,29 @@ function rejectedForTranscription(status, body) {
   return /transcription|languages|gpt-transcribe|input_audio/i.test(body);
 }
 
+function rejectedForReasoning(status, body) {
+  if (status !== 400) return false;
+  return /reasoning|\beffort\b/i.test(body);
+}
+
 /** Next session shape after a rejection. Never pins transcription to English. */
 export function nextSessionAttempt(attempt, status, body) {
   const message = String(body || "");
   const code = status || 400;
   if (rejectedForTranscription(code, message) && attempt?.transcription !== "open") {
-    return { dropTurnFlags: false, transcription: "open" };
+    return {
+      dropTurnFlags: false,
+      transcription: "open",
+      reasoning: attempt?.reasoning || "minimal",
+    };
+  }
+  // Older realtime models reject reasoning. Drop it and keep marin + semantic VAD.
+  if (rejectedForReasoning(code, message) && attempt?.reasoning !== "off") {
+    return {
+      dropTurnFlags: Boolean(attempt?.dropTurnFlags),
+      transcription: attempt?.transcription || "multilingual",
+      reasoning: "off",
+    };
   }
   if (rejectedForTurnFlags(code, message) && !attempt?.dropTurnFlags && !rejectedForModel(code, message)) {
     return { ...attempt, dropTurnFlags: true };
@@ -253,14 +285,17 @@ export async function mintRealtimeClientSecret({ lang, agent, fetchImpl = fetch 
   const candidates = realtimeCandidates();
   let lastDetail = "Realtime session was rejected";
   for (const model of candidates) {
-    let attempt = { dropTurnFlags: false, transcription: "multilingual" };
+    let attempt = { dropTurnFlags: false, transcription: "multilingual", reasoning: "minimal" };
     const seen = new Set();
     while (attempt && !attempt.nextModel && !attempt.fatal) {
-      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}`;
+      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}:${attempt.reasoning}`;
       if (seen.has(keyAttempt)) break;
       seen.add(keyAttempt);
       const session = sessionVariant(
-        buildRealtimeSession(model, lang, agent, { transcription: attempt.transcription }),
+        buildRealtimeSession(model, lang, agent, {
+          transcription: attempt.transcription,
+          reasoning: attempt.reasoning,
+        }),
         attempt.dropTurnFlags,
       );
       const response = await fetchImpl("https://api.openai.com/v1/realtime/client_secrets", {

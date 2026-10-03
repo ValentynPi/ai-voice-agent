@@ -12,6 +12,7 @@ import {
   noteBargeIn,
   noteCallerSpeech,
   queueResponseCreate,
+  queueSessionUpdate,
   withTimeout,
 } from "../../public/js/realtime-turn.js";
 import { applyCallerTurn, detectCallerLanguage } from "../../public/js/caller-language.js";
@@ -94,14 +95,18 @@ async function openOpenAiRealtime({ lang, agent }) {
   const candidates = realtimeCandidates();
   let lastError = "Realtime session was rejected";
   for (const model of candidates) {
-    let attempt = { dropTurnFlags: false, transcription: "multilingual" };
+    let attempt = { dropTurnFlags: false, transcription: "multilingual", reasoning: "minimal" };
     const seen = new Set();
     while (attempt && !attempt.nextModel && !attempt.fatal) {
-      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}`;
+      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}:${attempt.reasoning}`;
       if (seen.has(keyAttempt)) break;
       seen.add(keyAttempt);
       const session = sessionVariant(
-        buildRealtimeSession(model, lang, agent, { telephony: true, transcription: attempt.transcription }),
+        buildRealtimeSession(model, lang, agent, {
+          telephony: true,
+          transcription: attempt.transcription,
+          reasoning: attempt.reasoning,
+        }),
         attempt.dropTurnFlags,
       );
       const ws = await connectOpenAiWs(model, key);
@@ -327,14 +332,15 @@ async function handleTwilioMedia(twilioWs, url) {
     }
 
     if (event.type === "input_audio_buffer.speech_started" && streamSid) {
-      // Only clear/cancel when the model is actually speaking. Cancel-while-idle
-      // errors and false barge-ins during MCP waits were racing the shared gate
-      // (dropped follow-ups, mid-reply cuts, and "didn't understand" turns).
-      // interrupt_response already cancels on the server when that flag is live;
-      // keep an explicit cancel for sessions that dropped turn-detection flags.
+      // Only clear playback when a response is actually active. Cancel-while-idle
+      // errors and false barge-ins during MCP waits were racing the shared gate.
+      // The salon demo does not send a second response.cancel: semantic VAD
+      // interrupt_response already stops the model. An extra cancel races that
+      // and cuts the reply. Sessions that dropped the flag still need a cancel.
       if (responseGate.active) {
         sendTwilio({ event: "clear", streamSid });
-        sendOpenAi({ type: "response.cancel" });
+        const serverInterrupts = openai?.session?.audio?.input?.turn_detection?.interrupt_response === true;
+        if (!serverInterrupts) sendOpenAi({ type: "response.cancel" });
       }
       return;
     }
@@ -352,14 +358,14 @@ async function handleTwilioMedia(twilioWs, url) {
           audio: patch.audio,
           baseInstructions: patch.baseInstructions,
         };
-        sendOpenAi({
+        for (const follow of queueSessionUpdate(responseGate, {
           type: "session.update",
           session: {
             type: "realtime",
             instructions: patch.instructions,
             audio: patch.audio,
           },
-        });
+        })) sendOpenAi(follow);
       }
       try {
         const outcome = recordRealtimeUtterance({

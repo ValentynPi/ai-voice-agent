@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import { resetDatabase } from "../src/db.js";
 import { resetResolvedModels } from "../src/models.js";
-import { buildRealtimeSession, greetingEvent, selectSessionTools } from "../src/realtime.js";
+import { buildRealtimeSession, greetingEvent, nextSessionAttempt, selectSessionTools } from "../src/realtime.js";
 import { app } from "../src/server.js";
 import { resetStore } from "../src/store.js";
 
@@ -30,7 +30,11 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.equal(session.model, "gpt-realtime-2.1");
   assert.equal(session.audio.output.voice, "marin");
   assert.equal(session.audio.input.turn_detection.create_response, true);
-  assert.equal(session.audio.input.turn_detection.eagerness, "low");
+  assert.equal(session.audio.input.turn_detection.eagerness, "auto");
+  assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
+  assert.equal(session.reasoning.effort, "minimal");
+  assert.match(session.instructions, /Stay in one language at a time/);
+  assert.match(session.instructions, /Europe\/Madrid/);
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
   assert.ok(Array.isArray(session.tools));
   assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
@@ -130,6 +134,7 @@ test("greeting asks marin to speak first in the greeting's language", () => {
   const english = greetingEvent("en");
   assert.equal(english.type, "response.create");
   assert.equal(english.response.tool_choice, "none");
+  assert.equal(english.response.input, undefined);
   assert.deepEqual(english.response.output_modalities, ["audio"]);
   assert.match(english.response.instructions, /Detect which language/);
   assert.match(english.response.instructions, /Hello, this is Sol at Maison Sol in Castellón/);
@@ -342,4 +347,19 @@ test("language follows the latest caller turn and keeps the Ukrainian city", asy
   assert.match(composed, /Reply only in Ukrainian/);
   assert.doesNotMatch(composed, /Soft UI preference only before the caller speaks: English/);
   assert.doesNotMatch(composed, /Reply in English\./);
+});
+
+test("reasoning rejection keeps multilingual transcription and drops effort", () => {
+  const next = nextSessionAttempt(
+    { dropTurnFlags: false, transcription: "multilingual", reasoning: "minimal" },
+    400,
+    "Unknown parameter: reasoning.effort",
+  );
+  assert.equal(next.reasoning, "off");
+  assert.equal(next.transcription, "multilingual");
+  assert.equal(next.dropTurnFlags, false);
+  const session = buildRealtimeSession("gpt-realtime", "en", null, { reasoning: "off" });
+  assert.equal(session.reasoning, undefined);
+  assert.equal(session.audio.input.transcription.model, "gpt-transcribe");
+  assert.equal(session.audio.input.turn_detection.eagerness, "auto");
 });
