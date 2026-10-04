@@ -28,9 +28,9 @@ async function withServer(fn) {
 test("realtime session asks for marin, tools, and a speech model", () => {
   const session = buildRealtimeSession("gpt-realtime-2.1", "en");
   assert.equal(session.model, "gpt-realtime-2.1");
-  assert.equal(session.audio.output.voice, "marin");
+  assert.deepEqual(session.audio.output.voice, { id: "chloe" });
   assert.equal(session.audio.input.turn_detection.create_response, true);
-  assert.equal(session.audio.input.turn_detection.eagerness, "auto");
+  assert.equal(session.audio.input.turn_detection.eagerness, "high");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
   assert.equal(session.reasoning.effort, "minimal");
   assert.match(session.instructions, /Stay in one language at a time/);
@@ -40,7 +40,7 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
   assert.equal(session.tools.some((tool) => tool.name === "book_appointment"), false);
   assert.match(session.instructions, /Maison Sol/);
-  assert.match(session.instructions, /only the tools provided in this session/);
+  assert.match(session.instructions, /Never mention tools, MCP, or instruments/);
   assert.doesNotMatch(JSON.stringify(session), /sk-/);
 });
 
@@ -52,7 +52,7 @@ test("session instructions follow caller language switches", () => {
     language: "en",
   });
   assert.match(enPref.instructions, /Language rule \(mandatory\)/);
-  assert.match(enPref.instructions, /Never keep replying in English/i);
+  assert.match(enPref.instructions, /Do not stay in English/i);
   assert.match(enPref.instructions, /Hebrew/);
   assert.match(enPref.instructions, /Soft preference only before the caller speaks: English/);
   assert.doesNotMatch(enPref.instructions, /(?<!Soft preference only before the caller speaks: )Reply in English\./);
@@ -74,7 +74,7 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /Bot task/);
   assert.match(weak.instructions, /You are Weather/);
   assert.match(weak.instructions, /Never claim you can help with writing/i);
-  assert.match(weak.instructions, /MCP tool/i);
+  assert.match(weak.instructions, /Never mention tools, MCP, or instruments/);
   assert.match(weak.instructions, /not a general ChatGPT assistant/i);
   assert.match(weak.instructions, /outside your Bot task/i);
   assert.match(weak.instructions, /say clearly and briefly that you cannot do that/i);
@@ -82,10 +82,10 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /1–2 short sentences|1-2 short sentences/i);
   assert.match(weak.instructions, /never go silent/i);
   assert.match(weak.instructions, /I can't get the weather right now/);
-  assert.match(weak.instructions, /Never leave the caller in silence after a tool call/);
+  assert.match(weak.instructions, /Never leave the caller in silence after a lookup/);
   assert.match(weak.instructions, /clarifying question/i);
   assert.match(weak.instructions, /wait for the caller/i);
-  assert.match(weak.instructions, /Do not narrate tool use/i);
+  assert.match(weak.instructions, /Do not name tools, MCP, or instruments/i);
   assert.match(weak.instructions, /airport or aerodrome/i);
   assert.match(weak.instructions, /Never invent weather numbers/);
 
@@ -116,7 +116,7 @@ test("agent settings narrow voice, greeting, tools, and knowledge", () => {
   assert.match(session.instructions, /Closed Monday/);
   assert.match(session.instructions, /Language rule \(mandatory\)/);
   assert.match(session.instructions, /Soft preference only before the caller speaks: Spanish/);
-  assert.match(session.instructions, /caller's most recent spoken turn/i);
+  assert.match(session.instructions, /full turn in a different language/i);
   assert.match(session.instructions, /Knowledge base/);
   const greeting = greetingEvent("es", agent);
   assert.match(greeting.response.instructions, /Hola norte/);
@@ -153,7 +153,7 @@ test("voice desk greets through realtime and does not use browser speech", () =>
   assert.match(source, /greetingTries/);
   assert.match(source, /canAttemptGreeting/);
   assert.match(source, /remoteAudio\.play/);
-  assert.match(source, /marin is unavailable/);
+  assert.match(source, /Chloe is unavailable/);
   assert.doesNotMatch(source, /speechSynthesis/);
   const applied = source.indexOf("answerApplied = true");
   assert.match(source.slice(applied, applied + 500), /maybeSendGreeting\(\)/);
@@ -193,7 +193,7 @@ test("realtime token falls back when the first model id is rejected", async () =
   const previousFetch = global.fetch;
   process.env.OPENAI_API_KEY = "test-key";
   process.env.OPENAI_REALTIME_MODEL = "gpt-5.1";
-  process.env.OPENAI_VOICE = "marin";
+  process.env.OPENAI_VOICE = "chloe";
   const seen = [];
   global.fetch = async (url, init) => {
     if (!String(url).includes("api.openai.com")) return previousFetch(url, init);
@@ -201,7 +201,7 @@ test("realtime token falls back when the first model id is rejected", async () =
     assert.equal(init.headers.Authorization, "Bearer test-key");
     const body = JSON.parse(init.body);
     seen.push(body.session.model);
-    assert.equal(body.session.audio.output.voice, "marin");
+    assert.deepEqual(body.session.audio.output.voice, { id: "chloe" });
     assert.ok(Array.isArray(body.session.tools));
     assert.equal(body.session.tools.some((tool) => tool.name === "lookup_customer"), false);
     if (body.session.model === "gpt-5.1") {
@@ -219,7 +219,7 @@ test("realtime token falls back when the first model id is rejected", async () =
   try {
     await withServer(async (base) => {
       const home = await fetch(`${base}/`);
-      assert.match(await home.text(), /marin/);
+      assert.match(await home.text(), /Chloe/);
       const { call } = await fetch(`${base}/api/calls`, { method: "POST" }).then((response) => response.json());
       const token = await fetch(`${base}/api/realtime/token`, {
         method: "POST",
@@ -230,8 +230,8 @@ test("realtime token falls back when the first model id is rejected", async () =
       assert.equal(token.status, 200);
       assert.equal(body.value, "ek_test_secret");
       assert.equal(body.model, "gpt-realtime-2.1");
-      assert.equal(body.voice, "marin");
-      assert.equal(body.session.audio.output.voice, "marin");
+      assert.equal(body.voice, "chloe");
+      assert.deepEqual(body.session.audio.output.voice, { id: "chloe" });
       assert.equal(body.greeting.type, "response.create");
       assert.match(body.greeting.response.instructions, /Detect which language/);
       assert.equal(body.greeting.response.tool_choice, "none");
@@ -241,7 +241,7 @@ test("realtime token falls back when the first model id is rejected", async () =
       const state = await fetch(`${base}/api/state`).then((response) => response.json());
       assert.equal(state.model, process.env.OPENAI_MODEL || "gpt-5.1");
       assert.equal(state.realtimeModel, "gpt-realtime-2.1");
-      assert.equal(state.voice, "marin");
+      assert.equal(state.voice, "chloe");
     });
   } finally {
     global.fetch = previousFetch;
@@ -293,7 +293,7 @@ test("telephony realtime session uses g711 pcmu for Media Streams", () => {
   const session = buildRealtimeSession("gpt-realtime-2.1", "en", null, { telephony: true });
   assert.equal(session.audio.input.format.type, "audio/pcmu");
   assert.equal(session.audio.output.format.type, "audio/pcmu");
-  assert.equal(session.audio.output.voice, "marin");
+  assert.deepEqual(session.audio.output.voice, { id: "chloe" });
 });
 
 test("transcription is multilingual and not locked to English", () => {
@@ -361,5 +361,27 @@ test("reasoning rejection keeps multilingual transcription and drops effort", ()
   const session = buildRealtimeSession("gpt-realtime", "en", null, { reasoning: "off" });
   assert.equal(session.reasoning, undefined);
   assert.equal(session.audio.input.transcription.model, "gpt-transcribe");
-  assert.equal(session.audio.input.turn_detection.eagerness, "auto");
+  assert.equal(session.audio.input.turn_detection.eagerness, "high");
+});
+
+test("a place name or noisy fragment does not switch an established language", async () => {
+  const { callerTurnLine, resolveReplyLanguage } = await import("../public/js/caller-language.js");
+  const uk = "Привіт, скажи мені, будь ласка, яка сьогодні погода?";
+  let lang = resolveReplyLanguage("", uk);
+  assert.equal(lang, "uk");
+  lang = resolveReplyLanguage(lang, "Castellón");
+  assert.equal(lang, "uk");
+  lang = resolveReplyLanguage(lang, "Castellón de la Plana");
+  assert.equal(lang, "uk");
+  lang = resolveReplyLanguage(lang, "uh que");
+  assert.equal(lang, "uk");
+  const stuck = callerTurnLine("Castellón de la Plana", lang);
+  assert.match(stuck, /Ukrainian/);
+  assert.doesNotMatch(stuck, /Reply only in Spanish/);
+  lang = resolveReplyLanguage(lang, "Hola, ¿qué tiempo hace hoy en la ciudad?");
+  assert.equal(lang, "es");
+  const switched = callerTurnLine("Hola, ¿qué tiempo hace hoy en la ciudad?", "uk");
+  assert.match(switched, /Spanish/);
+  const english = resolveReplyLanguage("uk", "Hello, what is the weather today please?");
+  assert.equal(english, "en");
 });

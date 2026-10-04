@@ -2,7 +2,7 @@ import { includeDemoBuiltins } from "./accounts.js";
 import { getAgent } from "./desk.js";
 import { composeToolReply, detectLang as detect, forSpeech, refusal } from "./format.js";
 import { chatCandidates, noteChatModel } from "./models.js";
-import { detectCallerLanguage } from "../public/js/caller-language.js";
+import { resolveReplyLanguage } from "../public/js/caller-language.js";
 import { receptionistInstructions } from "./realtime.js";
 import { screenInput, sanitizeText } from "./security.js";
 import { appendMessage, getCall, recordSecurity, touchCall } from "./store.js";
@@ -212,8 +212,9 @@ export async function handleTurn({ callId, text, lang }) {
   touchCall(callId);
 
   const clean = sanitizeText(text);
-  const spoken = detectCallerLanguage(clean);
-  const language = spoken || (lang === "es" || lang === "en" ? lang : detect(clean));
+  const spoken = resolveReplyLanguage(call.lang, clean);
+  if (spoken) call.lang = spoken;
+  const language = call.lang || (lang === "es" || lang === "en" ? lang : detect(clean));
   const screen = screenInput(clean);
   recordSecurity({
     callId,

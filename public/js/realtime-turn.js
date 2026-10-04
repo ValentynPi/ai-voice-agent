@@ -17,10 +17,12 @@
  * - On an active-response error, requeue and drain after the next settle.
  */
 
-import { callerTurnLine, detectCallerLanguage, spokenFailure } from "./caller-language.js";
+import { callerTurnLine, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
 
 export const TOOL_TURN_TIMEOUT_MS = 10000;
 export const TOOL_FETCH_TIMEOUT_MS = 15000;
+/** First still-looking line. Fast tools return before this and skip it. */
+export const TOOL_FILLER_AFTER_MS = 1500;
 
 const AUDIO_EVENT = new Set([
   "output_audio_buffer.started",
@@ -45,11 +47,19 @@ export function createResponseGate() {
     turnOk: false,
     turnFailed: false,
     pendingCreates: [],
+    /** True when pendingCreates[0] is the one still-looking line, which may speak during a tool. */
+    pendingFiller: false,
     /** session.update held until the model is not speaking, so it cannot cut a reply. */
     pendingSession: null,
+    /** Caller turn in flight. A session.update now would delay the first audio. */
+    holdSession: false,
     lastSent: null,
     /** True when a create was rejected as "active response" and is waiting for idle. */
     waitingForIdle: false,
+    callerLanguage: "",
+    toolStartedAt: 0,
+    fillerUsed: false,
+    fillerTimer: null,
   };
 }
 
@@ -86,8 +96,14 @@ export function withTimeout(promise, ms, onTimeout) {
 
 export function noteCallerSpeech(gate, text) {
   gate.fallbackArmed = true;
+  gate.holdSession = true;
   const clean = String(text || "").trim();
-  if (clean) gate.userText = clean;
+  if (!clean) return gate.callerLanguage || "";
+  const next = resolveReplyLanguage(gate.callerLanguage || "", clean);
+  if (next) gate.callerLanguage = next;
+  // A place name or noisy fragment must not replace the question the tool will answer.
+  if (!gate.userText || isClearLanguageTurn(clean)) gate.userText = clean;
+  return gate.callerLanguage || "";
 }
 
 /**
@@ -98,12 +114,14 @@ export function noteCallerSpeech(gate, text) {
  */
 export function noteBargeIn(gate) {
   gate.fallbackArmed = true;
+  gate.holdSession = true;
   if (!gate.active) {
     // Idle or waiting on MCP: keep queued follow-ups and the tool epoch.
     // If a create is stuck behind a phantom "active response" race, drop it —
     // semantic VAD create_response will answer this new caller turn.
     if (gate.waitingForIdle) {
       gate.pendingCreates = [];
+      gate.pendingFiller = false;
       gate.waitingForIdle = false;
       gate.lastSent = null;
     }
@@ -111,6 +129,7 @@ export function noteBargeIn(gate) {
   }
   gate.epoch += 1;
   gate.pendingCreates = [];
+  gate.pendingFiller = false;
   gate.lastSent = null;
   gate.heardAudio = false;
   gate.waitingForIdle = false;
@@ -151,12 +170,12 @@ export function functionOutputEvent(callId, output) {
   };
 }
 
-export function toolFollowUpEvent(name, failed, userText = "") {
-  const line = spokenFailure(name, userText);
-  const turn = callerTurnLine(userText);
+export function toolFollowUpEvent(name, failed, userText = "", established = "") {
+  const line = spokenFailure(name, userText, established);
+  const turn = callerTurnLine(userText, established);
   const instructions = failed
     ? `${turn} The tool failed, timed out, or is missing. Say this in the caller's language, then stop: ${line} Do not invent a result. Do not call tools.`
-    : `${turn} Speak the tool result to the caller in their language. One to two short sentences. Use only facts from the tool result. If it includes current conditions, speak the temperature and condition. An airport or aerodrome of the city the caller named is the right place: say the weather and do not ask them to clarify. Ask for a different place only when the result says the match is a different city. If the result is an error, say you can't get that right now and do not invent data. Do not call tools.`;
+    : `${turn} Speak the tool result to the caller in their language. One to two short sentences. Use only facts from the tool result. The tool payload may be English or include a place name such as Castellón. That is not a language switch. If it includes current conditions, speak the temperature and condition. An airport or aerodrome of the city the caller named is the right place: say the weather and do not ask them to clarify. Ask for a different place only when the result says the match is a different city. If the result is an error, say you can't get that right now and do not invent data. Do not call tools.`;
   return {
     type: "response.create",
     response: {
@@ -167,7 +186,35 @@ export function toolFollowUpEvent(name, failed, userText = "") {
   };
 }
 
-export function silenceFallbackEvent(userText) {
+const LOOKING = {
+  uk: "Ще дивлюся.",
+  es: "Sigo mirando.",
+  en: "Still looking.",
+  ru: "Ещё смотрю.",
+  fr: "Je regarde encore.",
+  ar: "ما زلت أبحث.",
+  he: "עדיין בודק.",
+};
+
+export function stillLookingLine(code) {
+  return LOOKING[code] || LOOKING.en;
+}
+
+export function toolFillerEvent(userText = "", established = "") {
+  const code = resolveReplyLanguage(established, userText) || established || "en";
+  const name = languageName(code) || "the caller's language";
+  const line = stillLookingLine(code);
+  return {
+    type: "response.create",
+    response: {
+      output_modalities: ["audio"],
+      tool_choice: "none",
+      instructions: `Say exactly this, in ${name}, then stop: ${line} Do not give the result. Do not invent weather, prices, or appointments. Do not call tools.`,
+    },
+  };
+}
+
+export function silenceFallbackEvent(userText, established = "") {
   const missed = {
     uk: "Вибачте, я не розчув. Повторіть, будь ласка.",
     es: "Perdona, no te he oído. ¿Puedes repetirlo?",
@@ -175,16 +222,16 @@ export function silenceFallbackEvent(userText) {
     ru: "Извините, я не расслышал. Повторите, пожалуйста.",
     fr: "Pardon, je n'ai pas compris. Pouvez-vous répéter ?",
   };
-  const code = detectCallerLanguage(userText) || "en";
+  const code = resolveReplyLanguage(established, userText) || established || "en";
   const line = isWeatherTopic(userText)
-    ? spokenFailure("weather", userText)
+    ? spokenFailure("weather", userText, code)
     : (missed[code] || missed.en);
   return {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
-      instructions: `${callerTurnLine(userText)} You produced no speech. Say this in the caller's language, then stop: ${line} Do not invent weather, records, or tool results. Do not call tools.`,
+      instructions: `${callerTurnLine(userText, code)} You produced no speech. Say this in the caller's language, then stop: ${line} Do not invent weather, records, or tool results. Do not call tools.`,
     },
   };
 }
@@ -197,9 +244,10 @@ export function shouldHoldForSpeech(gate) {
  * Queue a response.create (tool follow-up, silence fallback, typed turn, refusal)
  * so it never races an active response.
  */
-export function queueResponseCreate(gate, event) {
+export function queueResponseCreate(gate, event, { filler = false } = {}) {
   const payload = event && event.type ? event : { type: "response.create" };
   gate.pendingCreates = [payload];
+  gate.pendingFiller = Boolean(filler);
   return drain(gate);
 }
 
@@ -216,6 +264,10 @@ export function queueSessionUpdate(gate, event) {
 
 function beginTool(gate, callId, name) {
   if (!callId || gate.seen.has(callId) || gate.tools.has(callId)) return false;
+  if (gate.tools.size === 0) {
+    gate.toolStartedAt = Date.now();
+    gate.fillerUsed = false;
+  }
   gate.seen.add(callId);
   if (gate.seen.size > 100) gate.seen.delete(gate.seen.values().next().value);
   gate.tools.set(callId, name || "tool");
@@ -242,20 +294,23 @@ function responseHasTool(response) {
 }
 
 function drain(gate) {
-  if (gate.active || gate.tools.size > 0 || gate.waitingForIdle) return [];
-  const events = [];
-  if (gate.pendingSession) {
-    events.push(gate.pendingSession);
-    gate.pendingSession = null;
+  if (gate.active || gate.waitingForIdle) return [];
+  // Speak before any session.update. A session.update in front of audio is a round trip of silence.
+  if (gate.pendingCreates.length) {
+    if (gate.tools.size > 0 && !gate.pendingFiller) return [];
+    const event = gate.pendingCreates[0];
+    gate.pendingCreates = [];
+    gate.pendingFiller = false;
+    gate.lastSent = event;
+    gate.active = true;
+    gate.waitingForIdle = false;
+    return [event];
   }
-  if (gate.pendingCreates.length === 0) return events;
-  const event = gate.pendingCreates[0];
-  gate.pendingCreates = [];
-  gate.lastSent = event;
-  gate.active = true;
-  gate.waitingForIdle = false;
-  events.push(event);
-  return events;
+  if (gate.tools.size > 0 || gate.holdSession) return [];
+  if (!gate.pendingSession) return [];
+  const session = gate.pendingSession;
+  gate.pendingSession = null;
+  return [session];
 }
 
 function settleResponse(gate, event, { suppressFallback = false } = {}) {
@@ -272,6 +327,7 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
   gate.heardAudio = false;
   gate.active = false;
   gate.waitingForIdle = false;
+  gate.holdSession = false;
   // Only a fully completed, silent, tool-less turn gets a spoken fallback.
   // Cancelled/incomplete means barge-in or interrupt — never inject a create
   // that would race the caller's next audio (cuts mid-reply / drops understanding).
@@ -285,7 +341,8 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
     && gate.pendingCreates.length === 0
   ) {
     gate.fallbackArmed = false;
-    gate.pendingCreates = [silenceFallbackEvent(gate.userText)];
+    gate.pendingCreates = [silenceFallbackEvent(gate.userText, gate.callerLanguage)];
+    gate.pendingFiller = false;
   }
   return drain(gate);
 }
@@ -335,6 +392,7 @@ export function completeTool(gate, callId, epoch, ok) {
   else gate.turnFailed = true;
   if (epoch != null && epoch !== gate.epoch) {
     if (gate.tools.size === 0) {
+      disarmToolFiller(gate);
       gate.turnNames = [];
       gate.turnOk = false;
       gate.turnFailed = false;
@@ -347,6 +405,38 @@ export function completeTool(gate, callId, epoch, ok) {
   gate.turnOk = false;
   gate.turnFailed = false;
   const label = names.find((name) => isWeatherTopic(name)) || names[0] || "";
-  gate.pendingCreates = [toolFollowUpEvent(label, failed, gate.userText)];
+  disarmToolFiller(gate);
+  gate.fillerUsed = false;
+  gate.toolStartedAt = 0;
+  gate.pendingCreates = [toolFollowUpEvent(label, failed, gate.userText, gate.callerLanguage)];
+  gate.pendingFiller = false;
   return drain(gate);
+}
+
+export function disarmToolFiller(gate) {
+  if (gate.fillerTimer) clearTimeout(gate.fillerTimer);
+  gate.fillerTimer = null;
+}
+
+function pumpToolFiller(gate, emit) {
+  if (gate.fillerUsed || gate.tools.size === 0) return;
+  if (!gate.toolStartedAt || Date.now() - gate.toolStartedAt < TOOL_FILLER_AFTER_MS) return;
+  if (gate.active || gate.waitingForIdle || (gate.pendingCreates.length && !gate.pendingFiller)) {
+    gate.fillerTimer = setTimeout(() => pumpToolFiller(gate, emit), 120);
+    return;
+  }
+  gate.fillerUsed = true;
+  const event = toolFillerEvent(gate.userText, gate.callerLanguage);
+  for (const item of queueResponseCreate(gate, event, { filler: true })) emit(item);
+}
+
+/** One short still-looking line, only if the tool is still running after ~1.5s. */
+export function armToolFiller(gate, emit) {
+  if (gate.fillerUsed || gate.fillerTimer || gate.tools.size === 0) return;
+  if (!gate.toolStartedAt) gate.toolStartedAt = Date.now();
+  const wait = Math.max(0, TOOL_FILLER_AFTER_MS - (Date.now() - gate.toolStartedAt));
+  gate.fillerTimer = setTimeout(() => {
+    gate.fillerTimer = null;
+    pumpToolFiller(gate, emit);
+  }, wait);
 }

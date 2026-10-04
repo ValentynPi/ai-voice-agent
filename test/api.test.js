@@ -32,7 +32,7 @@ test("pages and health respond", async () => {
     assert.equal(home.status, 200);
     const homeHtml = await home.text();
     assert.match(homeHtml, /Maison Sol/);
-    assert.match(homeHtml, /marin/);
+    assert.match(homeHtml, /Chloe/);
     assert.match(homeHtml, /Voice Desk/);
 
     const dashboard = await fetch(`${base}/dashboard`);

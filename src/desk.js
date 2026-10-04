@@ -110,7 +110,7 @@ function mapAgent(row, knowledge) {
     description: row.description || "",
     systemPrompt: row.system_prompt,
     greeting: row.greeting || "",
-    voice: row.voice || "marin",
+    voice: row.voice || "chloe",
     language: row.language || "multi",
     modelNotes: row.model_notes || "",
     enabledTools: parseTools(row.enabled_tools_json),
@@ -184,7 +184,7 @@ function agentInput(input, { requirePrompt = true } = {}) {
     description: cleanBlock(input.description, 400),
     systemPrompt,
     greeting: resolveGreeting(input),
-    voice: cleanVoice(input.voice || "marin"),
+    voice: cleanVoice(input.voice || "chloe"),
     language: cleanLanguage(input.language || "multi"),
     modelNotes: cleanBlock(input.modelNotes, 500),
   };

@@ -74,7 +74,7 @@ async function load() {
       ["OpenAI", state.openai ? "Key configured" : "No API key on this server"],
       ["Chat model", state.model || "Unavailable without a key"],
       ["Realtime model", state.realtimeModel || "Unavailable without a key"],
-      ["Default voice", state.voice || "marin"],
+      ["Default voice", state.voice || "chloe"],
       ["Database", state.database?.path || "sqlite"],
       ["Database note", state.database?.note || ""],
       ["MCP", state.mcp?.connected ? `Connected · ${state.mcp.url}` : "Not connected"],

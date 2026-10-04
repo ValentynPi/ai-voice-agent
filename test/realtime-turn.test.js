@@ -11,7 +11,9 @@ import {
   noteCallerSpeech,
   queueResponseCreate,
   queueSessionUpdate,
+  armToolFiller,
   silenceFallbackEvent,
+  TOOL_FILLER_AFTER_MS,
   toolFollowUpEvent,
   withTimeout,
 } from "../public/js/realtime-turn.js";
@@ -287,4 +289,48 @@ test("session language update waits until the model is done speaking", () => {
   assert.equal(done.send[0].type, "session.update");
   assert.match(done.send[0].session.instructions, /Ukrainian/);
   assert.equal(gate.pendingSession, null);
+});
+
+test("one still-looking line only if the tool is still running", async () => {
+  const uk = "Привіт, скажи мені, будь ласка, яка сьогодні погода?";
+  const fast = createResponseGate();
+  noteCallerSpeech(fast, uk);
+  ingestRealtimeEvent(fast, { type: "response.created" });
+  ingestRealtimeEvent(fast, weatherCall("fast"));
+  ingestRealtimeEvent(fast, {
+    type: "response.done",
+    response: { status: "completed", output: [{ type: "function_call", name: "get_weather", call_id: "fast" }] },
+  });
+  const earlyAudio = [];
+  armToolFiller(fast, (event) => earlyAudio.push(event));
+  const answer = completeTool(fast, "fast", fast.epoch, true);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(earlyAudio.length, 0, "a fast tool must not speak a filler");
+  assert.equal(answer.length, 1);
+  assert.match(answer[0].response.instructions, /Ukrainian/);
+  assert.doesNotMatch(answer[0].response.instructions, /Ще дивлюся/);
+
+  const slow = createResponseGate();
+  noteCallerSpeech(slow, uk);
+  ingestRealtimeEvent(slow, { type: "response.created" });
+  ingestRealtimeEvent(slow, weatherCall("slow"));
+  ingestRealtimeEvent(slow, {
+    type: "response.done",
+    response: { status: "completed", output: [{ type: "function_call", name: "get_weather", call_id: "slow" }] },
+  });
+  const heard = [];
+  armToolFiller(slow, (event) => heard.push(event));
+  await new Promise((resolve) => setTimeout(resolve, TOOL_FILLER_AFTER_MS + 100));
+  assert.equal(heard.length, 1);
+  assert.match(heard[0].response.instructions, /Ще дивлюся/);
+  assert.equal(slow.active, true);
+  const queued = completeTool(slow, "slow", slow.epoch, true);
+  assert.equal(queued.length, 0, "the real answer waits until the filler finishes");
+  const done = ingestRealtimeEvent(slow, {
+    type: "response.done",
+    response: { status: "completed", output: [{ type: "message", content: [{ type: "output_audio", transcript: "Ще дивлюся." }] }] },
+  });
+  assert.equal(done.send.length, 1);
+  assert.match(done.send[0].response.instructions, /Ukrainian/);
+  assert.match(done.send[0].response.instructions, /Кастельон|погода|Speak the tool result/);
 });

@@ -29,13 +29,13 @@ test("the default Maison Sol agent is seeded with knowledge", async () => {
     const listed = await fetch(`${base}/api/agents`).then((response) => response.json());
     const agent = listed.agents.find((item) => item.id === DEFAULT_AGENT_ID);
     assert.equal(agent.name, "Maison Sol");
-    assert.equal(agent.voice, "marin");
+    assert.equal(agent.voice, "chloe");
     assert.equal(agent.language, "multi");
     assert.equal(agent.enabledTools, null);
     assert.ok(agent.knowledgeIds.includes("kb_maison_sol"));
 
     const detail = await fetch(`${base}/api/agents/${DEFAULT_AGENT_ID}`).then((response) => response.json());
-    assert.match(detail.agent.systemPrompt, /only the tools provided in this session/);
+    assert.match(detail.agent.systemPrompt, /appointments, services, and the weather/);
     assert.match(detail.agent.greeting, /Hello, this is Sol at Maison Sol/);
     assert.match(detail.agent.knowledge[0].body, /Carrer Major 8/);
     assert.equal(JSON.stringify(detail).includes("auth_token"), false);

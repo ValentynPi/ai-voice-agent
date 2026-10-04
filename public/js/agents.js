@@ -62,7 +62,7 @@ function row(agent) {
   name.append(block);
 
   const voice = document.createElement("td");
-  voice.textContent = agent.voice || "marin";
+  voice.textContent = agent.voice || "chloe";
   const language = document.createElement("td");
   language.textContent = languageLabel(agent.language);
   const knowledge = document.createElement("td");

@@ -9,13 +9,14 @@ import {
   failureLine,
   functionOutputEvent,
   ingestRealtimeEvent,
+  armToolFiller,
   noteBargeIn,
   noteCallerSpeech,
   queueResponseCreate,
   queueSessionUpdate,
   withTimeout,
 } from "../../public/js/realtime-turn.js";
-import { applyCallerTurn, detectCallerLanguage } from "../../public/js/caller-language.js";
+import { applyCallerTurn } from "../../public/js/caller-language.js";
 import {
   buildRealtimeSession,
   greetingEvent,
@@ -312,6 +313,7 @@ async function handleTwilioMedia(twilioWs, url) {
     if (event.type === "input_audio_buffer.speech_started" && greetingDone) noteBargeIn(responseGate);
     const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: !greetingDone });
     for (const follow of turn.send) sendOpenAi(follow);
+    if (turn.toolCalls.length) armToolFiller(responseGate, sendOpenAi);
     for (const toolCall of turn.toolCalls) {
       const epoch = responseGate.epoch;
       void runToolCall(toolCall, epoch);
@@ -348,24 +350,26 @@ async function handleTwilioMedia(twilioWs, url) {
     const userText = transcriptFrom(event, "user");
     if (userText && deskCall?.id) {
       noteCallerSpeech(responseGate, userText);
-      const spoken = detectCallerLanguage(userText);
-      if (spoken) lang = spoken;
+      if (responseGate.callerLanguage) lang = responseGate.callerLanguage;
+      // Only when the caller actually switched. A session.update on every
+      // fragment rewrites the reply and adds a round trip before the next audio.
       if (openai?.session) {
-        const patch = applyCallerTurn(openai.session, userText);
+        const patch = applyCallerTurn(openai.session, userText, lang);
         openai.session = {
           ...openai.session,
           instructions: patch.instructions,
-          audio: patch.audio,
           baseInstructions: patch.baseInstructions,
+          callerLanguage: patch.language || openai.session.callerLanguage,
         };
-        for (const follow of queueSessionUpdate(responseGate, {
-          type: "session.update",
-          session: {
-            type: "realtime",
-            instructions: patch.instructions,
-            audio: patch.audio,
-          },
-        })) sendOpenAi(follow);
+        if (patch.changed) {
+          for (const follow of queueSessionUpdate(responseGate, {
+            type: "session.update",
+            session: {
+              type: "realtime",
+              instructions: patch.instructions,
+            },
+          })) sendOpenAi(follow);
+        }
       }
       try {
         const outcome = recordRealtimeUtterance({

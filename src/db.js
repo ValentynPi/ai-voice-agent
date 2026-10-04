@@ -188,7 +188,7 @@ function migrate(database) {
       description TEXT NOT NULL DEFAULT '',
       system_prompt TEXT NOT NULL,
       greeting TEXT NOT NULL DEFAULT '',
-      voice TEXT NOT NULL DEFAULT 'marin',
+      voice TEXT NOT NULL DEFAULT 'chloe',
       language TEXT NOT NULL DEFAULT 'multi',
       model_notes TEXT NOT NULL DEFAULT '',
       enabled_tools_json TEXT,
@@ -316,6 +316,7 @@ function seedProduct(database) {
   if (seeded) {
     // Existing installs: keep Maison Sol on the demo tenant only.
     database.prepare("UPDATE agents SET account_id = ? WHERE id = ? AND (account_id IS NULL OR account_id = '')").run(DEMO_ACCOUNT_ID, DEFAULT_AGENT_ID);
+    database.prepare("UPDATE agents SET voice = 'chloe' WHERE lower(voice) = 'marin' OR voice IS NULL OR voice = ''").run();
     database.prepare("UPDATE knowledge_bases SET account_id = ? WHERE id = ? AND (account_id IS NULL OR account_id = '')").run(DEMO_ACCOUNT_ID, DEFAULT_KB_ID);
     return;
   }
@@ -327,7 +328,7 @@ function seedProduct(database) {
       INSERT INTO agents (
         id, account_id, name, description, system_prompt, greeting,
         voice, language, model_notes, enabled_tools_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'marin', 'multi', ?, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'chloe', 'multi', ?, NULL, ?, ?)
     `).run(
       DEFAULT_AGENT_ID,
       DEMO_ACCOUNT_ID,

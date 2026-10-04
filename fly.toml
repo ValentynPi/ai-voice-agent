@@ -13,7 +13,7 @@ primary_region = "cdg"
   AGENTS_PUBLIC_URL = "https://ai-voice-agent-valmax.fly.dev"
   OPENAI_MODEL = "gpt-5.1"
   OPENAI_REALTIME_MODEL = "gpt-realtime-2.1"
-  OPENAI_VOICE = "marin"
+  OPENAI_VOICE = "chloe"
   # Persist agents / knowledge / call history / MCP links on the Fly volume.
   DATABASE_PATH = "/data/maison-sol.sqlite"
 
