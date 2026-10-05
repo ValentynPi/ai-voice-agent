@@ -175,8 +175,8 @@ export function greetingEvent(_lang, agent) {
 
 function sessionVoice(agent) {
   const picked = String(agent?.voice || "").trim().toLowerCase();
-  // Stored "marin" is the previous default. Chloe is the voice the API accepts as { id: "chloe" }.
-  if (!picked || picked === "marin" || picked === "chloe") return apiVoice("chloe");
+  // "Chloe" (and the older stored "marin") is spoken with built-in "marin".
+  // The API has no "chloe" voice; { id: "chloe" } leaves the call dead.
   return apiVoice(picked);
 }
 

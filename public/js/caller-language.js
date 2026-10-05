@@ -151,12 +151,24 @@ export function composeSessionInstructions(instructions, { uiLang = "", callerTe
   return next;
 }
 
-/** The Realtime API rejects the string "chloe". It accepts this object id. */
+/** Built-in OpenAI Realtime voices. "chloe" is not one of them. */
+export const REALTIME_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"];
+
+/**
+ * Voice value for session.audio.output.voice. "Chloe" is the desk's name for
+ * the default voice; the API speaks it with built-in "marin". Sending
+ * { id: "chloe" } mints a token but /v1/realtime/calls then times out (504),
+ * so every web call ended on "Voice unavailable". Only real custom voice ids
+ * (voice_...) are sent as objects.
+ */
 export function apiVoice(voice) {
-  if (voice && typeof voice === "object" && voice.id) return { id: String(voice.id) };
-  const name = String(voice || "chloe").trim().toLowerCase();
-  if (!name || name === "chloe" || name === "marin") return { id: "chloe" };
-  return name;
+  if (voice && typeof voice === "object") {
+    const id = String(voice.id || "").trim();
+    if (/^voice_/.test(id)) return { id };
+    return apiVoice(id);
+  }
+  const name = String(voice || "").trim().toLowerCase();
+  return REALTIME_VOICES.includes(name) ? name : "marin";
 }
 
 export function sessionAudioForCaller(audio, voice, _callerText = "") {

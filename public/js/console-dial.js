@@ -484,7 +484,7 @@ async function connectRealtime(activeCallId = callId) {
       "Content-Type": "application/sdp",
     },
   });
-  if (!sdpResponse.ok) throw new Error("Realtime call was rejected");
+  if (!sdpResponse.ok) throw new Error(`Realtime call was rejected (HTTP ${sdpResponse.status})`);
   const answer = await sdpResponse.text();
   if (!answer.startsWith("v=")) throw new Error("Realtime did not return an SDP answer");
   await pc.setRemoteDescription({ type: "answer", sdp: answer });

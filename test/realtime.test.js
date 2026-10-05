@@ -28,7 +28,7 @@ async function withServer(fn) {
 test("realtime session asks for marin, tools, and a speech model", () => {
   const session = buildRealtimeSession("gpt-realtime-2.1", "en");
   assert.equal(session.model, "gpt-realtime-2.1");
-  assert.deepEqual(session.audio.output.voice, { id: "chloe" });
+  assert.equal(session.audio.output.voice, "marin");
   assert.equal(session.audio.input.turn_detection.create_response, true);
   assert.equal(session.audio.input.turn_detection.eagerness, "high");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
@@ -201,7 +201,7 @@ test("realtime token falls back when the first model id is rejected", async () =
     assert.equal(init.headers.Authorization, "Bearer test-key");
     const body = JSON.parse(init.body);
     seen.push(body.session.model);
-    assert.deepEqual(body.session.audio.output.voice, { id: "chloe" });
+    assert.equal(body.session.audio.output.voice, "marin");
     assert.ok(Array.isArray(body.session.tools));
     assert.equal(body.session.tools.some((tool) => tool.name === "lookup_customer"), false);
     if (body.session.model === "gpt-5.1") {
@@ -231,7 +231,7 @@ test("realtime token falls back when the first model id is rejected", async () =
       assert.equal(body.value, "ek_test_secret");
       assert.equal(body.model, "gpt-realtime-2.1");
       assert.equal(body.voice, "chloe");
-      assert.deepEqual(body.session.audio.output.voice, { id: "chloe" });
+      assert.equal(body.session.audio.output.voice, "marin");
       assert.equal(body.greeting.type, "response.create");
       assert.match(body.greeting.response.instructions, /Detect which language/);
       assert.equal(body.greeting.response.tool_choice, "none");
@@ -293,7 +293,7 @@ test("telephony realtime session uses g711 pcmu for Media Streams", () => {
   const session = buildRealtimeSession("gpt-realtime-2.1", "en", null, { telephony: true });
   assert.equal(session.audio.input.format.type, "audio/pcmu");
   assert.equal(session.audio.output.format.type, "audio/pcmu");
-  assert.deepEqual(session.audio.output.voice, { id: "chloe" });
+  assert.equal(session.audio.output.voice, "marin");
 });
 
 test("transcription is multilingual and not locked to English", () => {
@@ -384,4 +384,14 @@ test("a place name or noisy fragment does not switch an established language", a
   assert.match(switched, /Spanish/);
   const english = resolveReplyLanguage("uk", "Hello, what is the weather today please?");
   assert.equal(english, "en");
+});
+
+test("apiVoice never sends the nonexistent chloe voice to OpenAI", async () => {
+  const { apiVoice } = await import("../public/js/caller-language.js");
+  assert.equal(apiVoice("chloe"), "marin");
+  assert.equal(apiVoice({ id: "chloe" }), "marin");
+  assert.equal(apiVoice(""), "marin");
+  assert.equal(apiVoice("Cedar"), "cedar");
+  assert.equal(apiVoice("not-a-voice"), "marin");
+  assert.deepEqual(apiVoice({ id: "voice_abc123" }), { id: "voice_abc123" });
 });
