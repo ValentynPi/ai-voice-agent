@@ -30,10 +30,11 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.equal(session.model, "gpt-realtime-2.1");
   assert.equal(session.audio.output.voice, "marin");
   assert.equal(session.audio.input.turn_detection.create_response, true);
-  assert.equal(session.audio.input.turn_detection.eagerness, "high");
+  assert.equal(session.audio.input.turn_detection.eagerness, "medium");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
   assert.equal(session.reasoning.effort, "minimal");
   assert.match(session.instructions, /Stay in one language at a time/);
+  assert.match(session.instructions, /wait silently/i);
   assert.match(session.instructions, /Europe\/Madrid/);
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
   assert.ok(Array.isArray(session.tools));
@@ -80,7 +81,7 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /say clearly and briefly that you cannot do that/i);
   assert.match(weak.instructions, /Never invent results/i);
   assert.match(weak.instructions, /1–2 short sentences|1-2 short sentences/i);
-  assert.match(weak.instructions, /never go silent/i);
+  assert.match(weak.instructions, /clear speech turn|wait silently/i);
   assert.match(weak.instructions, /can't get the weather right now/i);
   assert.match(weak.instructions, /English Bot task text|Model notes|tool payload is English/i);
   assert.match(weak.instructions, /Never leave the caller in silence after a lookup/);
@@ -362,7 +363,7 @@ test("reasoning rejection keeps multilingual transcription and drops effort", ()
   const session = buildRealtimeSession("gpt-realtime", "en", null, { reasoning: "off" });
   assert.equal(session.reasoning, undefined);
   assert.equal(session.audio.input.transcription.model, "gpt-transcribe");
-  assert.equal(session.audio.input.turn_detection.eagerness, "high");
+  assert.equal(session.audio.input.turn_detection.eagerness, "medium");
 });
 
 test("a place name or noisy fragment does not switch an established language", async () => {

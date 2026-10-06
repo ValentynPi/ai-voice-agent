@@ -79,8 +79,9 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
     toolLine,
     "Use only the functions provided in this session. Never invent names or capabilities they do not provide. Never tell the caller about functions, tools, MCP, or instruments.",
     // Turn-taking + intelligence
-    "When the caller finishes a turn, always answer usefully — never go silent, hang, or leave them waiting without a reply.",
-    "Listen to the full request. A clear question in Ukrainian, Spanish, English, Hebrew, or any other language is understood as that language. Do not treat it as nonsense and do not ask the caller to switch to English. If a required detail is missing, ask one short clarifying question, then act.",
+    "When the caller finishes a clear speech turn, always answer usefully — never hang or leave them waiting without a reply.",
+    "Background noise, keyboard typing, room hum, a cough, a click, or other unintelligible audio is not a caller turn. Do not reply, do not ask them to repeat, and do not say you did not catch that — wait silently until they speak clearly.",
+    "Listen to the full request. A clear question in Ukrainian, Spanish, English, Hebrew, or any other language is understood as that language. Do not treat it as nonsense and do not ask the caller to switch to English. If a required detail is missing from clear speech, ask one short clarifying question, then act.",
     "Place names stay intact. Кастельон-де-ла-Плана means Castellón de la Plana. Pass Castellón de la Plana to the place tool and answer about that city. Do not refuse a clear city.",
     "Weather places: if the tool returns the city the caller named, or that city's airport or aerodrome, it is the right place. Speak the current conditions from the tool. Do not refuse and do not ask for another city only because the point is an airport. Ask where they mean only when the tool's place is clearly a different city. Never invent weather numbers.",
     "Be precise: use tools when they help; answer from tool output and Bot task knowledge, not guesses.",
@@ -102,7 +103,7 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
 const EMPTY_TASK_PROMPT = [
   "Your Bot task is not set. Stay a brief, capable phone agent.",
   "Only help with the job you were given. If there is no job yet, say so in one short sentence. Do not mention tools.",
-  "Answer in 1–2 short sentences. Always reply when the caller finishes speaking.",
+  "Answer in 1–2 short sentences. Reply when the caller finishes clear speech; stay silent on noise.",
   "If you cannot do what they asked, say so in one short sentence and stop. Do not mention tools. Do not invent help.",
 ].join(" ");
 
@@ -130,6 +131,11 @@ export function receptionistInstructions(lang, agent, { toolCount } = {}) {
   ];
   const knowledge = formatKnowledge(agent.knowledge);
   if (knowledge) parts.push(knowledge);
+  const notes = String(agent.modelNotes || "").trim();
+  if (notes) {
+    parts.push(`Model notes (durable lessons — follow them; never invent business facts from them):
+${notes}`);
+  }
   return parts.filter(Boolean).join("\n\n");
 }
 
@@ -206,8 +212,8 @@ export function buildRealtimeSession(model, lang, agent, { telephony = false, tr
           // Auto-answer when the caller finishes — do not wait on transcription (empty/late transcripts caused silence).
           create_response: true,
           interrupt_response: true,
-          // auto/medium waits up to ~4s and the caller hears silence. high caps the wait at ~2s.
-          eagerness: "high",
+          // high (~2s) false-started on room noise / keyboard. medium max ~4s; clear speech still ends promptly (semantic end-prob).
+          eagerness: "medium",
         },
       },
       output: {

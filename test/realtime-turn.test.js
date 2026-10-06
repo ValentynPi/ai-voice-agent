@@ -96,6 +96,20 @@ test("a silent weather turn speaks a failure instead of staying quiet", () => {
   assert.equal(done.hold, true);
 });
 
+test("noise or empty turns do not get a did-not-catch-that fallback", () => {
+  for (const text of ["", "uh", "um", "a"]) {
+    const gate = createResponseGate();
+    noteCallerSpeech(gate, text);
+    noteBargeIn(gate);
+    ingestRealtimeEvent(gate, { type: "response.created" });
+    const done = ingestRealtimeEvent(gate, {
+      type: "response.done",
+      response: { status: "completed", output: [] },
+    });
+    assert.equal(done.send.length, 0, JSON.stringify(text) + " must stay silent");
+  }
+});
+
 test("audio responses and the greeting do not get a silence fallback", () => {
   const spoken = createResponseGate();
   noteCallerSpeech(spoken, "What is the weather?");

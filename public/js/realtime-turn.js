@@ -399,9 +399,9 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
   gate.active = false;
   gate.waitingForIdle = false;
   gate.holdSession = false;
-  // Only a fully completed, silent, tool-less turn gets a spoken fallback.
-  // Cancelled/incomplete means barge-in or interrupt — never inject a create
-  // that would race the caller's next audio (cuts mid-reply / drops understanding).
+  // Only a fully completed, silent, tool-less turn with clear caller speech
+  // gets a spoken fallback. Noise / empty / short fragments must not inject
+  // "didn't catch that" — wait silently. Cancelled/incomplete = barge-in.
   if (
     !suppressFallback
     && gate.fallbackArmed
@@ -412,8 +412,10 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
     && gate.pendingCreates.length === 0
   ) {
     gate.fallbackArmed = false;
-    gate.pendingCreates = [silenceFallbackEvent(gate.userText, gate.callerLanguage)];
-    gate.pendingFiller = false;
+    if (isClearLanguageTurn(gate.userText || "")) {
+      gate.pendingCreates = [silenceFallbackEvent(gate.userText, gate.callerLanguage)];
+      gate.pendingFiller = false;
+    }
   }
   return drain(gate);
 }
