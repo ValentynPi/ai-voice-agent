@@ -11,7 +11,7 @@ import {
   ingestRealtimeEvent,
   armToolFiller,
   noteBargeIn,
-  noteCallerSpeech,
+  applyCallerTranscript,
   queueResponseCreate,
   queueSessionUpdate,
   withTimeout,
@@ -349,19 +349,21 @@ async function handleTwilioMedia(twilioWs, url) {
 
     const userText = transcriptFrom(event, "user");
     if (userText && deskCall?.id) {
-      noteCallerSpeech(responseGate, userText);
+      const langTurn = applyCallerTranscript(responseGate, userText);
       if (responseGate.callerLanguage) lang = responseGate.callerLanguage;
+      // Cancel a wrong-language auto-reply; response.done/cancelled drains the restart.
+      if (langTurn.restart && responseGate.active) sendOpenAi({ type: "response.cancel" });
       // Only when the caller actually switched. A session.update on every
       // fragment rewrites the reply and adds a round trip before the next audio.
       if (openai?.session) {
-        const patch = applyCallerTurn(openai.session, userText, lang);
+        const patch = applyCallerTurn(openai.session, userText, responseGate.callerLanguage || "");
         openai.session = {
           ...openai.session,
           instructions: patch.instructions,
           baseInstructions: patch.baseInstructions,
           callerLanguage: patch.language || openai.session.callerLanguage,
         };
-        if (patch.changed) {
+        if (patch.changed || langTurn.changed) {
           for (const follow of queueSessionUpdate(responseGate, {
             type: "session.update",
             session: {

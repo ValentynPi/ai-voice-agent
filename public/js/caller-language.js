@@ -26,7 +26,7 @@ const FAILURES = {
   he: { weather: "אני לא יכול לבדוק את מזג האוויר עכשיו.", other: "אני לא יכול לעשות את זה עכשיו." },
 };
 
-const PLACE_NAME = /castell[oó]n(?:\s+de\s+la\s+plana)?|кастельон(?:-де-ла-плана)?|кастельйон(?:-де-ла-плана)?/gi;
+const PLACE_NAME = /castell[oó]n(?:\s+de\s+la\s+plana)?|кастель[ойой]н\w*(?:-де-ла-плана)?|кастельйон\w*(?:-де-ла-плана)?/gi;
 
 /** Place names are not evidence of a language. */
 export function withoutPlaceNames(text) {
@@ -66,9 +66,13 @@ export function detectCallerLanguage(text) {
 
 /** A full caller turn, not a place name or a short fragment. */
 export function isClearLanguageTurn(text) {
+  const detected = detectCallerLanguage(text);
+  if (!detected) return false;
   const words = contentWords(text);
-  if (words.length < 3) return false;
-  return Boolean(detectCallerLanguage(text));
+  // "Яка погода в Кастельон-де-ла-Плана?" strips the city to two words — still clear.
+  // English keeps the three-word bar so "hi thanks" noise cannot lock the call.
+  if (detected === "en") return words.length >= 3;
+  return words.length >= 2;
 }
 
 /**
@@ -128,9 +132,10 @@ export function callerTurnLine(text, established = "") {
 
 export function composeSessionInstructions(instructions, { uiLang = "", callerText = "", established = "" } = {}) {
   const follow = [
-    "Language rule (mandatory): Reply in the caller's language. Once that language is clear, keep it for the rest of the call.",
+    "Language rule (mandatory): Reply in the caller's language. Match their spoken audio immediately — do not wait for a transcript label.",
+    "Once that language is clear, keep it for the rest of the call.",
     "Switch only when the caller speaks a full turn in a different language. Do not switch for a place name (Castellón, Castellón de la Plana), a tool result, background noise, one odd word, or a partial transcript.",
-    "Do not stay in English after the caller has spoken a full turn in another language. The greeting language applies only before they speak.",
+    "Do not stay in English after the caller has spoken a full turn in another language. English Bot task text, Model notes, UI labels, greetings, or tool JSON must never force an English reply. The greeting language applies only before they speak.",
   ].join(" ");
   let next = String(instructions || "")
     .replaceAll("Reply in English.", " ")

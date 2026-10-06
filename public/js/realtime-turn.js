@@ -107,6 +107,77 @@ export function noteCallerSpeech(gate, text) {
 }
 
 /**
+ * Apply a late transcript to the live turn. create_response often starts before
+ * transcription finishes, so English Bot-task text can win the first reply.
+ * When the caller's language becomes clear, rewrite queued spoken events and,
+ * if a no-tool reply is already active, cancel+restart in that language.
+ */
+export function applyCallerTranscript(gate, text) {
+  const previous = gate.callerLanguage || "";
+  noteCallerSpeech(gate, text);
+  const language = gate.callerLanguage || "";
+  const changed = Boolean(language) && language !== previous;
+  rewritePendingSpoken(gate);
+  const out = { language, previous, changed, restart: false };
+  // Only restart a wrong-language auto-reply when nothing is already queued.
+  // Queued tool answers / fillers were rewritten above; do not replace them.
+  if (changed && gate.active && gate.tools.size === 0 && gate.pendingCreates.length === 0) {
+    out.restart = true;
+    gate.pendingCreates = [languageRestartEvent(gate.userText, language)];
+    gate.pendingFiller = false;
+    gate.fallbackArmed = false;
+  }
+  return out;
+}
+
+function languageRestartEvent(userText, established) {
+  return {
+    type: "response.create",
+    response: {
+      output_modalities: ["audio"],
+      tool_choice: "auto",
+      instructions: [
+        callerTurnLine(userText, established),
+        "The caller already spoke this turn. Answer now in that language.",
+        "English Bot task text, an English greeting, Model notes, or tool JSON must not make you answer in English.",
+      ].join(" "),
+    },
+  };
+}
+
+function rewritePendingSpoken(gate) {
+  if (!gate.pendingCreates.length) return;
+  const userText = gate.userText || "";
+  const code = gate.callerLanguage || "";
+  gate.pendingCreates = gate.pendingCreates.map((event) => {
+    if (!event || event.type !== "response.create") return event;
+    const instructions = String(event.response?.instructions || "");
+    if (gate.pendingFiller || /Still looking\.|Ще дивлюся\.|Sigo mirando\.|Ещё смотрю\.|Je regarde encore\./i.test(instructions)) {
+      return toolFillerEvent(userText, code);
+    }
+    if (/Speak the tool result|tool failed, timed out, or is missing/i.test(instructions)) {
+      const failed = /tool failed, timed out, or is missing/i.test(instructions);
+      const name = isWeatherTopic(userText) || isWeatherTopic(instructions) ? "weather" : "";
+      return toolFollowUpEvent(name, failed, userText, code);
+    }
+    if (/You produced no speech\.|didn't catch that|не розчув|no te he oído|не расслышал/i.test(instructions)) {
+      return silenceFallbackEvent(userText, code);
+    }
+    if (/Reply only in |Their words, unchanged:/i.test(instructions)) {
+      return languageRestartEvent(userText, code);
+    }
+    return {
+      ...event,
+      response: {
+        ...(event.response || {}),
+        instructions: `${callerTurnLine(userText, code)} ${instructions}`.trim(),
+      },
+    };
+  });
+}
+
+
+/**
  * Real barge-in only while a response is active (model speaking / streaming).
  * Speech during a tool wait must NOT bump the epoch or clear the queued
  * spoken follow-up — that was dropping replies and leaving both dialers silent.

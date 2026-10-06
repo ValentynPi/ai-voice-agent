@@ -9,6 +9,7 @@ import {
   ingestRealtimeEvent,
   noteBargeIn,
   noteCallerSpeech,
+  applyCallerTranscript,
   queueResponseCreate,
   queueSessionUpdate,
   armToolFiller,
@@ -333,4 +334,31 @@ test("one still-looking line only if the tool is still running", async () => {
   assert.equal(done.send.length, 1);
   assert.match(done.send[0].response.instructions, /Ukrainian/);
   assert.match(done.send[0].response.instructions, /Кастельон|погода|Speak the tool result/);
+});
+
+test("late transcript rewrites a pending tool answer and can restart a wrong-language reply", () => {
+  const uk = "Яка погода в Кастельон-де-ла-Плана?";
+  const gate = createResponseGate();
+  // Auto-reply already started before transcription arrived.
+  ingestRealtimeEvent(gate, { type: "response.created" });
+  ingestRealtimeEvent(gate, { type: "response.output_audio.delta", delta: "x" });
+  const early = applyCallerTranscript(gate, uk);
+  assert.equal(early.language, "uk");
+  assert.equal(early.changed, true);
+  assert.equal(early.restart, true);
+  assert.equal(gate.pendingCreates.length, 1);
+  assert.match(gate.pendingCreates[0].response.instructions, /Ukrainian/);
+  assert.match(gate.pendingCreates[0].response.instructions, /Кастельон-де-ла-Плана|Яка погода/);
+
+  // Tool path: follow-up is queued behind an active response; late transcript rewrites it.
+  const toolGate = createResponseGate();
+  ingestRealtimeEvent(toolGate, { type: "response.created" });
+  toolGate.pendingCreates = [toolFollowUpEvent("get_weather", false, "uh", "")];
+  assert.doesNotMatch(toolGate.pendingCreates[0].response.instructions, /Ukrainian/);
+  const late = applyCallerTranscript(toolGate, uk);
+  assert.equal(late.language, "uk");
+  assert.equal(late.restart, false, "must not replace a queued tool follow-up");
+  assert.equal(toolGate.pendingCreates.length, 1);
+  assert.match(toolGate.pendingCreates[0].response.instructions, /Ukrainian/);
+  assert.match(toolGate.pendingCreates[0].response.instructions, /Speak the tool result/);
 });

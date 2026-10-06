@@ -1,5 +1,5 @@
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
-import { composeSessionInstructions, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
+import { composeSessionInstructions, isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
 import {
   TOOL_FETCH_TIMEOUT_MS,
   completeTool,
@@ -9,7 +9,7 @@ import {
   ingestRealtimeEvent,
   armToolFiller,
   noteBargeIn,
-  noteCallerSpeech,
+  applyCallerTranscript,
   queueResponseCreate,
   queueSessionUpdate,
   shouldHoldForSpeech,
@@ -198,8 +198,7 @@ function rememberCallerLanguage(text) {
   const code = resolveReplyLanguage(previous, text);
   if (code) realtime.callerLanguage = code;
   if (responseGate) responseGate.callerLanguage = realtime.callerLanguage || "";
-  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
-  if (!realtime.callerText || words.length >= 3) realtime.callerText = text;
+  if (!realtime.callerText || isClearLanguageTurn(text)) realtime.callerText = text;
   if (code && code !== previous) pushSession(realtime.session?.tools);
 }
 
@@ -828,8 +827,10 @@ async function handleRealtimeEvent(event) {
 
   const spoken = userTranscript(event);
   if (spoken) {
-    noteCallerSpeech(responseGate, spoken);
+    const langTurn = applyCallerTranscript(responseGate, spoken);
     interimEl.textContent = "";
+    // Cancel a wrong-language auto-reply; response.done/cancelled drains the restarted create.
+    if (langTurn.restart && responseGate.active) sendEvent({ type: "response.cancel" });
     await onCallerAudio(spoken, event.item_id);
   }
 

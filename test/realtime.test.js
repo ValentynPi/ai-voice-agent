@@ -81,7 +81,8 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /Never invent results/i);
   assert.match(weak.instructions, /1–2 short sentences|1-2 short sentences/i);
   assert.match(weak.instructions, /never go silent/i);
-  assert.match(weak.instructions, /I can't get the weather right now/);
+  assert.match(weak.instructions, /can't get the weather right now/i);
+  assert.match(weak.instructions, /English Bot task text|Model notes|tool payload is English/i);
   assert.match(weak.instructions, /Never leave the caller in silence after a lookup/);
   assert.match(weak.instructions, /clarifying question/i);
   assert.match(weak.instructions, /wait for the caller/i);
@@ -394,4 +395,22 @@ test("apiVoice never sends the nonexistent chloe voice to OpenAI", async () => {
   assert.equal(apiVoice("Cedar"), "cedar");
   assert.equal(apiVoice("not-a-voice"), "marin");
   assert.deepEqual(apiVoice({ id: "voice_abc123" }), { id: "voice_abc123" });
+});
+
+test("short Ukrainian Castellón questions lock reply language", async () => {
+  const { detectCallerLanguage, isClearLanguageTurn, resolveReplyLanguage, callerTurnLine } = await import("../public/js/caller-language.js");
+  const samples = [
+    "Яка погода в Кастельон-де-ла-Плана?",
+    "Скажи погоду в Кастельон-де-ла-Плана",
+    "Яка погода?",
+  ];
+  for (const sample of samples) {
+    assert.equal(detectCallerLanguage(sample), "uk", sample);
+    assert.equal(isClearLanguageTurn(sample), true, sample);
+    assert.equal(resolveReplyLanguage("", sample), "uk", sample);
+    assert.match(callerTurnLine(sample), /Ukrainian/);
+  }
+  // Place name alone still must not lock or switch.
+  assert.equal(resolveReplyLanguage("uk", "Castellón de la Plana"), "uk");
+  assert.equal(isClearLanguageTurn("Castellón de la Plana"), false);
 });
