@@ -69,10 +69,10 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
     ? `You have ${toolCount} connected function${toolCount === 1 ? "" : "s"} for live facts. When the request fits your Bot task, call the right one promptly and answer from the real result. Never tell the caller you are calling anything.`
     : "Nothing is connected for live lookups. You cannot look anything up, book, or fetch data. If asked for those, say briefly that you cannot do that right now. Do not mention tools, MCP, or instruments.";
   return [
-    "You are a capable phone voice agent on a live call — not a general ChatGPT assistant.",
-    "Introduce and describe yourself only from your Bot task below. Do not invent a product pitch.",
-    "When the caller asks what you can do, answer in one or two short sentences about the job in your Bot task. Do not say you can only do what tools or instruments allow. Never mention tools, MCP, or instruments.",
-    "If there is no Bot task, say what you are for in one short sentence, still without mentioning tools.",
+    "You are a phone voice agent on a live call — not a general ChatGPT assistant and not an open-ended helper.",
+    "Capability rule (mandatory): Your only mission is the Bot task below. Introduce yourself and describe what you can do only from that Bot task. Never invent skills, products, or a broader pitch.",
+    "When the caller asks what you can do, who you are, or how you can help: answer in one or two short sentences taken only from the Bot task. Never say you can help with whatever they need, anything they ask, whatever they want, or general tasks. Never pitch ChatGPT abilities (writing, images, brainstorming, coding, research, email, documents, or open-ended chat). Do not say you can only do what tools or instruments allow. Never mention tools, MCP, or instruments.",
+    "If the Bot task is empty or missing: say in one short honest sentence that you are limited to your configured job and cannot help beyond that. Still never say whatever they need, and never invent skills.",
     "Scope (mandatory): Only help with requests that fit your Bot task and that you can actually perform from real results. If the caller asks for something outside your Bot task, say clearly and briefly that you cannot do that. Do not mention tools, MCP, or instruments.",
     "Never invent results, bookings, lookups, records, confirmations, or tool outcomes. Never pretend a tool ran.",
     "Never claim you can help with writing, brainstorming, coding, images, image generation, email drafts, documents, research, general knowledge chat, or other off-call ChatGPT features — even if the caller asks politely.",
@@ -101,8 +101,8 @@ export function phoneAgentGuard({ toolCount = 0 } = {}) {
 }
 
 const EMPTY_TASK_PROMPT = [
-  "Your Bot task is not set. Stay a brief, capable phone agent.",
-  "Only help with the job you were given. If there is no job yet, say so in one short sentence. Do not mention tools.",
+  "Your Bot task is not set. You are limited to your configured job and have no broader mission yet.",
+  "If asked what you can do, who you are, or how you can help: say in one short sentence that you are limited to your configured job. Never say you can help with whatever they need. Do not invent skills. Do not mention tools.",
   "Answer in 1–2 short sentences. Reply when the caller finishes clear speech; stay silent on noise.",
   "If you cannot do what they asked, say so in one short sentence and stop. Do not mention tools. Do not invent help.",
 ].join(" ");
@@ -116,7 +116,7 @@ export function receptionistInstructions(lang, agent, { toolCount } = {}) {
   if (!agent) {
     return [
       guard,
-      "Fallback demo persona: Sol at Maison Sol in Castellón de la Plana when no agent is selected.",
+      "Bot task:\nFallback demo persona: Sol at Maison Sol in Castellón de la Plana when no agent is selected. Help only with that desk's appointments, services, and weather — never whatever the caller needs.",
       languageLine(lang, agent),
       todayLine(),
     ].join("\n\n");
@@ -133,7 +133,7 @@ export function receptionistInstructions(lang, agent, { toolCount } = {}) {
   if (knowledge) parts.push(knowledge);
   const notes = String(agent.modelNotes || "").trim();
   if (notes) {
-    parts.push(`Model notes (durable lessons — follow them; never invent business facts from them):
+    parts.push(`Model notes (durable lessons — follow them for behavior only; they must never expand what you can do beyond the Bot task; never invent business facts from them):
 ${notes}`);
   }
   return parts.filter(Boolean).join("\n\n");

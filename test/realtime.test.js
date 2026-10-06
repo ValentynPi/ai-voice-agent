@@ -72,11 +72,14 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
     enabledTools: null,
   });
   assert.match(weak.instructions, /phone voice agent/i);
+  assert.match(weak.instructions, /Capability rule \(mandatory\)/);
   assert.match(weak.instructions, /Bot task/);
   assert.match(weak.instructions, /You are Weather/);
   assert.match(weak.instructions, /Never claim you can help with writing/i);
   assert.match(weak.instructions, /Never mention tools, MCP, or instruments/);
   assert.match(weak.instructions, /not a general ChatGPT assistant/i);
+  assert.match(weak.instructions, /whatever they need/i);
+  assert.match(weak.instructions, /only from the Bot task|only from that Bot task/i);
   assert.match(weak.instructions, /outside your Bot task/i);
   assert.match(weak.instructions, /say clearly and briefly that you cannot do that/i);
   assert.match(weak.instructions, /Never invent results/i);
@@ -95,12 +98,41 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
     systemPrompt: "",
     greeting: "Hello.",
   });
-  assert.match(empty.instructions, /Bot task is not set|Stay a brief phone agent/i);
+  assert.match(empty.instructions, /Bot task is not set|limited to your configured job/i);
   assert.match(empty.instructions, /Never claim you can help with writing/i);
+  assert.match(empty.instructions, /whatever they need/i);
 
   const greet = greetingEvent("en", { greeting: "Hi, I am Weather." });
   assert.match(greet.response.instructions, /Do not add offers, capability lists/);
   assert.match(greet.response.instructions, /Hi, I am Weather/);
+});
+
+test("capability answers always come from Bot task, never a generic pitch", () => {
+  const weather = buildRealtimeSession("gpt-realtime-2.1", "en", {
+    systemPrompt: "You report weather conditions and forecasts for places the caller names.",
+    greeting: "Hi, weather desk.",
+    modelNotes: "Lessons:\n- Be warmer on the phone.",
+    enabledTools: null,
+  });
+  assert.match(weather.instructions, /Capability rule \(mandatory\)/);
+  assert.match(weather.instructions, /Bot task:\nYou report weather conditions and forecasts/);
+  assert.match(weather.instructions, /what you can do, who you are, or how you can help/i);
+  assert.match(weather.instructions, /taken only from the Bot task/i);
+  assert.match(weather.instructions, /whatever they need/i);
+  assert.match(weather.instructions, /never expand what you can do beyond the Bot task/i);
+  assert.match(weather.instructions, /Never say you can help with whatever they need/i);
+
+  const empty = buildRealtimeSession("gpt-realtime-2.1", "es", {
+    systemPrompt: "   ",
+    greeting: "Hola.",
+  });
+  assert.match(empty.instructions, /limited to your configured job/i);
+  assert.match(empty.instructions, /whatever they need/i);
+  assert.doesNotMatch(empty.instructions, /Stay a brief, capable phone agent/i);
+
+  const fallback = buildRealtimeSession("gpt-realtime-2.1", "en", null);
+  assert.match(fallback.instructions, /Bot task:\nFallback demo persona/i);
+  assert.match(fallback.instructions, /never whatever the caller needs/i);
 });
 
 test("agent settings narrow voice, greeting, tools, and knowledge", () => {
