@@ -270,6 +270,23 @@ function migrateTenantColumns(database) {
   database.exec("CREATE INDEX IF NOT EXISTS idx_agents_account ON agents (account_id)");
   database.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_account ON knowledge_bases (account_id)");
   database.exec("CREATE INDEX IF NOT EXISTS idx_call_records_account ON call_records (account_id)");
+  // Calls started via telephony brain proxy used to land on acct_demo even when the agent
+  // belonged to a signed-in tenant. Re-home those rows onto the agent owner.
+  database.prepare(`
+    UPDATE call_records
+    SET account_id = (
+      SELECT agents.account_id FROM agents WHERE agents.id = call_records.agent_id
+    )
+    WHERE call_records.account_id = ?
+      AND call_records.agent_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM agents
+        WHERE agents.id = call_records.agent_id
+          AND agents.account_id IS NOT NULL
+          AND agents.account_id != ''
+          AND agents.account_id != ?
+      )
+  `).run(DEMO_ACCOUNT_ID, DEMO_ACCOUNT_ID);
 }
 
 function agentColumns(database) {

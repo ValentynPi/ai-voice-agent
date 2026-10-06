@@ -10,7 +10,7 @@ function params() {
 
 async function loadAgents() {
   try {
-    const body = await readJson(await fetch("/api/agents"));
+    const body = await readJson(await fetch("/api/agents", { credentials: "same-origin" }));
     const selected = new URLSearchParams(location.search).get("agentId") || "";
     for (const agent of body.agents || []) {
       const option = document.createElement("option");
@@ -79,7 +79,7 @@ filter.addEventListener("change", () => {
 
 async function load() {
   try {
-    const body = await readJson(await fetch(`/api/history${params()}`));
+    const body = await readJson(await fetch(`/api/history${params()}`, { credentials: "same-origin" }));
     render(body.calls || []);
   } catch (error) {
     list.replaceChildren(emptyState("History unavailable", error.message || "Could not load calls."));

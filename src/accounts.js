@@ -244,11 +244,41 @@ export function includeDemoBuiltins(_accountId) {
   return false;
 }
 
+function requestHasTelephonySecret(req) {
+  const expected = String(process.env.TELEPHONY_SHARED_SECRET || "").trim();
+  if (!expected) return false;
+  const header = String(req?.get?.("x-telephony-secret") || "").trim();
+  const auth = String(req?.get?.("authorization") || "");
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  return header === expected || bearer === expected;
+}
+
+/**
+ * Telephony brain proxy asserts the console tenant via X-Tenant-Id + shared secret.
+ * Browser sessions still win when present.
+ */
+export function accountIdFromTrustedTenantHeader(req) {
+  if (!requestHasTelephonySecret(req)) return null;
+  const header = String(req?.get?.("x-tenant-id") || "").trim();
+  if (!/^acct_[a-z0-9]+$/i.test(header)) return null;
+  if (header === DEMO_ACCOUNT_ID) return DEMO_ACCOUNT_ID;
+  const account = getAccount(header);
+  return account?.id || null;
+}
+
 export function attachAccount(req, _res, next) {
   try {
     const token = sessionCookieValue(req);
     req.sessionToken = token || null;
     req.account = token ? accountFromSessionToken(token) : null;
+    // Server-to-server brain proxy: apply asserted tenant when there is no signed-in session.
+    if (!req.account || req.account.isDemo) {
+      const asserted = accountIdFromTrustedTenantHeader(req);
+      if (asserted && asserted !== DEMO_ACCOUNT_ID) {
+        const account = getAccount(asserted);
+        if (account) req.account = account;
+      }
+    }
     req.accountId = req.account?.id || DEMO_ACCOUNT_ID;
     req.isDemoMode = !req.account || Boolean(req.account.isDemo);
     next();

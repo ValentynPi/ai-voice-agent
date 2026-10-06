@@ -438,7 +438,14 @@ export function saveCallRecord(call) {
   const endedMs = Date.parse(endedAt);
   const durationMs = Number.isFinite(startedMs) && Number.isFinite(endedMs) ? Math.max(0, endedMs - startedMs) : 0;
   const status = call.endReason === "failed" || call.endReason === "error" ? "failed" : "completed";
-  const accountId = call.accountId || DEMO_ACCOUNT_ID;
+  let accountId = call.accountId || DEMO_ACCOUNT_ID;
+  // Repair demo-attributed browser/proxy calls whose agent belongs to a real tenant.
+  if (accountId === DEMO_ACCOUNT_ID && call.agentId) {
+    const owner = getAgent(call.agentId);
+    if (owner?.accountId && owner.accountId !== DEMO_ACCOUNT_ID) {
+      accountId = owner.accountId;
+    }
+  }
   getDb().prepare(`
     INSERT INTO call_records (
       id, account_id, agent_id, agent_name, source, status, started_at, ended_at, duration_ms,

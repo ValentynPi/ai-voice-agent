@@ -57,7 +57,7 @@ function render(call) {
 
 async function load() {
   try {
-    const body = await readJson(await fetch(`/api/history/${encodeURIComponent(id)}`));
+    const body = await readJson(await fetch(`/api/history/${encodeURIComponent(id)}`, { credentials: "same-origin" }));
     render(body.call);
   } catch (error) {
     title.textContent = "Call not found";

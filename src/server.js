@@ -267,7 +267,7 @@ app.post("/api/calls", (req, res, next) => {
       agentName: agent?.name || null,
       voice: agent?.voice || null,
       toolAllow: agent ? agent.enabledTools : null,
-      accountId: req.accountId,
+      accountId: resolveCallAccountId(req, agent),
     });
     res.status(201).json({ call });
   } catch (error) {
@@ -275,9 +275,32 @@ app.post("/api/calls", (req, res, next) => {
   }
 });
 
+function requestHasTelephonySecret(req) {
+  const expected = telephonySharedSecret();
+  if (!expected) return false;
+  const header = String(req.get("x-telephony-secret") || "").trim();
+  const auth = String(req.get("authorization") || "");
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  return header === expected || bearer === expected;
+}
+
+function resolveCallAccountId(req, agent) {
+  if (req.account?.id && !req.account.isDemo) return req.account.id;
+  if (req.accountId && req.accountId !== DEMO_ACCOUNT_ID) return req.accountId;
+  // Trusted brain proxy often asserts demo while dialing a tenant-owned agent.
+  if (requestHasTelephonySecret(req) && agent?.accountId && agent.accountId !== DEMO_ACCOUNT_ID) {
+    return agent.accountId;
+  }
+  return req.accountId || DEMO_ACCOUNT_ID;
+}
+
 function callBelongsToRequest(call, req) {
   if (!call) return false;
-  return (call.accountId || DEMO_ACCOUNT_ID) === (req.accountId || DEMO_ACCOUNT_ID);
+  const callAcct = call.accountId || DEMO_ACCOUNT_ID;
+  const reqAcct = req.accountId || DEMO_ACCOUNT_ID;
+  if (callAcct === reqAcct) return true;
+  // Trusted telephony brain may continue agent-owned calls while the proxy tenant is still demo.
+  return requestHasTelephonySecret(req);
 }
 
 app.post("/api/calls/:id/heartbeat", (req, res) => {
