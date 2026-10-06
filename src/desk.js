@@ -186,7 +186,7 @@ function agentInput(input, { requirePrompt = true } = {}) {
     greeting: resolveGreeting(input),
     voice: cleanVoice(input.voice || "chloe"),
     language: cleanLanguage(input.language || "multi"),
-    modelNotes: cleanBlock(input.modelNotes, 500),
+    modelNotes: cleanBlock(input.modelNotes, 2000),
   };
 }
 
@@ -252,7 +252,7 @@ export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
       : current.greeting,
     voice: has("voice") ? cleanVoice(input.voice) : current.voice,
     language: has("language") ? cleanLanguage(input.language) : current.language,
-    modelNotes: has("modelNotes") ? cleanBlock(input.modelNotes, 500) : current.modelNotes,
+    modelNotes: has("modelNotes") ? cleanBlock(input.modelNotes, 2000) : current.modelNotes,
     enabledTools: has("enabledTools") ? cleanTools(input.enabledTools) : current.enabledTools,
   };
   if (!next.name) throw httpError(400, "Name is required");
@@ -414,6 +414,18 @@ function clip(text, max) {
   return `${clean.slice(0, max - 1).trim()}…`;
 }
 
+
+export function setCallReview(callId, { reviewNote = "", reviewLessons = 0 } = {}) {
+  if (!callId) return;
+  const note = cleanBlock(reviewNote, 120);
+  const lessons = Math.max(0, Math.min(20, Number(reviewLessons) || 0));
+  getDb().prepare(`
+    UPDATE call_records
+    SET review_note = ?, review_lessons = ?, reviewed_at = ?
+    WHERE id = ?
+  `).run(note, lessons, new Date().toISOString(), callId);
+}
+
 export function summarizeTranscript(messages) {
   const list = Array.isArray(messages) ? messages : [];
   const users = list.filter((message) => message.role === "user" && message.text);
@@ -507,6 +519,9 @@ function mapRecord(row) {
     voice: row.voice,
     language: row.language,
     endReason: row.end_reason,
+    reviewNote: row.review_note || "",
+    reviewLessons: row.review_lessons || 0,
+    reviewedAt: row.reviewed_at || null,
   };
 }
 
@@ -527,6 +542,9 @@ function liveRecord(call) {
     voice: call.voice || null,
     language: call.lang || null,
     endReason: null,
+    reviewNote: "",
+    reviewLessons: 0,
+    reviewedAt: null,
   };
 }
 

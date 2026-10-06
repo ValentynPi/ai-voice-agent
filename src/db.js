@@ -221,7 +221,10 @@ function migrate(database) {
       summary TEXT NOT NULL DEFAULT '',
       voice TEXT,
       language TEXT,
-      end_reason TEXT
+      end_reason TEXT,
+      review_note TEXT NOT NULL DEFAULT '',
+      review_lessons INTEGER NOT NULL DEFAULT 0,
+      reviewed_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_call_records_started ON call_records (started_at);
     CREATE TABLE IF NOT EXISTS accounts (
@@ -242,6 +245,7 @@ function migrate(database) {
   `);
   migrateAgentGreeting(database);
   migrateTenantColumns(database);
+  migrateCallReviewColumns(database);
   ensureDemoAccount(database);
   ensureTwilioTables(database);
   seedProduct(database);
@@ -294,6 +298,20 @@ function agentColumns(database) {
 }
 
 /** One greeting field; copy from legacy greeting_en / greeting_es when present. */
+
+function migrateCallReviewColumns(database) {
+  const cols = tableColumns(database, "call_records");
+  if (!cols.has("review_note")) {
+    database.exec("ALTER TABLE call_records ADD COLUMN review_note TEXT NOT NULL DEFAULT ''");
+  }
+  if (!cols.has("review_lessons")) {
+    database.exec("ALTER TABLE call_records ADD COLUMN review_lessons INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!cols.has("reviewed_at")) {
+    database.exec("ALTER TABLE call_records ADD COLUMN reviewed_at TEXT");
+  }
+}
+
 function migrateAgentGreeting(database) {
   const cols = agentColumns(database);
   if (!cols.has("greeting")) {

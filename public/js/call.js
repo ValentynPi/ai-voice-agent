@@ -19,12 +19,14 @@ function render(call) {
   document.title = `${title.textContent} · Voice Desk`;
   summary.textContent = call.summary || "No post-call summary.";
   if (call.agentId) agentLink.href = `/agents/${encodeURIComponent(call.agentId)}`;
-  meta.replaceChildren(
+  const metaPills = [
     pill(statusLabel(call.status), statusClass(call.status)),
     pill(formatDuration(call.durationMs)),
     pill(formatWhen(call.startedAt)),
     pill(call.voice || "voice"),
-  );
+  ];
+  if (call.reviewNote) metaPills.push(pill(call.reviewNote, call.reviewLessons ? "ok" : ""));
+  meta.replaceChildren(...metaPills);
   transcript.replaceChildren();
   const turns = call.transcript || [];
   if (!turns.length) {

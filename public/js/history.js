@@ -61,7 +61,16 @@ function render(calls) {
     status.append(pill);
     const summary = document.createElement("td");
     summary.className = "quiet";
-    summary.textContent = call.summary || (call.status === "in_progress" ? "Live now" : "No summary");
+    const summaryLine = call.summary || (call.status === "in_progress" ? "Live now" : "No summary");
+    summary.textContent = summaryLine;
+    if (call.reviewNote) {
+      const review = document.createElement("div");
+      review.className = "quiet";
+      review.style.marginTop = "4px";
+      review.style.fontSize = "0.85em";
+      review.textContent = call.reviewNote;
+      summary.append(review);
+    }
     row.append(when, agent, duration, status, summary);
     body.append(row);
   }

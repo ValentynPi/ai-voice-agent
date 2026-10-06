@@ -25,6 +25,7 @@ import {
 import { connectMcp, disconnectMcp, ensureMcp, setMcpToolEnabled } from "./mcp/connection.js";
 import { mintRealtimeClientSecret, realtimeToolSpecs, recordRealtimeUtterance, runRealtimeTool } from "./realtime.js";
 import { buildState } from "./state.js";
+import { reviewEndedCall } from "./call-review.js";
 import { endCall, getCall, listActivePublicCalls, onCallEnded, startCall, sweepCalls, touchCall } from "./store.js";
 import { initDatabase } from "./db.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
@@ -49,7 +50,12 @@ import {
   setSessionCookie,
 } from "./accounts.js";
 
-onCallEnded(saveCallRecord);
+onCallEnded((call) => {
+  saveCallRecord(call);
+  void reviewEndedCall(call).catch((error) => {
+    console.error("Post-call review failed:", error?.message || error);
+  });
+});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");

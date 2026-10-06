@@ -187,6 +187,12 @@ function publicCall(call) {
   };
 }
 
+
+export function listToolCallsForCall(callId) {
+  if (!callId) return [];
+  return state.toolCalls.filter((entry) => entry.callId === callId);
+}
+
 export function listActivePublicCalls(accountId = null) {
   return state.calls
     .filter((call) => call.status === "active" && call.source !== "seed")
