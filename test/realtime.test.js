@@ -33,15 +33,15 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.equal(session.audio.input.turn_detection.eagerness, "medium");
   assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
   assert.equal(session.reasoning.effort, "minimal");
-  assert.match(session.instructions, /Stay in one language at a time/);
-  assert.match(session.instructions, /wait silently/i);
+  assert.match(session.instructions, /Ukrainian is not Russian/);
+  assert.match(session.instructions, /Ignore background noise/i);
   assert.match(session.instructions, /Europe\/Madrid/);
   assert.equal(session.audio.input.turn_detection.interrupt_response, true);
   assert.ok(Array.isArray(session.tools));
   assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
   assert.equal(session.tools.some((tool) => tool.name === "book_appointment"), false);
   assert.match(session.instructions, /Maison Sol/);
-  assert.match(session.instructions, /Never mention tools, MCP, or instruments/);
+  assert.match(session.instructions, /Never mention tools, functions, or MCP/);
   assert.doesNotMatch(JSON.stringify(session), /sk-/);
 });
 
@@ -53,16 +53,16 @@ test("session instructions follow caller language switches", () => {
     language: "en",
   });
   assert.match(enPref.instructions, /Language rule \(mandatory\)/);
-  assert.match(enPref.instructions, /Do not stay in English/i);
-  assert.match(enPref.instructions, /Hebrew/);
-  assert.match(enPref.instructions, /Soft preference only before the caller speaks: English/);
-  assert.doesNotMatch(enPref.instructions, /(?<!Soft preference only before the caller speaks: )Reply in English\./);
+  assert.match(enPref.instructions, /never let them pull you into English/i);
+  assert.match(enPref.instructions, /Before the caller speaks, use English/);
+  assert.doesNotMatch(enPref.instructions, /Reply in English\./);
 
-  const multi = buildRealtimeSession("gpt-realtime-2.1", "multi", {
+  const multi = buildRealtimeSession("gpt-realtime-2.1", "en", {
     systemPrompt: "You are Weather.",
     language: "multi",
   });
-  assert.match(multi.instructions, /match the greeting, then follow the caller/);
+  // The desk UI language ("en") must not hint English to the caller.
+  assert.doesNotMatch(multi.instructions, /use English|preference[^.]*English/);
 });
 
 test("realtime instructions guard against ChatGPT-style capability claims", () => {
@@ -72,34 +72,28 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
     enabledTools: null,
   });
   assert.match(weak.instructions, /phone voice agent/i);
-  assert.match(weak.instructions, /Capability rule \(mandatory\)/);
-  assert.match(weak.instructions, /Bot task/);
-  assert.match(weak.instructions, /You are Weather/);
-  assert.match(weak.instructions, /Never claim you can help with writing/i);
-  assert.match(weak.instructions, /Never mention tools, MCP, or instruments/);
-  assert.match(weak.instructions, /not a general ChatGPT assistant/i);
+  assert.match(weak.instructions, /^LANGUAGE \(most important rule\)/);
+  assert.match(weak.instructions, /Bot task:\nYou are Weather/);
+  assert.match(weak.instructions, /Never offer writing, presentations/i);
+  assert.match(weak.instructions, /Never mention tools, functions, or MCP/);
+  assert.match(weak.instructions, /not a general assistant/i);
   assert.match(weak.instructions, /whatever they need/i);
-  assert.match(weak.instructions, /only from the Bot task|only from that Bot task/i);
-  assert.match(weak.instructions, /outside your Bot task/i);
-  assert.match(weak.instructions, /say clearly and briefly that you cannot do that/i);
+  assert.match(weak.instructions, /outside the Bot task/i);
   assert.match(weak.instructions, /Never invent results/i);
-  assert.match(weak.instructions, /1–2 short sentences|1-2 short sentences/i);
-  assert.match(weak.instructions, /clear speech turn|wait silently/i);
-  assert.match(weak.instructions, /can't get the weather right now/i);
-  assert.match(weak.instructions, /English Bot task text|Model notes|tool payload is English/i);
-  assert.match(weak.instructions, /Never leave the caller in silence after a lookup/);
-  assert.match(weak.instructions, /clarifying question/i);
+  assert.match(weak.instructions, /one or two short sentences/i);
+  assert.match(weak.instructions, /Ignore background noise/i);
+  assert.match(weak.instructions, /never let them pull you into English/i);
   assert.match(weak.instructions, /wait for the caller/i);
-  assert.match(weak.instructions, /Do not name tools, MCP, or instruments/i);
-  assert.match(weak.instructions, /airport or aerodrome/i);
-  assert.match(weak.instructions, /Never invent weather numbers/);
+  assert.match(weak.instructions, /airport station counts as that city/i);
+  assert.match(weak.instructions, /Never invent numbers/);
+  assert.match(weak.instructions, /Final reminder: reply in the caller's language/);
 
   const empty = buildRealtimeSession("gpt-realtime-2.1", "en", {
     systemPrompt: "",
     greeting: "Hello.",
   });
   assert.match(empty.instructions, /Bot task is not set|limited to your configured job/i);
-  assert.match(empty.instructions, /Never claim you can help with writing/i);
+  assert.match(empty.instructions, /Never offer writing/i);
   assert.match(empty.instructions, /whatever they need/i);
 
   const greet = greetingEvent("en", { greeting: "Hi, I am Weather." });
@@ -111,16 +105,17 @@ test("capability answers always come from Bot task, never a generic pitch", () =
   const weather = buildRealtimeSession("gpt-realtime-2.1", "en", {
     systemPrompt: "You report weather conditions and forecasts for places the caller names.",
     greeting: "Hi, weather desk.",
-    modelNotes: "Lessons:\n- Be warmer on the phone.",
+    modelNotes: "Lessons:\n- Be warmer on the phone.\n- Match the caller's language; answer in Russian when they speak Russian",
     enabledTools: null,
   });
-  assert.match(weather.instructions, /Capability rule \(mandatory\)/);
   assert.match(weather.instructions, /Bot task:\nYou report weather conditions and forecasts/);
-  assert.match(weather.instructions, /what you can do, who you are, or how you can help/i);
-  assert.match(weather.instructions, /taken only from the Bot task/i);
-  assert.match(weather.instructions, /whatever they need/i);
+  assert.match(weather.instructions, /what you can do, who you are, or how you help/i);
+  assert.match(weather.instructions, /describing only the Bot task job/i);
+  assert.match(weather.instructions, /Never say you can help with anything, whatever they need/i);
   assert.match(weather.instructions, /never expand what you can do beyond the Bot task/i);
-  assert.match(weather.instructions, /Never say you can help with whatever they need/i);
+  assert.match(weather.instructions, /Be warmer on the phone/);
+  assert.doesNotMatch(weather.instructions, /answer in Russian/, "language-pinning lessons are dropped");
+  assert.ok(weather.instructions.length < 4500, `instructions stay short (${weather.instructions.length})`);
 
   const empty = buildRealtimeSession("gpt-realtime-2.1", "es", {
     systemPrompt: "   ",
@@ -149,8 +144,8 @@ test("agent settings narrow voice, greeting, tools, and knowledge", () => {
   assert.match(session.instructions, /North Desk/);
   assert.match(session.instructions, /Closed Monday/);
   assert.match(session.instructions, /Language rule \(mandatory\)/);
-  assert.match(session.instructions, /Soft preference only before the caller speaks: Spanish/);
-  assert.match(session.instructions, /full turn in a different language/i);
+  assert.match(session.instructions, /Before the caller speaks, use Spanish/);
+  assert.match(session.instructions, /full turn in another language/i);
   assert.match(session.instructions, /Knowledge base/);
   const greeting = greetingEvent("es", agent);
   assert.match(greeting.response.instructions, /Hola norte/);
@@ -345,7 +340,7 @@ test("transcription is multilingual and not locked to English", () => {
   assert.match(transcription.prompt, /Do not translate/);
   assert.doesNotMatch(JSON.stringify(transcription), /"language":"en"/);
   assert.match(session.instructions, /Ukrainian/);
-  assert.match(session.instructions, /Кастельон-де-ла-Плана/);
+  assert.match(session.instructions, /Кастельон/);
   assert.doesNotMatch(session.instructions, /Reply in English\./);
 
   const open = buildRealtimeSession("gpt-realtime-2.1", "en", null, { transcription: "open" });

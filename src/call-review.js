@@ -16,6 +16,19 @@ export function clipLesson(text, max = LESSON_MAX) {
   return `${clean.slice(0, max - 1).trim()}…`;
 }
 
+/**
+ * Lessons that must never reach the prompt: ones that pin a fixed language
+ * ("answer in Russian when they speak Russian" turned misheard Ukrainian into
+ * Russian) or widen the job beyond the Bot task.
+ */
+export function isHarmfulLesson(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return true;
+  if (/\b(english|russian|spanish|ukrainian|hebrew|french|german)\b/.test(t)) return true;
+  if (/\b(anything|whatever|any task|general (help|tasks?|assistant))\b/.test(t) && !/\b(decline|never|don't|do not|not)\b/.test(t)) return true;
+  return false;
+}
+
 export function parseLessonLines(notes) {
   const raw = String(notes || "");
   const idx = raw.indexOf(LESSONS_HEADER);
@@ -53,7 +66,7 @@ export function mergeLessonsIntoNotes(existingNotes, newLessons) {
   const merged = [...lessons];
   for (const raw of newLessons || []) {
     const text = clipLesson(raw);
-    if (!text) continue;
+    if (!text || isHarmfulLesson(text)) continue;
     const key = text.toLowerCase();
     if (merged.some((item) => item.toLowerCase() === key)) continue;
     // Drop near-duplicates that share a long prefix.

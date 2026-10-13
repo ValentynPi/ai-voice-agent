@@ -151,8 +151,8 @@ export function composeSessionInstructions(instructions, { uiLang = "", callerTe
   const caller = String(callerText || "").trim();
   const kept = resolveReplyLanguage(established, caller) || established || "";
   if (caller || kept) return `${next}\n\n${callerTurnLine(caller, kept)}`.trim();
-  if (uiLang === "es") return `${next} Soft UI preference only before the caller speaks: Spanish.`;
-  if (uiLang === "en") return `${next} Soft UI preference only before the caller speaks: English.`;
+  // The desk UI language is the operator's screen, not the caller: never hint it.
+  void uiLang;
   return next;
 }
 

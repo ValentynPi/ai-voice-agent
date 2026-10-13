@@ -198,3 +198,14 @@ test("review columns exist on call_records", () => {
   assert.ok(cols.has("review_lessons"));
   assert.ok(cols.has("reviewed_at"));
 });
+
+test("post-call learning never stores language-pinning or scope-widening lessons", async () => {
+  const { isHarmfulLesson, mergeLessonsIntoNotes } = await import("../src/call-review.js");
+  assert.equal(isHarmfulLesson("Match the caller's language; answer in Russian when they speak Russian"), true);
+  assert.equal(isHarmfulLesson("Offer help with whatever the caller needs"), true);
+  assert.equal(isHarmfulLesson("Always respond in the caller's language"), false);
+  assert.equal(isHarmfulLesson("Politely decline anything that isn't about weather"), false);
+  const notes = mergeLessonsIntoNotes("Mission: weather.", ["Answer in English by default", "Keep replies short"]);
+  assert.doesNotMatch(notes, /English/);
+  assert.match(notes, /Keep replies short/);
+});
