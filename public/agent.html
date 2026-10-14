@@ -4,10 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent · Voice Desk</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='40' fill='%23e6c27a'/%3E%3C/svg%3E" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181b'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='system-ui' font-size='14' font-weight='700' fill='%23f4f4f5'%3EV%3C/text%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560&family=Outfit:wght@360;480;560&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/css/app.css" />
     <link rel="stylesheet" href="/css/shell.css" />
   </head>
@@ -17,7 +17,7 @@
         <span class="mark" aria-hidden="true">V</span>
         <span>
           <strong>Voice Desk</strong>
-          <em>ValMax · Maison Sol</em>
+          <em>ValMax</em>
         </span>
       </a>
       <nav class="side-nav" aria-label="Product">
@@ -26,12 +26,12 @@
         <a href="/knowledge" data-nav="knowledge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H20v16H7.5A2.5 2.5 0 0 0 5 21.5z"/><path d="M5 5.5A2.5 2.5 0 0 1 7.5 8H20"/></svg>Knowledge Base</a>
         <a href="/analytics" data-nav="analytics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16"/><path d="M8 16v-4M12 16V8M16 16v-6"/></svg>Analytics</a>
         <a href="/tools" data-nav="tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.5 6.5 9 12l-5 5 3 3 5-5 5.5-5.5a4 4 0 0 0-3-3z"/></svg>Tools</a>
-        <a href="/console" data-nav="phone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h4l1 5-2.5 1.5a12 12 0 0 0 5 5L16 12l5 1v4a2 2 0 0 1-2 2A16 16 0 0 1 5 5a2 2 0 0 1 2-2z"/></svg>Telephony</a>
+        <a href="/phone-numbers" data-nav="phone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3h4l1 5-2.5 1.5a12 12 0 0 0 5 5L16 12l5 1v4a2 2 0 0 1-2 2A16 16 0 0 1 5 5a2 2 0 0 1 2-2z"/></svg>Phone Numbers</a>
         <a href="/settings" data-nav="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6 16.9 7.1M7.1 16.9 5.6 18.4"/></svg>Settings</a>
       </nav>
       <div class="sidebar-foot">
         <span class="status-pill" id="statusPill"><i></i> Online</span>
-        <p>Telephony opens its own console. Test calls stay on Agents.</p>
+        <p>Numbers sync from telephony. Buy there, refresh here.</p>
       </div>
     </aside>
     <div class="workspace">
@@ -39,7 +39,7 @@
         <div>
           <p class="kicker"><a href="/agents">Agents</a></p>
           <h1 id="title">Agent</h1>
-          <p class="lede" id="subtitle">Prompt, greeting, voice, knowledge, and tools for the next test call.</p>
+          <p class="lede" id="subtitle">Task, greeting, voice, knowledge, and MCP tools for the next test call.</p>
         </div>
         <div class="head-actions">
           <button class="btn ghost" id="duplicateBtn" type="button" hidden>Duplicate</button>
@@ -57,17 +57,9 @@
             <label>Description
               <input id="description" name="description" maxlength="400" />
             </label>
-            <label>System prompt
-              <textarea class="prompt" id="systemPrompt" name="systemPrompt" required maxlength="8000"></textarea>
+            <label>Greeting
+              <textarea id="greeting" name="greeting" maxlength="1000" placeholder="Write the opening line in any language. The agent speaks that language."></textarea>
             </label>
-            <div class="fields-2">
-              <label>Greeting, English
-                <textarea id="greetingEn" name="greetingEn" maxlength="1000"></textarea>
-              </label>
-              <label>Greeting, Spanish
-                <textarea id="greetingEs" name="greetingEs" maxlength="1000"></textarea>
-              </label>
-            </div>
             <div class="fields-2">
               <label>Voice
                 <select id="voice" name="voice"></select>
@@ -81,7 +73,7 @@
               </label>
             </div>
             <label>Model notes
-              <textarea id="modelNotes" name="modelNotes" maxlength="500" placeholder="Notes for operators. The speech model still comes from the server."></textarea>
+              <textarea id="modelNotes" name="modelNotes" maxlength="2000" placeholder="Durable lessons for this agent (language, tools, silence). Post-call review appends short lessons here."></textarea>
             </label>
           </form>
           <div class="rail">
@@ -92,16 +84,28 @@
                 <a class="btn primary" id="testLink" href="/agents">Test call</a>
               </div>
             </section>
+            <section class="panel slim" id="phoneConnectPanel">
+              <h2>Connect by Voice URL</h2>
+              <p class="sub">Copy this agent’s Voice URL and paste it into a telephony number’s Voice URL field (or a TwiML App). Saving that URL binds the number via <span class="mono">?agentId=</span>.</p>
+              <div id="phoneConnectBody"><p class="sub">Save the agent first to get a Voice URL.</p></div>
+            </section>
             <section class="panel slim">
               <h2>Knowledge</h2>
               <p class="sub">Attached notes are added to the Realtime instructions. <a href="/knowledge">Manage knowledge</a></p>
               <div class="check-list" id="knowledgeChecks"></div>
             </section>
+            <section class="panel slim" id="botTaskPanel">
+              <h2>Bot task</h2>
+              <p class="sub">What this agent should do — the main instructions for every test and phone call. Keep it short and spoken-friendly.</p>
+              <label class="task-label" for="systemPrompt">Instructions
+                <textarea class="prompt task-prompt" id="systemPrompt" name="systemPrompt" form="agentForm" required maxlength="8000" placeholder="Describe the agent’s job, tone, and hard rules…"></textarea>
+              </label>
+            </section>
             <section class="panel slim">
               <h2>Tools</h2>
-              <p class="sub">MCP tools are connected on the Tools page. This agent can use all of the enabled ones, or a subset.</p>
-              <label class="choice"><input type="radio" name="toolMode" value="all" checked /> Use every enabled MCP tool</label>
-              <label class="choice"><input type="radio" name="toolMode" value="custom" /> Only selected tools</label>
+              <p class="sub" id="toolsSub">MCP tools are connected on the <a href="/tools">Tools</a> page. New accounts start with no tools until you connect MCP.</p>
+              <label class="choice"><input type="radio" name="toolMode" value="all" checked /> <span id="toolModeAllLabel">Use every enabled MCP tool</span></label>
+              <label class="choice"><input type="radio" name="toolMode" value="custom" /> <span id="toolModeCustomLabel">Only selected MCP tools</span></label>
               <div class="check-list" id="toolChecks"></div>
             </section>
           </div>

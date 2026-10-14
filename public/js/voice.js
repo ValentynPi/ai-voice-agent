@@ -1,4 +1,19 @@
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
+import { composeSessionInstructions, isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
+import {
+  TOOL_FETCH_TIMEOUT_MS,
+  completeTool,
+  createResponseGate,
+  failureLine,
+  functionOutputEvent,
+  ingestRealtimeEvent,
+  armToolFiller,
+  noteBargeIn,
+  applyCallerTranscript,
+  queueResponseCreate,
+  queueSessionUpdate,
+  shouldHoldForSpeech,
+} from "./realtime-turn.js";
 
 const CHIPS = [
   { label: "Help", text: "What can you help me with?" },
@@ -21,7 +36,7 @@ const remoteAudio = document.querySelector("#remoteAudio");
 
 const agentFromPath = location.pathname.match(/^\/agents\/([^/]+)\/test$/);
 const pageAgentId = agentFromPath ? decodeURIComponent(agentFromPath[1]) : "";
-let agentLabel = "Sol";
+let agentLabel = "Agent";
 
 const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
@@ -33,7 +48,7 @@ let busy = false;
 let lastUtterance = "";
 let heartbeat = null;
 let realtime = null;
-const handledToolCalls = new Set();
+let responseGate = createResponseGate();
 let channelOpen = false;
 let sessionReady = false;
 let answerApplied = false;
@@ -48,7 +63,10 @@ let greetingFallbackTimer = 0;
 let greetingFallbackWaits = 0;
 let silentGreetingTimer = 0;
 
-langSelect.value = localStorage.getItem("sol-lang") || "en";
+{
+  const stored = localStorage.getItem("sol-lang") || "multi";
+  langSelect.value = stored === "es" || stored === "en" || stored === "multi" ? stored : "multi";
+}
 loadAgentChrome();
 langSelect.addEventListener("change", () => {
   localStorage.setItem("sol-lang", langSelect.value);
@@ -85,7 +103,7 @@ composer.addEventListener("submit", (event) => {
 async function loadAgentChrome() {
   if (!pageAgentId) return;
   try {
-    const response = await fetch(`/api/agents/${encodeURIComponent(pageAgentId)}`);
+    const response = await fetch(`/api/agents/${encodeURIComponent(pageAgentId)}`, { credentials: "same-origin" });
     if (!response.ok) return;
     const body = await response.json();
     const agent = body.agent;
@@ -134,7 +152,7 @@ function ensureRecognition() {
   };
   rec.onerror = (event) => {
     if (event.error === "not-allowed") {
-      hintEl.textContent = "Microphone blocked. You can still type, and Sol will speak back.";
+      hintEl.textContent = `Microphone blocked. You can still type, and ${agentLabel} will speak back.`;
     }
   };
   rec.onend = () => {
@@ -163,25 +181,31 @@ function sendEvent(event) {
 }
 
 function instructionsForLang(instructions) {
-  const english = "Reply in English.";
-  const spanish = "Reply in Spanish.";
-  const next = langSelect.value === "es" ? spanish : english;
-  if (!instructions) return next;
-  if (instructions.includes(english) || instructions.includes(spanish)) {
-    return instructions.replaceAll(english, next).replaceAll(spanish, next);
-  }
-  return `${instructions} ${next}`;
+  return composeSessionInstructions(instructions, {
+    uiLang: langSelect.value,
+    callerText: realtime?.callerText || "",
+    established: realtime?.callerLanguage || "",
+  });
 }
 
 function sessionAudio() {
-  const audio = { ...(realtime.session?.audio || {}) };
-  audio.output = { ...(audio.output || {}), voice: realtime.voice || "marin" };
-  return audio;
+  return sessionAudioForCaller(realtime.session?.audio, realtime.voice || "chloe", realtime?.callerText || "");
+}
+
+function rememberCallerLanguage(text) {
+  if (!realtime) return;
+  const previous = realtime.callerLanguage || "";
+  const code = resolveReplyLanguage(previous, text);
+  if (code) realtime.callerLanguage = code;
+  if (responseGate) responseGate.callerLanguage = realtime.callerLanguage || "";
+  if (!realtime.callerText || isClearLanguageTurn(text)) realtime.callerText = text;
+  if (code && code !== previous) pushSession(realtime.session?.tools);
 }
 
 function pushSession(tools) {
   if (!realtime?.session) return false;
-  return sendEvent({
+  // Hold the update until the model is idle so it cannot cut the current reply.
+  const queued = queueSessionUpdate(responseGate, {
     type: "session.update",
     session: {
       type: "realtime",
@@ -192,11 +216,14 @@ function pushSession(tools) {
       output_modalities: ["audio"],
     },
   });
+  let sent = false;
+  for (const event of queued) sent = sendEvent(event) || sent;
+  return sent || Boolean(responseGate.pendingSession);
 }
 
 function sendSessionLanguage() {
   if (!realtime?.session) return;
-  fetch("/api/tools")
+  fetch("/api/tools", { credentials: "same-origin" })
     .then((response) => (response.ok ? response.json() : null))
     .then((body) => {
       if (!realtime) return;
@@ -234,7 +261,7 @@ function nudgeRemoteAudio() {
   const play = remoteAudio.play?.();
   if (play && typeof play.catch === "function") {
     play.catch(() => {
-      hintEl.textContent = "Tap the page if the browser blocked marin audio.";
+      hintEl.textContent = "Tap the page if the browser blocked Chloe audio.";
     });
   }
 }
@@ -259,7 +286,7 @@ function releaseGreetingMic() {
   if (!callActive || !realtime) return;
   setPhase("listening", "Listening");
   if (greetingHeardAudio) {
-    hintEl.textContent = `OpenAI Realtime is connected. Sol speaks with the ${realtime.voice || "marin"} voice.`;
+    hintEl.textContent = `OpenAI Realtime is connected. ${agentLabel} speaks with the ${realtime.voice || "chloe"} voice.`;
   }
 }
 
@@ -302,7 +329,7 @@ function maybeSendGreeting() {
   if (greetingHoldTimer) clearTimeout(greetingHoldTimer);
   greetingHoldTimer = setTimeout(() => releaseGreetingMic(), 12000);
   setPhase("speaking", "Speaking");
-  hintEl.textContent = `Sol is greeting you with the ${realtime.voice || "marin"} voice.`;
+  hintEl.textContent = `${agentLabel} is greeting you with the ${realtime.voice || "chloe"} voice.`;
   showGreetingBubble();
 }
 
@@ -317,11 +344,11 @@ function failGreeting(status) {
   if (action === "ignore") return false;
   greetingSent = false;
   if (action === "give-up") {
-    hintEl.textContent = "Sol could not start the greeting. You can speak or type. Marin will not use a browser voice.";
+    hintEl.textContent = `${agentLabel} could not start the greeting. You can speak or type. Marin will not use a browser voice.`;
     releaseGreetingMic();
     return true;
   }
-  hintEl.textContent = "Sol is trying the greeting again.";
+  hintEl.textContent = `${agentLabel} is trying the greeting again.`;
   maybeSendGreeting();
   return true;
 }
@@ -363,15 +390,26 @@ function markGreetingAudio() {
   setPhase("speaking", "Speaking");
 }
 
-async function connectRealtime() {
+async function connectRealtime(activeCallId = callId) {
+  if (!activeCallId) {
+    throw new Error("callId is required before requesting a Realtime token");
+  }
   const tokenResponse = await fetch("/api/realtime/token", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callId, lang: langSelect.value }),
+    body: JSON.stringify({ callId: activeCallId, lang: langSelect.value || "multi" }),
   });
-  if (!tokenResponse.ok) return false;
+  if (!tokenResponse.ok) {
+    const errBody = await tokenResponse.json().catch(() => ({}));
+    const detail = errBody.error || `HTTP ${tokenResponse.status}`;
+    if (tokenResponse.status === 401) {
+      throw new Error(`${detail}. Open Sign in, then try Start call again.`);
+    }
+    throw new Error(`Realtime token failed: ${detail}`);
+  }
   const token = await tokenResponse.json();
-  if (!token.value) return false;
+  if (!token.value) throw new Error("Realtime token response was missing a client secret");
 
   const pc = new RTCPeerConnection();
   const dc = pc.createDataChannel("oai-events");
@@ -382,7 +420,7 @@ async function connectRealtime() {
     mic: null,
     session: token.session,
     model: token.model,
-    voice: token.voice || "marin",
+    voice: token.voice || "chloe",
     greeting: token.greeting,
     updated: false,
   };
@@ -428,13 +466,13 @@ async function connectRealtime() {
       "Content-Type": "application/sdp",
     },
   });
-  if (!sdpResponse.ok) throw new Error("Realtime call was rejected");
+  if (!sdpResponse.ok) throw new Error(`Realtime call was rejected (HTTP ${sdpResponse.status})`);
   const answer = await sdpResponse.text();
   if (!answer.startsWith("v=")) throw new Error("Realtime did not return an SDP answer");
   await pc.setRemoteDescription({ type: "answer", sdp: answer });
   answerApplied = true;
   nudgeRemoteAudio();
-  hintEl.textContent = `Connecting the ${token.voice || "marin"} voice. Sol will speak first.`;
+  hintEl.textContent = `Connecting the ${token.voice || "chloe"} voice. ${agentLabel} will speak first.`;
   maybeSendGreeting();
   if (!greetingSent) scheduleGreetingFallback();
   return true;
@@ -468,7 +506,7 @@ function closeRealtime() {
     remoteAudio.pause();
     remoteAudio.srcObject = null;
   }
-  handledToolCalls.clear();
+  responseGate = createResponseGate();
 }
 
 async function startCall() {
@@ -477,39 +515,69 @@ async function startCall() {
   try {
     const response = await fetch("/api/calls", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(pageAgentId ? { agentId: pageAgentId } : {}),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      hintEl.textContent = payload.error || "Could not open a call. Is the server running?";
+      const detail = payload.error || "Could not open a call. Is the server running?";
+      if (response.status === 401) {
+        hintEl.replaceChildren();
+        hintEl.append(document.createTextNode(detail + " "));
+        const next = encodeURIComponent(location.pathname + location.search);
+        const link = document.createElement("a");
+        link.href = `/signin?next=${next}`;
+        link.textContent = "Sign in";
+        hintEl.append(link, document.createTextNode(", then try Start call again."));
+      } else {
+        hintEl.textContent = detail;
+      }
       return;
     }
-    callId = payload.call.id;
+    const openedId = payload?.call?.id;
+    if (!openedId) {
+      hintEl.textContent = "Could not open a call (missing call id).";
+      return;
+    }
+    callId = openedId;
     callActive = true;
     callBtn.textContent = "End call";
     callBtn.classList.add("live");
     callMeta.textContent = callId;
     setPhase("thinking", "Connecting");
     heartbeat = setInterval(() => {
-      if (callId) fetch(`/api/calls/${callId}/heartbeat`, { method: "POST" });
+      if (callId) fetch(`/api/calls/${callId}/heartbeat`, { method: "POST", credentials: "same-origin" });
     }, 5000);
 
     let connected = false;
-    let failure = "OpenAI Realtime voice marin is unavailable. Sol will not use a browser voice. You can still type and read the reply.";
+    let failure = `OpenAI Realtime voice Chloe is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
     try {
-      connected = await connectRealtime();
+      connected = await connectRealtime(callId);
     } catch (error) {
       closeRealtime();
       const micBlocked = /NotAllowedError|Permission|not-allowed|denied/i.test(`${error.name || ""} ${error.message || ""}`);
       failure = micBlocked
         ? "Microphone blocked. Marin needs the microphone and will not fall back to a browser voice. You can still type and read the reply."
-        : `OpenAI Realtime voice marin is unavailable (${error.message || "connection failed"}). Sol will not use a browser voice. You can still type and read the reply.`;
+        : `OpenAI Realtime voice Chloe is unavailable (${error.message || "connection failed"}). ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
     }
     if (!connected) {
       closeRealtime();
-      modeBadge.textContent = "Marin unavailable";
-      setPhase("idle", "Voice unavailable");
+      const authFail = /sign in/i.test(failure);
+      if (authFail) {
+        if (heartbeat) clearInterval(heartbeat);
+        heartbeat = null;
+        const failedId = callId;
+        callId = null;
+        callActive = false;
+        callBtn.textContent = "Start call";
+        callBtn.classList.remove("live");
+        if (failedId) {
+          fetch(`/api/calls/${failedId}/end`, { method: "POST", credentials: "same-origin" }).catch(() => {});
+        }
+      }
+      modeBadge.textContent = authFail ? "Sign in required" : "Marin unavailable";
+      setPhase("idle", authFail ? "Sign in required" : "Voice unavailable");
       hintEl.textContent = failure;
     }
   } finally {
@@ -532,7 +600,7 @@ async function endCall() {
   if (!id) return;
   let saved = false;
   try {
-    const response = await fetch(`/api/calls/${id}/end`, { method: "POST" });
+    const response = await fetch(`/api/calls/${id}/end`, { method: "POST", credentials: "same-origin" });
     saved = response.ok;
   } catch {
     saved = false;
@@ -607,10 +675,12 @@ async function submit(raw) {
 
 async function submitRealtimeText(text) {
   try {
+    rememberCallerLanguage(text);
     const response = await fetch("/api/realtime/utterance", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
+      body: JSON.stringify({ callId, role: "user", text, lang: realtime?.callerLanguage || langSelect.value || "multi" }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Request failed");
@@ -630,7 +700,7 @@ async function submitRealtimeText(text) {
       },
     });
     if (!sent) throw new Error("Realtime channel is not open");
-    sendEvent({ type: "response.create" });
+    for (const follow of queueResponseCreate(responseGate, { type: "response.create" })) sendEvent(follow);
     setPhase("thinking", "Thinking");
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
@@ -638,16 +708,19 @@ async function submitRealtimeText(text) {
 }
 
 function speakRefusal(reply) {
-  const sent = sendEvent({
+  const event = {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
       instructions: `Say exactly this and nothing else: ${reply}`,
     },
-  });
-  if (sent) setPhase("speaking", "Speaking");
-  else hintEl.textContent = "OpenAI Realtime voice marin is unavailable, so that refusal was not spoken.";
+  };
+  const queued = queueResponseCreate(responseGate, event);
+  let sent = false;
+  for (const follow of queued) sent = sendEvent(follow) || sent;
+  if (sent || responseGate.pendingCreates.length) setPhase("speaking", "Speaking");
+  else hintEl.textContent = "OpenAI Realtime voice Chloe is unavailable, so that refusal was not spoken.";
 }
 
 async function submitFallback(text) {
@@ -659,8 +732,9 @@ async function submitFallback(text) {
     setPhase("thinking", "Thinking");
     const response = await fetch("/api/chat", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callId, text, lang: langSelect.value }),
+      body: JSON.stringify({ callId, text, lang: realtime?.callerLanguage || langSelect.value || "multi" }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Request failed");
@@ -672,7 +746,7 @@ async function submitFallback(text) {
     else {
       modeBadge.textContent = "Marin unavailable";
       setPhase("idle", "Voice unavailable");
-      hintEl.textContent = "OpenAI Realtime voice marin is unavailable. Sol will not use a browser voice. You can still type and read the reply.";
+      hintEl.textContent = `OpenAI Realtime voice Chloe is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
     }
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
@@ -698,17 +772,6 @@ function assistantTranscript(event) {
   return String(event.transcript || "").trim();
 }
 
-function functionCallFrom(event) {
-  if (event.type === "response.function_call_arguments.done" && event.name && event.call_id) {
-    return { name: event.name, callId: event.call_id, arguments: event.arguments };
-  }
-  const item = event.item;
-  if (event.type === "response.output_item.done" && item?.type === "function_call" && item.name && item.call_id) {
-    return { name: item.name, callId: item.call_id, arguments: item.arguments };
-  }
-  return null;
-}
-
 async function handleRealtimeEvent(event) {
   if (event.type === "session.created" || event.type === "session.updated") {
     sessionReady = true;
@@ -716,15 +779,20 @@ async function handleRealtimeEvent(event) {
   }
   if (event.type === "error") {
     const message = event.error?.message || event.message || "Realtime error";
-    if (!failGreeting("error")) {
-      hintEl.textContent = `Realtime error: ${message}. Sol is not using a browser voice.`;
+    if (/active response/i.test(message)) {
+      // Follow-up response.create was early; ingestRealtimeEvent requeues it for response.done.
+    } else if (!failGreeting("error")) {
+      hintEl.textContent = `Realtime error: ${message}. ${agentLabel} is not using a browser voice.`;
       if (micHeldForGreeting) releaseGreetingMic();
     }
   }
   if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting) {
+    noteBargeIn(responseGate);
     interimEl.textContent = "";
     setPhase("listening", "Listening");
   }
+  const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: micHeldForGreeting });
+  for (const follow of turn.send) sendEvent(follow);
   if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
     interimEl.textContent = `${interimEl.textContent}${event.delta}`;
   }
@@ -752,45 +820,54 @@ async function handleRealtimeEvent(event) {
     } else if (micHeldForGreeting && greetingSent && greetingHeardAudio) {
       releaseGreetingMic();
     } else if (callActive && !micHeldForGreeting) {
-      setPhase("listening", "Listening");
+      if (turn.hold) setPhase("thinking", "Thinking");
+      else setPhase("listening", "Listening");
     }
   }
 
   const spoken = userTranscript(event);
   if (spoken) {
+    const langTurn = applyCallerTranscript(responseGate, spoken);
     interimEl.textContent = "";
+    // Cancel a wrong-language auto-reply; response.done/cancelled drains the restarted create.
+    if (langTurn.restart && responseGate.active) sendEvent({ type: "response.cancel" });
     await onCallerAudio(spoken, event.item_id);
   }
 
   const reply = assistantTranscript(event);
   if (reply) await onAssistantAudio(reply);
 
-  const toolCall = functionCallFrom(event);
-  if (toolCall) await onToolCall(toolCall);
+  if (turn.toolCalls.length) armToolFiller(responseGate, sendEvent);
+  for (const toolCall of turn.toolCalls) {
+    const epoch = responseGate.epoch;
+    void onToolCall(toolCall, epoch);
+  }
 }
 
 async function onCallerAudio(text, itemId) {
   if (!callId || text === lastUtterance) return;
+  rememberCallerLanguage(text);
   lastUtterance = text;
   setTimeout(() => {
     if (lastUtterance === text) lastUtterance = "";
   }, 1500);
   const response = await fetch("/api/realtime/utterance", {
     method: "POST",
+      credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callId, role: "user", text, lang: langSelect.value }),
+    body: JSON.stringify({ callId, role: "user", text, lang: realtime?.callerLanguage || langSelect.value || "multi" }),
   });
   const payload = await response.json();
   if (!response.ok) return;
   addBubble("user", text, { security: payload.security?.decision });
   if (payload.blocked) {
     if (itemId) sendEvent({ type: "conversation.item.delete", item_id: itemId });
-    sendEvent({ type: "response.cancel" });
+    if (responseGate.active) sendEvent({ type: "response.cancel" });
     addBubble("assistant", payload.reply, { security: "deny" });
     speakRefusal(payload.reply);
     return;
   }
-  sendEvent({ type: "response.create" });
+  // Semantic VAD create_response=true already starts the reply; do not double-fire response.create.
 }
 
 async function onAssistantAudio(text) {
@@ -807,42 +884,51 @@ async function onAssistantAudio(text) {
   if (callId) {
     await fetch("/api/realtime/utterance", {
       method: "POST",
+      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callId, role: "assistant", text }),
     });
   }
 }
 
-async function onToolCall(toolCall) {
-  if (handledToolCalls.has(toolCall.callId)) return;
-  handledToolCalls.add(toolCall.callId);
+async function onToolCall(toolCall, epoch) {
   setPhase("thinking", "Thinking");
-  const response = await fetch("/api/realtime/tool", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      callId,
-      name: toolCall.name,
-      arguments: typeof toolCall.arguments === "string" ? toolCall.arguments : JSON.stringify(toolCall.arguments || {}),
-    }),
-  });
-  const outcome = await response.json();
-  if (realtime) {
-    realtime.tools = realtime.tools || [];
-    realtime.tools.push({
-      name: outcome.name || toolCall.name,
-      decision: outcome.decision,
-      ok: outcome.ok,
+  let output = { error: failureLine(toolCall.name) };
+  let ok = false;
+  try {
+    const response = await fetch("/api/realtime/tool", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callId,
+        name: toolCall.name,
+        arguments: typeof toolCall.arguments === "string" ? toolCall.arguments : JSON.stringify(toolCall.arguments || {}),
+      }),
+      signal: AbortSignal.timeout(TOOL_FETCH_TIMEOUT_MS),
     });
+    const outcome = await response.json();
+    ok = Boolean(response.ok && outcome.ok);
+    if (realtime) {
+      realtime.tools = realtime.tools || [];
+      realtime.tools.push({
+        name: outcome.name || toolCall.name,
+        decision: outcome.decision,
+        ok,
+      });
+    }
+    output = ok
+      ? (outcome.result ?? {})
+      : { error: outcome.result?.error || outcome.error || failureLine(toolCall.name, "") };
+  } catch {
+    output = { error: failureLine(toolCall.name) };
+    ok = false;
   }
-  const output = outcome.ok ? outcome.result : { error: outcome.result?.error || outcome.error || "denied" };
-  sendEvent({
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: toolCall.callId,
-      output: JSON.stringify(output),
-    },
-  });
-  sendEvent({ type: "response.create" });
+  sendEvent(functionOutputEvent(toolCall.callId, output));
+  for (const follow of completeTool(responseGate, toolCall.callId, epoch, ok)) sendEvent(follow);
+  if (shouldHoldPhase()) setPhase("thinking", "Thinking");
+}
+
+function shouldHoldPhase() {
+  return shouldHoldForSpeech(responseGate);
 }

@@ -10,6 +10,15 @@ import {
 import { authorizeTool } from "../security.js";
 import { recordSecurity, recordToolCall } from "../store.js";
 import { aliasFor, openMcpSession } from "./client.js";
+import {
+  canonicalPlaceQuery,
+  choosePlace,
+  currentFacts,
+  forecastToolFor,
+  isPlaceSearchName,
+  placesFromPresented,
+  shapePlaceSearch,
+} from "./place-weather.js";
 
 let live = null;
 
@@ -234,6 +243,49 @@ function presentResult(result) {
   return payload;
 }
 
+
+function placeQueryOf(args) {
+  return String(args?.name || args?.query || args?.place || args?.location || args?.city || "").trim();
+}
+
+function withOfficialPlace(args, official) {
+  const next = { ...args };
+  const keys = ["name", "query", "place", "location", "city", "q"].filter((key) => typeof next[key] === "string" && next[key].trim());
+  if (!keys.length) next.name = official;
+  else for (const key of keys) next[key] = official;
+  return next;
+}
+
+async function attachCurrentWeather(session, toolName, args, presented, spokenQuery = "") {
+  const query = String(spokenQuery || placeQueryOf(args)).trim();
+  const decision = choosePlace(query, placesFromPresented(presented));
+  if (decision.action !== "use") return shapePlaceSearch({ query, presented });
+  const forecastName = forecastToolFor(toolName);
+  let weather = null;
+  if (forecastName) {
+    try {
+      const raw = await session.callTool(forecastName, {
+        latitude: Number(decision.place.latitude),
+        longitude: Number(decision.place.longitude),
+        current_variables: [
+          "temperature_2m",
+          "weather_code",
+          "wind_speed_10m",
+          "relative_humidity_2m",
+          "precipitation",
+        ],
+        forecast_days: 1,
+        timezone: decision.place.timezone || "auto",
+      });
+      const forecast = presentResult(raw);
+      if (!forecast.isError && currentFacts(forecast)) weather = forecast;
+    } catch {
+      weather = null;
+    }
+  }
+  return shapePlaceSearch({ query, presented, weather });
+}
+
 export async function invokeMcpTool({ callId, name, args }) {
   const safeArgs = args && typeof args === "object" && !Array.isArray(args) ? args : {};
   const saved = readMcpConnection();
@@ -272,8 +324,22 @@ export async function invokeMcpTool({ callId, name, args }) {
       const reason = readMcpConnection()?.error || "MCP server is not connected";
       throw new Error(reason);
     }
-    const raw = await session.callTool(tool.name, safeArgs);
-    const result = presentResult(raw);
+    const spokenQuery = placeQueryOf(safeArgs);
+    let callArgs = safeArgs;
+    let raw = await session.callTool(tool.name, callArgs);
+    let result = presentResult(raw);
+    if (isPlaceSearchName(tool.name)) {
+      const official = canonicalPlaceQuery(spokenQuery);
+      const accepted = !result.isError && choosePlace(spokenQuery, placesFromPresented(result)).action === "use";
+      if (!accepted && official && spokenQuery !== official) {
+        callArgs = withOfficialPlace(safeArgs, official);
+        raw = await session.callTool(tool.name, callArgs);
+        result = presentResult(raw);
+      }
+      if (!result.isError) {
+        result = await attachCurrentWeather(session, tool.name, callArgs, result, spokenQuery);
+      }
+    }
     const ok = !result.isError;
     recordToolCall({
       callId,

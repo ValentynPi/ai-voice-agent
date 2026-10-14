@@ -143,18 +143,21 @@ export const TOOLS = [
   },
 ];
 
+// Handlers remain for internal/tests; product APIs pass includeDemoBuiltins()===false (MCP only).
 registerBuiltinTools(TOOLS);
 
-function runtimeTools() {
-  const builtin = TOOLS.map((tool) => {
-    const overlay = overlayForBuiltin(tool.name, tool.description);
-    return {
-      ...tool,
-      description: overlay.description,
-      enabled: overlay.enabled,
-      builtin: true,
-    };
-  });
+function runtimeTools({ includeBuiltins = true } = {}) {
+  const builtin = includeBuiltins
+    ? TOOLS.map((tool) => {
+        const overlay = overlayForBuiltin(tool.name, tool.description);
+        return {
+          ...tool,
+          description: overlay.description,
+          enabled: overlay.enabled,
+          builtin: true,
+        };
+      })
+    : [];
   const custom = customToolRecords().map((tool) => ({
     name: tool.name,
     group: tool.group,
@@ -181,12 +184,12 @@ function publicTool(tool) {
   };
 }
 
-export function listToolCatalog() {
-  return runtimeTools().map(publicTool);
+export function listToolCatalog({ includeBuiltins = true } = {}) {
+  return runtimeTools({ includeBuiltins }).map(publicTool);
 }
 
-export function listToolDefinitions() {
-  return listToolCatalog()
+export function listToolDefinitions({ includeBuiltins = true } = {}) {
+  return listToolCatalog({ includeBuiltins })
     .filter((tool) => tool.enabled)
     .map(({ name, group, description, parameters }) => ({
       name,
@@ -196,12 +199,12 @@ export function listToolDefinitions() {
     }));
 }
 
-export function isToolEnabled(name) {
-  return runtimeTools().some((tool) => tool.name === name && tool.enabled);
+export function isToolEnabled(name, { includeBuiltins = true } = {}) {
+  return runtimeTools({ includeBuiltins }).some((tool) => tool.name === name && tool.enabled);
 }
 
-export function openaiToolSpecs() {
-  return listToolDefinitions().map((tool) => ({
+export function openaiToolSpecs({ includeBuiltins = true } = {}) {
+  return listToolDefinitions({ includeBuiltins }).map((tool) => ({
     type: "function",
     function: {
       name: tool.name,
@@ -213,8 +216,8 @@ export function openaiToolSpecs() {
 
 export { createCustomTool, removeCustomTool, updateTool };
 
-export async function executeTool({ callId, name, args }) {
-  const tool = runtimeTools().find((item) => item.name === name && item.enabled);
+export async function executeTool({ callId, name, args, includeBuiltins = true }) {
+  const tool = runtimeTools({ includeBuiltins }).find((item) => item.name === name && item.enabled);
   const safeArgs = args && typeof args === "object" && !Array.isArray(args) ? args : {};
   const auth = authorizeTool(name, safeArgs, Boolean(tool));
   recordSecurity({

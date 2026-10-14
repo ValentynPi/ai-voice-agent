@@ -7,19 +7,29 @@ primary_region = "cdg"
 [env]
   PORT = "3000"
   NODE_ENV = "production"
+  SERVICE = "agents"
+  TELEPHONY_PUBLIC_URL = "https://ai-voice-agent-telephony.fly.dev"
+  PUBLIC_URL = "https://ai-voice-agent-valmax.fly.dev"
+  AGENTS_PUBLIC_URL = "https://ai-voice-agent-valmax.fly.dev"
   OPENAI_MODEL = "gpt-5.1"
   OPENAI_REALTIME_MODEL = "gpt-realtime-2.1"
-  OPENAI_VOICE = "marin"
-  # DATABASE_PATH defaults to /app/data/maison-sol.sqlite in the image.
-  # That disk is ephemeral. Attach a volume and set DATABASE_PATH=/data/maison-sol.sqlite
-  # before relying on it. See the README.
+  OPENAI_VOICE = "chloe"
+  # Persist agents / knowledge / call history / MCP links on the Fly volume.
+  DATABASE_PATH = "/data/maison-sol.sqlite"
+
+# Durable SQLite for Agents app state across restarts and deploys.
+# Create once: fly volumes create agents_data --region cdg --size 1 -a ai-voice-agent-valmax
+# Use a single machine (SQLite is not multi-writer): fly scale count 1 -a ai-voice-agent-valmax
+[mounts]
+  source = "agents_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 3000
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ["app"]
 
   [http_service.concurrency]

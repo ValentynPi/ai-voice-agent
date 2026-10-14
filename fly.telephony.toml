@@ -1,0 +1,45 @@
+# Dedicated demo Twilio / telephony console (separate hostname from Agents).
+app = "ai-voice-agent-telephony"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  PORT = "3000"
+  NODE_ENV = "production"
+  SERVICE = "telephony"
+  AGENTS_PUBLIC_URL = "https://ai-voice-agent-valmax.fly.dev"
+  # Persist demo numbers / TwiML apps / account metadata on the Fly volume.
+  DATABASE_PATH = "/data/maison-sol.sqlite"
+
+# Durable SQLite for purchased/configured phone numbers across restarts and deploys.
+# Create once: fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
+# Use a single machine (SQLite is not multi-writer): fly scale count 1 -a ai-voice-agent-telephony
+[mounts]
+  source = "telephony_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

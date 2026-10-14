@@ -1,3 +1,4 @@
+import { DEMO_ACCOUNT_ID } from "../accounts.js";
 import {
   DEMO_ACCOUNT_SID,
   DEMO_APP_SID,
@@ -96,7 +97,24 @@ export function ensureTwilioTables(database) {
     );
     CREATE INDEX IF NOT EXISTS idx_twilio_events_created ON twilio_events (date_created);
   `);
+  migrateTwilioTenant(database);
   seedTwilio(database);
+}
+
+function twilioColumns(database, table) {
+  return new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+}
+
+function migrateTwilioTenant(database) {
+  for (const table of ["twilio_numbers", "twilio_calls", "twilio_apps", "twilio_events"]) {
+    const cols = twilioColumns(database, table);
+    if (!cols.has("tenant_id")) {
+      database.exec(`ALTER TABLE ${table} ADD COLUMN tenant_id TEXT`);
+    }
+    database.prepare(`UPDATE ${table} SET tenant_id = ? WHERE tenant_id IS NULL OR tenant_id = ''`).run(DEMO_ACCOUNT_ID);
+  }
+  database.exec("CREATE INDEX IF NOT EXISTS idx_twilio_numbers_tenant ON twilio_numbers (tenant_id)");
+  database.exec("CREATE INDEX IF NOT EXISTS idx_twilio_calls_tenant ON twilio_calls (tenant_id)");
 }
 
 function seedTwilio(database) {
@@ -120,13 +138,14 @@ function seedTwilio(database) {
     `).run(DEMO_ACCOUNT_SID, created, created);
     database.prepare(`
       INSERT INTO twilio_numbers (
-        sid, account_sid, phone_number, friendly_name, voice_url, voice_method, voice_fallback_url,
+        sid, account_sid, tenant_id, phone_number, friendly_name, voice_url, voice_method, voice_fallback_url,
         status_callback, status_callback_method, sms_url, sms_method, capabilities_json, status, demo,
         date_created, date_updated
-      ) VALUES (?, ?, ?, ?, ?, 'POST', NULL, ?, 'POST', NULL, 'POST', ?, 'in-use', 1, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'POST', NULL, ?, 'POST', NULL, 'POST', ?, 'in-use', 1, ?, ?)
     `).run(
       DEMO_NUMBER_SID,
       DEMO_ACCOUNT_SID,
+      DEMO_ACCOUNT_ID,
       main.phone_number,
       main.friendly_name,
       VOICE_PATH,
@@ -137,20 +156,21 @@ function seedTwilio(database) {
     );
     database.prepare(`
       INSERT INTO twilio_apps (
-        sid, account_sid, friendly_name, voice_url, voice_method, status_callback,
+        sid, account_sid, tenant_id, friendly_name, voice_url, voice_method, status_callback,
         status_callback_method, sms_url, sms_method, demo, date_created, date_updated
-      ) VALUES (?, ?, 'Maison Sol Voice', ?, 'POST', ?, 'POST', NULL, 'POST', 1, ?, ?)
-    `).run(DEMO_APP_SID, DEMO_ACCOUNT_SID, VOICE_PATH, STATUS_PATH, created, created);
+      ) VALUES (?, ?, ?, 'Maison Sol Voice', ?, 'POST', ?, 'POST', NULL, 'POST', 1, ?, ?)
+    `).run(DEMO_APP_SID, DEMO_ACCOUNT_SID, DEMO_ACCOUNT_ID, VOICE_PATH, STATUS_PATH, created, created);
     const insertCall = database.prepare(`
       INSERT INTO twilio_calls (
-        sid, account_sid, parent_call_sid, from_number, to_number, phone_number_sid, direction, status,
+        sid, account_sid, tenant_id, parent_call_sid, from_number, to_number, phone_number_sid, direction, status,
         start_time, end_time, duration, recording_url, recording_sid, price, local_call_id, media,
         annotation, demo, date_created, date_updated
-      ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, ?, ?)
+      ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, ?, ?)
     `);
     insertCall.run(
       DEMO_CALL_SID,
       DEMO_ACCOUNT_SID,
+      DEMO_ACCOUNT_ID,
       "+34611222333",
       main.phone_number,
       DEMO_NUMBER_SID,
@@ -169,6 +189,7 @@ function seedTwilio(database) {
     insertCall.run(
       DEMO_MISSED_SID,
       DEMO_ACCOUNT_SID,
+      DEMO_ACCOUNT_ID,
       main.phone_number,
       "+34600999888",
       DEMO_NUMBER_SID,
@@ -186,12 +207,13 @@ function seedTwilio(database) {
     );
     database.prepare(`
       INSERT INTO twilio_events (
-        sid, account_sid, request_method, request_url, call_sid, request_json, response_status,
+        sid, account_sid, tenant_id, request_method, request_url, call_sid, request_json, response_status,
         response_body, log_level, message, signature, date_created
-      ) VALUES (?, ?, 'POST', ?, ?, ?, 200, ?, 'info', ?, 'absent', ?)
+      ) VALUES (?, ?, ?, 'POST', ?, ?, ?, 200, ?, 'info', ?, 'absent', ?)
     `).run(
       DEMO_EVENT_SID,
       DEMO_ACCOUNT_SID,
+      DEMO_ACCOUNT_ID,
       VOICE_PATH,
       DEMO_CALL_SID,
       JSON.stringify({
@@ -217,6 +239,8 @@ function seedTwilio(database) {
 function voiceTwimlBody() {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="en-US">Thank you for calling Maison Sol. This webhook answers with TwiML. Browser test calls use OpenAI Realtime until a Media Streams connection is added.</Say>
+  <Connect>
+    <Stream url="wss://example.invalid/twilio/media"></Stream>
+  </Connect>
 </Response>`;
 }

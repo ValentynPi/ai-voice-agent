@@ -1,6 +1,6 @@
 # Voice Desk
 
-Web control plane for a voice agent, demoed as **Maison Sol**, a fictional salon in Castellón de la Plana. The shell is a ValMax product: agents, call history, knowledge, analytics, and tools. Telephony is a separate console at `/console`, laid out like a carrier console (phone numbers, calls, TwiML apps, webhook logs, API keys).
+Web control plane for a voice agent, demoed as **Maison Sol**, a fictional salon in Castellón de la Plana. The shell is a ValMax product: agents, call history, knowledge, analytics, and tools. Telephony is a separate product: locally it lives at `/console`, and in production it deploys as its own Fly app (`SERVICE=telephony`) on a different hostname with the console at `/`. Agents (`SERVICE=agents`) 302-redirect `/console` to `TELEPHONY_PUBLIC_URL`.
 
 A **web test call** uses OpenAI Realtime. The default agent speaks first with the voice **marin**. Remote MCP tools connected on the Tools page are what that session can call, narrowed by each agent's allowlist. SQLite stores agents, knowledge, call records, and the MCP connection. Tokens are not sent back to the browser.
 
@@ -20,8 +20,9 @@ npm start
 ```
 
 - Home: http://localhost:3000/
+- Sign up (empty tenant): http://localhost:3000/signup
 - Agents: http://localhost:3000/agents
-- Default test call: http://localhost:3000/agents/agt_maison_sol/test
+- Default demo test call: http://localhost:3000/agents/agt_maison_sol/test
 - Tools (MCP): http://localhost:3000/tools
 - Health: http://localhost:3000/api/health
 
@@ -50,19 +51,63 @@ Copy `.env.example` to `.env` if you want a key locally. `npm start` reads `.env
 
 Set the key on Fly with `fly secrets set OPENAI_API_KEY=...`. Do not put it in `fly.toml`. Model and voice ids are already in `fly.toml`.
 
+
+## Accounts (multi-tenant)
+
+Lightweight email + password accounts with an HttpOnly session cookie (`vd_session`).
+
+| Mode | What you see |
+| --- | --- |
+| **Public demo** (not signed in) | Seeded Maison Sol agent, knowledge, and demo phone numbers under tenant `acct_demo`. |
+| **New account** (Sign up) | Empty Agents, empty Knowledge, empty Phone Numbers, empty Call History. No Maison Sol seed. |
+
+### Create the first account
+
+1. Open Agents: https://ai-voice-agent-valmax.fly.dev/signup (or http://localhost:3000/signup).
+2. Enter email + password (min 8 characters) and submit.
+3. You land on `/agents` with **No agents yet** — create your own.
+4. Phone Numbers stay empty until you buy a demo number on the telephony console **while signed in with the same email** (Agents signup mirrors the tenant to telephony when `TELEPHONY_SHARED_SECRET` is set on both apps).
+
+Sign in: `/signin`. Sign out from the sidebar. **Continue with public demo** clears the session and returns to Maison Sol.
+
+Agents, knowledge, call history, analytics, and telephony store rows (`tenant_id`) are scoped by `account_id`. Unsigned visitors keep using the demo tenant so existing demos and tests still work.
+
 ## Product map
 
 | Path | What it is |
 | --- | --- |
 | `/` | Home. Opens the default agent's test call. |
+| `/signup` / `/signin` | Create an empty account or sign in (cookie session). |
 | `/agents` | Create, edit, duplicate, and delete agents. |
 | `/agents/:id/test` | Browser test call for that agent. |
 | `/history` | Stored web test calls and transcripts. |
 | `/knowledge` | Pasted notes. An optional URL is kept for a later crawl and is not fetched. |
 | `/analytics` | Call count, average duration, completion, and the last seven days. |
 | `/tools` and `/dashboard` | MCP URL, token, discover, enable, and disable. |
-| `/console` | Telephony console: numbers, calls, TwiML apps, logs, API keys. |
-| `/phone-numbers` | Redirects to `/console/phone-numbers`. |
+| `/console` | Agents app: 302 to the telephony host. Telephony app: redirects `/console/*` → `/*`. |
+| `/` on telephony | Demo Twilio console: numbers, calls, TwiML apps, logs, API keys. |
+| `/phone-numbers` | Agents: Phone Numbers UI (lists via `/api/phone-numbers`, proxied from telephony when split). Telephony: active numbers console page. |
+
+### Connect an agent to a phone number (by Voice URL)
+
+Primary path — paste the agent Voice URL into telephony:
+
+1. Open the agent on Agents. The **Connect by Voice URL** panel shows a copyable URL:  
+   `https://ai-voice-agent-valmax.fly.dev/twilio/voice?agentId=<your-agent-id>`
+2. Copy it. On the telephony console open **Active numbers** → the number → **Voice URL**.
+3. Paste the URL, leave method **POST**, and **Save number**.  
+   Saving a URL that includes `?agentId=` binds that number to the agent (parsed agent id is shown in the drawer).
+4. Optional: use the same URL as a TwiML App Voice URL.
+5. Verify: telephony Active numbers shows the `agent_id`; Agents → Phone Numbers lists the bound number.
+
+Optional shortcuts (same Voice URL under the hood):
+
+- Agent page → **Optional: connect in one click** (picks an unassigned number).
+- Agents → Phone Numbers → **Apply (optional)**.
+- Telephony Overview → **Apply Voice URL to all numbers**, or open with `?agentId=…`.
+
+Inbound / demo Media Streams use the `agentId` query (and Stream Parameter), not only the default Maison Sol agent.
+
 | `/settings` | Model, default voice, and database path. No secrets. |
 
 Agents, knowledge, and the speak-first web test call stay on the ValMax pages. The sidebar link **Telephony** opens the console full page. A switcher on the console links back to Agents.
@@ -101,16 +146,24 @@ Replace the host with the deployed app (`https://ai-voice-agent-valmax.fly.dev` 
 
 The seeded TwiML App "Maison Sol Voice" points at the same paths. The console shows the absolute URLs for the host you are browsing.
 
-`POST /twilio/voice` accepts the usual form body (`CallSid`, `From`, `To`, `CallStatus`, `Direction`, `AccountSid`, and the rest). It answers:
+`POST /twilio/voice` accepts the usual form body (`CallSid`, `From`, `To`, `CallStatus`, `Direction`, `AccountSid`, and the rest). Optional query `agentId` selects which Agents desk agent owns the call (otherwise the default agent). It answers with Media Streams TwiML:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="en-US">Thank you for calling Maison Sol. This webhook answers with TwiML. Browser test calls use OpenAI Realtime until a Media Streams connection is added.</Say>
+  <Connect>
+    <Stream url="wss://ai-voice-agent-valmax.fly.dev/twilio/media?agentId=…">
+      <Parameter name="agentId" value="…" />
+    </Stream>
+  </Connect>
 </Response>
 ```
 
+`wss://…/twilio/media` is the Agents brain bridge: Twilio μ-law audio is piped into the same OpenAI Realtime session shape used by the web test call (prompt, voice marin, tools, speak-first greeting). Set `PUBLIC_URL` (or rely on `FLY_APP_NAME`) on the Agents host so Stream URLs are absolute.
+
 `POST /twilio/status` stores the status callback and returns 204. Both deliveries show under Monitor → Logs. If `X-Twilio-Signature` is present and a token is configured, the log records whether it matched. Unsigned requests still get a response so local curls and Demo keep working.
+
+On the telephony console, **Connect to Agents** shows the exact Voice URL (pointing at `AGENTS_PUBLIC_URL`) and a **Demo call to Agents** button that POSTs a fake inbound webhook and briefly opens the Media Stream WebSocket — no `TWILIO_ACCOUNT_SID` required. For an interactive talk session, use **Make a call** on **Voice → Calls** (or Overview): paste a Voice URL / Agents test link / agent id, then **Call** opens the telephony dialer at `/voice/dial` on this host (mic + Realtime). Brain APIs are proxied to Agents — the browser never leaves the telephony origin.
 
 ### REST shapes
 
@@ -131,11 +184,12 @@ Call status values stored locally: `queued`, `ringing`, `in-progress`, `complete
 
 A finished web test call is also written as a call resource: `from` is `client:browser`, direction is `inbound`, and the status is `in-progress`, `completed`, or `failed`. The Call SID is stable for that browser call. Open the row to jump back to the agent transcript. In-progress browser calls appear in the log before hangup.
 
-### Still required for real PSTN audio
+### PSTN audio path
 
-- `<Say>` is Twilio's voice, not marin. Hearing the Realtime agent on a phone needs Twilio Media Streams (`<Connect><Stream>`) or a SIP media bridge into the Realtime session. That websocket is not implemented.
+- Voice URL / Status callback on numbers and TwiML Apps should point at the **Agents** host (`AGENTS_PUBLIC_URL`), not the telephony console host. The telephony UI defaults and copy buttons already do this when `AGENTS_PUBLIC_URL` is set.
+- Inbound calls get `<Connect><Stream>` into `wss://…/twilio/media`, which bridges Twilio Media Streams to OpenAI Realtime (`audio/pcmu`). Realtime still needs `OPENAI_API_KEY` on Agents.
 - The recording URL on the seeded demo call is a stub. `GET …/Recordings` returns no audio file.
-- There is no "place a PSTN call" button. Outbound dialing through the Calls API is not wired.
+- Outbound PSTN dialing through the Calls API is not wired. Use **Make a call** (paste Voice URL → `/voice/dial` on telephony) for an interactive browser session, or **Demo call to Agents** on Overview to probe the inbound Media Stream path without carrier credentials.
 - Messaging is omitted.
 - Demo numbers are not on a carrier. Connected numbers are whatever the Twilio account already owns, plus any purchase you explicitly confirm.
 
@@ -174,7 +228,7 @@ fly secrets set OPENAI_API_KEY=sk-...   # optional
 fly deploy
 ```
 
-`Dockerfile` runs `npm start` on port 3000 as the `node` user. The HTTP health check is `GET /api/health`. The Fly app is `ai-voice-agent-valmax` in region `cdg`. `fly.toml` sets `OPENAI_MODEL=gpt-5.1`, `OPENAI_REALTIME_MODEL=gpt-realtime-2.1`, and `OPENAI_VOICE=marin`. The image sets `DATABASE_PATH=/app/data/maison-sol.sqlite`.
+`Dockerfile` starts as root so `docker-entrypoint.sh` can chown a Fly volume at `/data`, then drops to `node` and runs `npm start` on port 3000. The HTTP health check is `GET /api/health`. The Fly app is `ai-voice-agent-valmax` in region `cdg`. `fly.toml` sets `OPENAI_MODEL=gpt-5.1`, `OPENAI_REALTIME_MODEL=gpt-realtime-2.1`, `OPENAI_VOICE=marin`, and `DATABASE_PATH=/data/maison-sol.sqlite` on the mounted volume (image default without a volume is `/app/data/maison-sol.sqlite`).
 
 ## Database
 
@@ -188,21 +242,44 @@ npm start
 DATABASE_PATH=/var/lib/maison-sol/salon.sqlite npm start
 ```
 
-Fly's root disk is ephemeral. `auto_stop_machines` can stop the machine, and the file under `/app/data` disappears with it. To keep the database, attach a volume and point `DATABASE_PATH` at it:
+Fly's root disk is ephemeral. `auto_stop_machines` can stop the machine, and the file under `/app/data` disappears with it. Agents, knowledge notes, call history, MCP links, purchased demo phone numbers, TwiML apps, credentials metadata, and agent-link settings live in that SQLite file — without a volume they vanish on every redeploy or machine stop.
+
+**Agents** (`ai-voice-agent-valmax`) and **Telephony** (`ai-voice-agent-telephony`) both ship with Fly volumes wired in their toml files:
 
 ```bash
-fly volumes create sol_data --region cdg --size 1
+# once per app (skip if the volume already exists)
+fly volumes create agents_data --region cdg --size 1 -a ai-voice-agent-valmax
+fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
+# SQLite needs a single writer
+fly scale count 1 -a ai-voice-agent-valmax
+fly scale count 1 -a ai-voice-agent-telephony
+fly deploy -c fly.toml -a ai-voice-agent-valmax
+fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
 ```
 
-Then add this to `fly.toml` and redeploy:
+Each volume mounts at `/data`; `DATABASE_PATH=/data/maison-sol.sqlite`. The image entrypoint chowns `/data` to the `node` user so SQLite can write. After a redeploy, Agents keeps agents/knowledge/call history/MCP links, and the telephony console keeps previously bought/configured numbers.
 
-```toml
-[mounts]
-  source = "sol_data"
-  destination = "/data"
+Finished web test calls (transcript, duration, status, and a short extractive summary) are rows in that same Agents file. Live security events are still in memory and reset when the process restarts. They are not the salon book.
 
-[env]
-  DATABASE_PATH = "/data/maison-sol.sqlite"
+## Agents ↔ telephony number sync
+
+Phone numbers are owned by the telephony SQLite (Fly volume on `ai-voice-agent-telephony`). Agents does not keep its own purchase store when `SERVICE=agents`.
+
+1. Telephony exposes `GET /api/public/phone-numbers` (sanitized list). Optional `TELEPHONY_SHARED_SECRET` requires header `X-Telephony-Secret`.
+2. Agents exposes `GET /api/phone-numbers`, which proxies that public list when `TELEPHONY_PUBLIC_URL` is set, or reads the local store in combined/`all` mode.
+3. Open **Phone Numbers** in the Agents sidebar (`/phone-numbers`) and refresh after buying on the telephony console.
+
+## Two Fly apps
+
+- Agents: `fly.toml` → `ai-voice-agent-valmax` (`SERVICE=agents`), with volume `agents_data` → `/data` and `DATABASE_PATH=/data/maison-sol.sqlite` so agents/knowledge/call history/MCP links persist across restarts/deploys
+- Telephony: `fly.telephony.toml` → `ai-voice-agent-telephony` (`SERVICE=telephony`), with volume `telephony_data` → `/data` and `DATABASE_PATH=/data/maison-sol.sqlite` so demo numbers persist across restarts/deploys
+
+```bash
+fly apps create ai-voice-agent-telephony --org personal
+fly volumes create agents_data --region cdg --size 1 -a ai-voice-agent-valmax
+fly volumes create telephony_data --region cdg --size 1 -a ai-voice-agent-telephony
+fly scale count 1 -a ai-voice-agent-valmax
+fly scale count 1 -a ai-voice-agent-telephony
+fly deploy -c fly.toml -a ai-voice-agent-valmax
+fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
 ```
-
-Finished web test calls (transcript, duration, status, and a short extractive summary) are rows in that same file. Live security events are still in memory and reset when the process restarts. They are not the salon book.

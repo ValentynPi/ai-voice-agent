@@ -1,6 +1,8 @@
+import { includeDemoBuiltins } from "./accounts.js";
 import { getAgent } from "./desk.js";
 import { composeToolReply, detectLang as detect, forSpeech, refusal } from "./format.js";
 import { chatCandidates, noteChatModel } from "./models.js";
+import { resolveReplyLanguage } from "../public/js/caller-language.js";
 import { receptionistInstructions } from "./realtime.js";
 import { screenInput, sanitizeText } from "./security.js";
 import { appendMessage, getCall, recordSecurity, touchCall } from "./store.js";
@@ -22,14 +24,14 @@ function norm(value) {
     .trim();
 }
 
-function add(planned, name, args) {
-  if (!isToolEnabled(name)) return;
+function add(planned, name, args, includeBuiltins) {
+  if (!isToolEnabled(name, { includeBuiltins })) return;
   if (planned.length >= 3) return;
   if (planned.some((item) => item.name === name)) return;
   planned.push({ name, args });
 }
 
-export function planTools(text) {
+export function planTools(text, { includeBuiltins = true } = {}) {
   const n = norm(text);
   const planned = [];
   const forecast = /\b(forecast|this week|next few days|tomorrow|prevision|pronostico|semana|manana|proximos dias)\b/.test(n);
@@ -37,8 +39,8 @@ export function planTools(text) {
     || /\b(weather|temperature|rain|raining|sunny|windy|humidity|clima|lluvia|temperatura|viento|humedad|prevision|pronostico)\b/.test(n)
     || /\b(que tiempo|el tiempo|tiempo hace|hows the weather|how is the weather)\b/.test(n);
 
-  if (forecast) add(planned, "get_forecast", { days: 4 });
-  else if (weather) add(planned, "get_weather", {});
+  if (forecast) add(planned, "get_forecast", { days: 4 }, includeBuiltins);
+  else if (weather) add(planned, "get_weather", {}, includeBuiltins);
 
   const customer = matchCustomer(n);
   const orderPrefixed = n.match(/\b(?:order|pedido|ord)\s*#?\s*(\d{3,5})\b/);
@@ -46,25 +48,25 @@ export function planTools(text) {
   const orderNumber = orderPrefixed?.[1] || knownOrder?.[1];
   const mentionsOrder = /\b(order|orders|pedido|pedidos)\b/.test(n);
 
-  if (orderNumber) add(planned, "get_order", { id: orderNumber });
-  else if (mentionsOrder && customer) add(planned, "get_order", { customer });
-  else if (mentionsOrder) add(planned, "list_orders", {});
+  if (orderNumber) add(planned, "get_order", { id: orderNumber }, includeBuiltins);
+  else if (mentionsOrder && customer) add(planned, "get_order", { customer }, includeBuiltins);
+  else if (mentionsOrder) add(planned, "list_orders", {}, includeBuiltins);
 
   const mentionsAppointment = /\b(appointment|appointments|agenda|schedule|cita|citas|reserva|reservas|booking|bookings)\b/.test(n);
   if (customer && !planned.some((item) => item.name === "get_order" && item.args.customer === customer)) {
-    add(planned, "lookup_customer", { name: customer });
+    add(planned, "lookup_customer", { name: customer }, includeBuiltins);
   } else if (mentionsAppointment && !customer) {
-    add(planned, "list_appointments", {});
+    add(planned, "list_appointments", {}, includeBuiltins);
   }
 
   if (/\b(services|service menu|prices|price list|how much|cost|tratamiento|tratamientos|servicios|precios|cuesta|tarifa)\b/.test(n)) {
-    add(planned, "query_services", {});
+    add(planned, "query_services", {}, includeBuiltins);
   }
   if (/\b(stylists|stylist|staff|team|who works|peluqueros|equipo|marta|joan|nuria)\b/.test(n)) {
-    add(planned, "query_staff", {});
+    add(planned, "query_staff", {}, includeBuiltins);
   }
   if (/\b(opening hours|opening times|business hours|are you open|when do you open|when are you open|what time do you close|horario|horarios|a que hora|hours|abris|cerrais)\b/.test(n)) {
-    add(planned, "query_hours", {});
+    add(planned, "query_hours", {}, includeBuiltins);
   }
   return planned;
 }
@@ -87,11 +89,11 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function chatBody(model, messages) {
+function chatBody(model, messages, includeBuiltins = true) {
   const body = {
     model,
     messages,
-    tools: openaiToolSpecs(),
+    tools: openaiToolSpecs({ includeBuiltins }),
     tool_choice: "auto",
   };
   if (!/^gpt-5|^o\d/i.test(model)) body.temperature = 0.4;
@@ -102,15 +104,15 @@ function modelRejected(status, detail) {
   return (status === 400 || status === 404) && /model/i.test(detail);
 }
 
-async function runPlanned(callId, planned) {
+async function runPlanned(callId, planned, includeBuiltins = true) {
   const results = [];
   for (const step of planned) {
-    results.push(await executeTool({ callId, name: step.name, args: step.args }));
+    results.push(await executeTool({ callId, name: step.name, args: step.args, includeBuiltins }));
   }
   return results;
 }
 
-async function runOpenAIModel(model, { callId, text, lang, history, persona }) {
+async function runOpenAIModel(model, { callId, text, lang, history, persona, includeBuiltins = true }) {
   const messages = [
     { role: "system", content: receptionistInstructions(lang, persona) },
     ...history,
@@ -126,7 +128,7 @@ async function runOpenAIModel(model, { callId, text, lang, history, persona }) {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(chatBody(model, messages)),
+        body: JSON.stringify(chatBody(model, messages, includeBuiltins)),
         signal: AbortSignal.timeout(20000),
       });
       if (!response.ok) {
@@ -162,7 +164,7 @@ async function runOpenAIModel(model, { callId, text, lang, history, persona }) {
         } catch {
           args = {};
         }
-        const outcome = await executeTool({ callId, name, args });
+        const outcome = await executeTool({ callId, name, args, includeBuiltins });
         used.push(outcome);
         messages.push({
           role: "tool",
@@ -210,7 +212,9 @@ export async function handleTurn({ callId, text, lang }) {
   touchCall(callId);
 
   const clean = sanitizeText(text);
-  const language = lang === "es" || lang === "en" ? lang : detect(clean);
+  const spoken = resolveReplyLanguage(call.lang, clean);
+  if (spoken) call.lang = spoken;
+  const language = call.lang || (lang === "es" || lang === "en" ? lang : detect(clean));
   const screen = screenInput(clean);
   recordSecurity({
     callId,
@@ -233,7 +237,8 @@ export async function handleTurn({ callId, text, lang }) {
     content: message.text,
   }));
   const persona = call.agentId ? getAgent(call.agentId) : null;
-  if (language === "en" || language === "es") call.lang = language;
+  const includeBuiltins = includeDemoBuiltins(call.accountId);
+  if (language) call.lang = language;
   appendMessage(callId, { role: "user", text: clean, tools: [] });
 
   if (screen.decision === "deny") {
@@ -245,12 +250,12 @@ export async function handleTurn({ callId, text, lang }) {
   let outcome;
   if (process.env.OPENAI_API_KEY) {
     try {
-      outcome = await runOpenAI({ callId, text: clean, lang: language, history, persona });
+      outcome = await runOpenAI({ callId, text: clean, lang: language, history, persona, includeBuiltins });
     } catch (error) {
       console.error("OpenAI failed, using the keyword planner:", error.message);
       const tools = error.partialTools?.length
         ? error.partialTools
-        : await runPlanned(callId, planTools(clean));
+        : await runPlanned(callId, planTools(clean, { includeBuiltins }), includeBuiltins);
       outcome = {
         reply: composeToolReply(tools, language, clean),
         tools,
@@ -259,8 +264,8 @@ export async function handleTurn({ callId, text, lang }) {
       };
     }
   } else {
-    const planned = planTools(clean);
-    const tools = await runPlanned(callId, planned);
+    const planned = planTools(clean, { includeBuiltins });
+    const tools = await runPlanned(callId, planned, includeBuiltins);
     outcome = {
       reply: composeToolReply(tools, language, clean),
       tools,

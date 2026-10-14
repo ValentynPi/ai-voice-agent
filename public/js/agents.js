@@ -6,7 +6,7 @@ const errorEl = document.querySelector("#error");
 function languageLabel(language) {
   if (language === "es") return "Spanish";
   if (language === "en") return "English";
-  return "Caller language";
+  return "Match caller";
 }
 
 function showError(message) {
@@ -62,7 +62,7 @@ function row(agent) {
   name.append(block);
 
   const voice = document.createElement("td");
-  voice.textContent = agent.voice || "marin";
+  voice.textContent = agent.voice || "chloe";
   const language = document.createElement("td");
   language.textContent = languageLabel(agent.language);
   const knowledge = document.createElement("td");

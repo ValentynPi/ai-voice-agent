@@ -168,8 +168,9 @@ test("demo console account, numbers, calls, and webhooks share one shape", async
     assert.match(voice.headers.get("content-type"), /xml/);
     const xml = await voice.text();
     assert.match(xml, /<Response>/);
-    assert.match(xml, /<Say/);
-    assert.match(xml, /Media Streams/);
+    assert.match(xml, /<Connect>/);
+    assert.match(xml, /<Stream/);
+    assert.match(xml, /\/twilio\/media/);
 
     const status = await fetch(`${base}/twilio/status`, {
       method: "POST",
@@ -361,5 +362,195 @@ test("connected mode lists Twilio resources and refuses an unconfirmed purchase"
     });
   } finally {
     global.fetch = previousFetch;
+  }
+});
+
+test("voice webhook returns Connect/Stream and telephony points webhooks at Agents", async () => {
+  const previous = {
+    AGENTS_PUBLIC_URL: process.env.AGENTS_PUBLIC_URL,
+    PUBLIC_URL: process.env.PUBLIC_URL,
+    SERVICE: process.env.SERVICE,
+  };
+  process.env.AGENTS_PUBLIC_URL = "https://agents.example";
+  process.env.PUBLIC_URL = "https://agents.example";
+  try {
+    await withServer(async (base) => {
+      const account = await fetch(`${base}/api/twilio/v1/account`).then((r) => r.json());
+      assert.equal(account.agents_public_url, "https://agents.example");
+      assert.equal(account.voice_webhook_url, "https://agents.example/twilio/voice");
+      assert.equal(account.status_callback_url, "https://agents.example/twilio/status");
+
+      const brain = await fetch(`${base}/api/twilio/v1/brain?agentId=missing`).then((r) => r.json());
+      assert.match(brain.voice_webhook_url, /\/twilio\/voice/);
+
+      const voice = await fetch(`${base}/twilio/voice?agentId=`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          CallSid: sid("CA", "aa"),
+          From: "+34600111222",
+          To: "+34964000214",
+          CallStatus: "ringing",
+          Direction: "inbound",
+        }),
+      });
+      const xml = await voice.text();
+      assert.equal(voice.status, 200);
+      assert.match(xml, /<Connect>/);
+      assert.match(xml, /wss:\/\/agents\.example\/twilio\/media/);
+      assert.doesNotMatch(xml, /<Say/);
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("demo call reaches Agents Media Stream TwiML without Twilio credentials", async () => {
+  await withServer(async (base) => {
+    process.env.PUBLIC_URL = base;
+    process.env.AGENTS_PUBLIC_URL = base;
+    const result = await fetch(`${base}/api/twilio/v1/demo-call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents_base_url: base }),
+    }).then((r) => r.json());
+    assert.equal(result.ok, true);
+    assert.equal(result.uses_stream, true);
+    assert.equal(result.uses_say_stub, false);
+    assert.match(result.stream_url || "", /\/twilio\/media/);
+    // Without OPENAI_API_KEY the bridge closes; stream connect may or may not get audio.
+    assert.equal(result.media.attempted, true);
+  });
+});
+
+test("normalizeAgentsBaseUrl strips webhook suffixes", async () => {
+  const { normalizeAgentsBaseUrl } = await import("../src/twilio/public-url.js");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/voice"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/voice/"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/voice?agentId=x"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/status"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/twilio/media"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev/"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl("https://ai-voice-agent-valmax.fly.dev"), "https://ai-voice-agent-valmax.fly.dev");
+  assert.equal(normalizeAgentsBaseUrl(""), "");
+});
+
+test("demo call normalizes agents_base_url that already ends with /twilio/voice", async () => {
+  await withServer(async (base) => {
+    process.env.PUBLIC_URL = base;
+    process.env.AGENTS_PUBLIC_URL = base;
+    const result = await fetch(`${base}/api/twilio/v1/demo-call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agents_base_url: `${base}/twilio/voice` }),
+    }).then((r) => r.json());
+    assert.equal(result.ok, true);
+    assert.equal(result.agents_base_url, base.replace(/\/$/, ""));
+    assert.equal(result.voice_url, `${base.replace(/\/$/, "")}/twilio/voice`);
+    assert.equal(result.uses_stream, true);
+  });
+});
+
+test("assign agent updates number Voice URL with agentId", async () => {
+  const previous = {
+    AGENTS_PUBLIC_URL: process.env.AGENTS_PUBLIC_URL,
+    PUBLIC_URL: process.env.PUBLIC_URL,
+  };
+  process.env.AGENTS_PUBLIC_URL = "https://agents.example";
+  process.env.PUBLIC_URL = "https://agents.example";
+  try {
+    await withServer(async (base) => {
+      const account = await fetch(`${base}/api/twilio/v1/account`).then((r) => r.json());
+      const listed = await fetch(`${base}/api/twilio/v1/Accounts/${account.account_sid}/IncomingPhoneNumbers`).then((r) => r.json());
+      const number = listed.incoming_phone_numbers[0];
+      assert.ok(number?.sid);
+
+      const assigned = await fetch(`${base}/api/twilio/v1/assign-agent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: number.sid, agent_id: "agt_maison_sol" }),
+      }).then(async (r) => ({ status: r.status, body: await r.json() }));
+      assert.equal(assigned.status, 200);
+      assert.equal(assigned.body.ok, true);
+      assert.equal(assigned.body.number.agent_id, "agt_maison_sol");
+      assert.equal(
+        assigned.body.number.voice_url,
+        "https://agents.example/twilio/voice?agentId=agt_maison_sol",
+      );
+
+      const publicList = await fetch(`${base}/api/public/phone-numbers`).then((r) => r.json());
+      const found = publicList.incoming_phone_numbers.find((row) => row.sid === number.sid);
+      assert.equal(found.agent_id, "agt_maison_sol");
+
+      const cleared = await fetch(`${base}/api/public/phone-numbers/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: number.sid, agent_id: "" }),
+      }).then((r) => r.json());
+      assert.equal(cleared.number.agent_id, null);
+      assert.equal(cleared.number.voice_url, "https://agents.example/twilio/voice");
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("parseAgentIdFromVoiceUrl reads query", async () => {
+  const { parseAgentIdFromVoiceUrl } = await import("../src/twilio/public-url.js");
+  assert.equal(parseAgentIdFromVoiceUrl("https://agents.example/twilio/voice?agentId=agt_x"), "agt_x");
+  assert.equal(parseAgentIdFromVoiceUrl("/twilio/voice?agentId=agt_y&x=1"), "agt_y");
+  assert.equal(parseAgentIdFromVoiceUrl("/twilio/voice"), "");
+  assert.equal(parseAgentIdFromVoiceUrl(""), "");
+});
+
+test("brain proxy forwards only telephony brain paths", async () => {
+  const { createBrainProxy } = await import("../src/twilio/brain-proxy.js");
+  const noop = createBrainProxy({ service: "agents", agentsPublicUrl: "https://agents.example" });
+  let called = false;
+  await new Promise((resolve) => noop({}, {}, () => { called = true; resolve(); }));
+  assert.equal(called, true);
+
+  const hits = [];
+  const proxy = createBrainProxy({ service: "telephony", agentsPublicUrl: "https://agents.example" });
+  const fakeFetch = async (url, init) => {
+    hits.push({ url, method: init.method, body: init.body });
+    return {
+      status: 201,
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify({ ok: true }),
+    };
+  };
+  const prev = globalThis.fetch;
+  globalThis.fetch = fakeFetch;
+  try {
+    const req = {
+      method: "POST",
+      path: "/api/calls",
+      originalUrl: "/api/calls",
+      url: "/api/calls",
+      body: { agentId: "agt_x" },
+      accountId: "acct_demo",
+      get: () => "",
+      query: {},
+    };
+    const res = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      setHeader() {},
+      send(body) { this.body = body; },
+    };
+    await proxy(req, res, () => { throw new Error("should not next"); });
+    assert.equal(res.statusCode, 201);
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].url, "https://agents.example/api/calls");
+    assert.match(hits[0].body, /agt_x/);
+  } finally {
+    globalThis.fetch = prev;
   }
 });

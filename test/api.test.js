@@ -32,13 +32,13 @@ test("pages and health respond", async () => {
     assert.equal(home.status, 200);
     const homeHtml = await home.text();
     assert.match(homeHtml, /Maison Sol/);
-    assert.match(homeHtml, /marin/);
+    assert.match(homeHtml, /Chloe/);
     assert.match(homeHtml, /Voice Desk/);
 
     const dashboard = await fetch(`${base}/dashboard`);
     assert.equal(dashboard.status, 200);
     const html = await dashboard.text();
-    assert.match(html, /MCP tools/);
+    assert.match(html, /Tools/);
     assert.match(html, /mcpUrl/);
     assert.match(html, /Security/);
     assert.doesNotMatch(html, /Add a mock tool/);
@@ -53,7 +53,7 @@ test("pages and health respond", async () => {
       ["/history", /Call history/],
       ["/knowledge", /Knowledge base/],
       ["/analytics", /Analytics/],
-      ["/phone-numbers", /Twilio/],
+      ["/phone-numbers", /Phone Numbers/],
       ["/settings", /Settings/],
       ["/agents/agt_maison_sol", /Test call/],
       ["/agents/agt_maison_sol/test", /Start call/],

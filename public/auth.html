@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Account · Voice Desk</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318181b'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='system-ui' font-size='14' font-weight='700' fill='%23f4f4f5'%3EV%3C/text%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/app.css" />
+    <link rel="stylesheet" href="/css/shell.css" />
+    <style>
+      body.auth-page {
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        margin: 0;
+        background: #09090b;
+        color: #f4f4f5;
+        font-family: Inter, "Segoe UI", system-ui, sans-serif;
+      }
+      .auth-card {
+        width: min(400px, calc(100vw - 32px));
+        padding: 24px 22px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: #141416;
+        display: grid;
+        gap: 12px;
+      }
+      .auth-card h1 { margin: 0; font-size: 20px; letter-spacing: -0.03em; font-weight: 600; }
+      .auth-card .lede { margin: 0; color: #a1a1aa; font-size: 13px; line-height: 1.45; }
+      .auth-card label { display: grid; gap: 4px; font-size: 12px; color: #a1a1aa; font-weight: 500; }
+      .auth-card input {
+        min-height: 36px;
+        padding: 0 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: #09090b;
+        color: #f4f4f5;
+        font: inherit;
+      }
+      .auth-card .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+      .auth-card .error { color: #f87171; font-size: 13px; margin: 0; }
+      .auth-card .switch { margin: 0; font-size: 13px; color: #a1a1aa; }
+      .auth-card .switch a { color: #6e7bf2; }
+      .auth-card .kicker {
+        margin: 0 0 4px;
+        color: #a1a1aa;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-weight: 550;
+      }
+    </style>
+  </head>
+  <body class="auth-page">
+    <form class="auth-card" id="authForm">
+      <div>
+        <p class="kicker">Voice Desk</p>
+        <h1 id="title">Create account</h1>
+        <p class="lede" id="lede">New accounts start empty — no Maison Sol agents, knowledge, or phone numbers.</p>
+      </div>
+      <label>Name (optional)<input id="name" name="name" autocomplete="name" maxlength="80" /></label>
+      <label>Email<input id="email" name="email" type="email" required autocomplete="email" /></label>
+      <label>Password<input id="password" name="password" type="password" required minlength="8" autocomplete="new-password" /></label>
+      <p class="error" id="error" hidden></p>
+      <div class="actions">
+        <button class="btn primary" type="submit" id="submit">Create account</button>
+        <a class="btn ghost" id="cancelLink" href="/signin">Cancel</a>
+      </div>
+      <p class="switch" id="switch">Already have an account? <a href="/signin">Sign in</a></p>
+      <p class="switch" id="demoWrap"><a href="#" id="demoLink">Continue with public demo</a> (local / all-mode only)</p>
+    </form>
+    <script type="module" src="/js/auth.js"></script>
+  </body>
+</html>

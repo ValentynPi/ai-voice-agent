@@ -5,9 +5,9 @@ import {
   DEFAULT_AGENT_ID,
   DEFAULT_KB_ID,
   DEFAULT_SYSTEM_PROMPT,
-  GREETING_EN,
-  GREETING_ES,
+  DEFAULT_GREETING,
 } from "./defaults.js";
+import { DEMO_ACCOUNT_ID, ensureDemoAccount } from "./accounts.js";
 import { ensureTwilioTables } from "./twilio/schema.js";
 import { CUSTOMERS, HOURS, ORDERS, SALON, SERVICES, STAFF } from "./tools/demo-data.js";
 
@@ -45,7 +45,7 @@ export function databaseInfo() {
     memory,
     note: memory
       ? "This process is using an in-memory SQLite database."
-      : "SQLite file set by DATABASE_PATH, or data/maison-sol.sqlite. Fly's disk is ephemeral unless you attach a volume, so the file is lost when the machine stops.",
+      : "SQLite file set by DATABASE_PATH, or data/maison-sol.sqlite. On Fly Agents and telephony, a volume mounts at /data with DATABASE_PATH=/data/maison-sol.sqlite so agents/knowledge/calls and numbers survive restarts/deploys; without a volume the file is lost when the machine stops.",
   };
 }
 
@@ -187,9 +187,8 @@ function migrate(database) {
       name TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       system_prompt TEXT NOT NULL,
-      greeting_en TEXT NOT NULL DEFAULT '',
-      greeting_es TEXT NOT NULL DEFAULT '',
-      voice TEXT NOT NULL DEFAULT 'marin',
+      greeting TEXT NOT NULL DEFAULT '',
+      voice TEXT NOT NULL DEFAULT 'chloe',
       language TEXT NOT NULL DEFAULT 'multi',
       model_notes TEXT NOT NULL DEFAULT '',
       enabled_tools_json TEXT,
@@ -222,12 +221,114 @@ function migrate(database) {
       summary TEXT NOT NULL DEFAULT '',
       voice TEXT,
       language TEXT,
-      end_reason TEXT
+      end_reason TEXT,
+      review_note TEXT NOT NULL DEFAULT '',
+      review_lessons INTEGER NOT NULL DEFAULT 0,
+      reviewed_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_call_records_started ON call_records (started_at);
+    CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      is_demo INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions (account_id);
   `);
+  migrateAgentGreeting(database);
+  migrateTenantColumns(database);
+  migrateCallReviewColumns(database);
+  ensureDemoAccount(database);
   ensureTwilioTables(database);
   seedProduct(database);
+}
+
+function tableColumns(database, table) {
+  return new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+}
+
+function migrateTenantColumns(database) {
+  const agentCols = tableColumns(database, "agents");
+  if (!agentCols.has("account_id")) {
+    database.exec("ALTER TABLE agents ADD COLUMN account_id TEXT");
+  }
+  const kbCols = tableColumns(database, "knowledge_bases");
+  if (!kbCols.has("account_id")) {
+    database.exec("ALTER TABLE knowledge_bases ADD COLUMN account_id TEXT");
+  }
+  const callCols = tableColumns(database, "call_records");
+  if (!callCols.has("account_id")) {
+    database.exec("ALTER TABLE call_records ADD COLUMN account_id TEXT");
+  }
+  database.prepare("UPDATE agents SET account_id = ? WHERE account_id IS NULL OR account_id = ''").run(DEMO_ACCOUNT_ID);
+  database.prepare("UPDATE knowledge_bases SET account_id = ? WHERE account_id IS NULL OR account_id = ''").run(DEMO_ACCOUNT_ID);
+  database.prepare("UPDATE call_records SET account_id = ? WHERE account_id IS NULL OR account_id = ''").run(DEMO_ACCOUNT_ID);
+  database.exec("CREATE INDEX IF NOT EXISTS idx_agents_account ON agents (account_id)");
+  database.exec("CREATE INDEX IF NOT EXISTS idx_knowledge_account ON knowledge_bases (account_id)");
+  database.exec("CREATE INDEX IF NOT EXISTS idx_call_records_account ON call_records (account_id)");
+  // Calls started via telephony brain proxy used to land on acct_demo even when the agent
+  // belonged to a signed-in tenant. Re-home those rows onto the agent owner.
+  database.prepare(`
+    UPDATE call_records
+    SET account_id = (
+      SELECT agents.account_id FROM agents WHERE agents.id = call_records.agent_id
+    )
+    WHERE call_records.account_id = ?
+      AND call_records.agent_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM agents
+        WHERE agents.id = call_records.agent_id
+          AND agents.account_id IS NOT NULL
+          AND agents.account_id != ''
+          AND agents.account_id != ?
+      )
+  `).run(DEMO_ACCOUNT_ID, DEMO_ACCOUNT_ID);
+}
+
+function agentColumns(database) {
+  return new Set(database.prepare("PRAGMA table_info(agents)").all().map((row) => row.name));
+}
+
+/** One greeting field; copy from legacy greeting_en / greeting_es when present. */
+
+function migrateCallReviewColumns(database) {
+  const cols = tableColumns(database, "call_records");
+  if (!cols.has("review_note")) {
+    database.exec("ALTER TABLE call_records ADD COLUMN review_note TEXT NOT NULL DEFAULT ''");
+  }
+  if (!cols.has("review_lessons")) {
+    database.exec("ALTER TABLE call_records ADD COLUMN review_lessons INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!cols.has("reviewed_at")) {
+    database.exec("ALTER TABLE call_records ADD COLUMN reviewed_at TEXT");
+  }
+}
+
+function migrateAgentGreeting(database) {
+  const cols = agentColumns(database);
+  if (!cols.has("greeting")) {
+    database.exec("ALTER TABLE agents ADD COLUMN greeting TEXT NOT NULL DEFAULT ''");
+  }
+  const next = agentColumns(database);
+  if (next.has("greeting_en") || next.has("greeting_es")) {
+    database.exec(`
+      UPDATE agents SET greeting = TRIM(COALESCE(
+        NULLIF(TRIM(greeting), ''),
+        NULLIF(TRIM(COALESCE(greeting_en, '')), ''),
+        NULLIF(TRIM(COALESCE(greeting_es, '')), ''),
+        ''
+      ))
+      WHERE TRIM(COALESCE(greeting, '')) = ''
+    `);
+  }
 }
 
 function salonKnowledge() {
@@ -247,30 +348,37 @@ function salonKnowledge() {
 
 function seedProduct(database) {
   const seeded = database.prepare("SELECT value FROM meta WHERE key = 'product_seeded'").get();
-  if (seeded) return;
+  if (seeded) {
+    // Existing installs: keep Maison Sol on the demo tenant only.
+    database.prepare("UPDATE agents SET account_id = ? WHERE id = ? AND (account_id IS NULL OR account_id = '')").run(DEMO_ACCOUNT_ID, DEFAULT_AGENT_ID);
+    database.prepare("UPDATE agents SET voice = 'chloe' WHERE lower(voice) = 'marin' OR voice IS NULL OR voice = ''").run();
+    database.prepare("UPDATE knowledge_bases SET account_id = ? WHERE id = ? AND (account_id IS NULL OR account_id = '')").run(DEMO_ACCOUNT_ID, DEFAULT_KB_ID);
+    return;
+  }
+  ensureDemoAccount(database);
   const now = new Date().toISOString();
   database.exec("BEGIN");
   try {
     database.prepare(`
       INSERT INTO agents (
-        id, name, description, system_prompt, greeting_en, greeting_es,
+        id, account_id, name, description, system_prompt, greeting,
         voice, language, model_notes, enabled_tools_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'marin', 'multi', ?, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'chloe', 'multi', ?, NULL, ?, ?)
     `).run(
       DEFAULT_AGENT_ID,
+      DEMO_ACCOUNT_ID,
       "Maison Sol",
-      "Receptionist for the fictional salon in Castellón de la Plana. Speaks first, in English or Spanish.",
+      "Receptionist for the fictional salon in Castellón de la Plana. Speaks first; opening language follows the greeting text.",
       DEFAULT_SYSTEM_PROMPT,
-      GREETING_EN,
-      GREETING_ES,
+      DEFAULT_GREETING,
       "Spoken calls use the Realtime model from the server environment and this agent's voice. Typed fallback uses the chat model when a key is set.",
       now,
       now,
     );
     database.prepare(`
-      INSERT INTO knowledge_bases (id, title, body, source_url, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, ?, ?)
-    `).run(DEFAULT_KB_ID, "Maison Sol desk facts", salonKnowledge(), now, now);
+      INSERT INTO knowledge_bases (id, account_id, title, body, source_url, created_at, updated_at)
+      VALUES (?, ?, ?, ?, NULL, ?, ?)
+    `).run(DEFAULT_KB_ID, DEMO_ACCOUNT_ID, "Maison Sol desk facts", salonKnowledge(), now, now);
     database.prepare("INSERT INTO agent_knowledge (agent_id, knowledge_id) VALUES (?, ?)").run(DEFAULT_AGENT_ID, DEFAULT_KB_ID);
     database.prepare("INSERT INTO meta (key, value) VALUES ('product_seeded', '1')").run();
     database.exec("COMMIT");

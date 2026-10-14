@@ -68,8 +68,8 @@ function renderRecent(calls) {
 async function load() {
   try {
     const [stats, history] = await Promise.all([
-      readJson(await fetch("/api/analytics")),
-      readJson(await fetch("/api/history")),
+      readJson(await fetch("/api/analytics", { credentials: "same-origin" })),
+      readJson(await fetch("/api/history", { credentials: "same-origin" })),
     ]);
     statCount.textContent = String(stats.callCount);
     statDuration.textContent = stats.avgDurationMs == null ? "—" : formatDuration(stats.avgDurationMs);

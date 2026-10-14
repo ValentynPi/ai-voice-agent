@@ -5,17 +5,18 @@ import { getSnapshot } from "./store.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
 import { listToolCatalog } from "./tools/registry.js";
 
-export function buildState() {
+export function buildState({ includeBuiltins = true, accountId = null } = {}) {
   const openai = Boolean(process.env.OPENAI_API_KEY);
   return {
-    ...getSnapshot(),
+    ...getSnapshot(accountId),
     openai,
     model: openai ? chatModel() : null,
     realtimeModel: openai ? realtimeModel() : null,
     voice: openai ? voiceName() : null,
     database: databaseInfo(),
-    tools: listToolCatalog(),
+    tools: listToolCatalog({ includeBuiltins }),
     toolStorage: toolCatalogInfo(),
     mcp: publicMcp(),
+    demoBuiltins: Boolean(includeBuiltins),
   };
 }

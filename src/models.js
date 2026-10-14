@@ -4,7 +4,7 @@ export const DEFAULT_CHAT_MODEL = "gpt-5.1";
 export const DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1";
 export const REALTIME_FALLBACKS = ["gpt-realtime-2.1", "gpt-realtime", "gpt-live-1"];
 export const CHAT_FALLBACKS = ["gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o-mini"];
-export const DEFAULT_VOICE = "marin";
+export const DEFAULT_VOICE = "chloe";
 
 let resolvedChat = null;
 let resolvedRealtime = null;
@@ -31,7 +31,10 @@ export function noteRealtimeModel(model) {
 }
 
 export function voiceName() {
-  return process.env.OPENAI_VOICE || DEFAULT_VOICE;
+  const raw = String(process.env.OPENAI_VOICE || DEFAULT_VOICE).trim().toLowerCase();
+  // Older deploys pinned marin. The spoken voice is Chloe.
+  if (!raw || raw === "marin") return "chloe";
+  return raw;
 }
 
 export function uniqueModels(list) {

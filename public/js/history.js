@@ -10,7 +10,7 @@ function params() {
 
 async function loadAgents() {
   try {
-    const body = await readJson(await fetch("/api/agents"));
+    const body = await readJson(await fetch("/api/agents", { credentials: "same-origin" }));
     const selected = new URLSearchParams(location.search).get("agentId") || "";
     for (const agent of body.agents || []) {
       const option = document.createElement("option");
@@ -61,7 +61,16 @@ function render(calls) {
     status.append(pill);
     const summary = document.createElement("td");
     summary.className = "quiet";
-    summary.textContent = call.summary || (call.status === "in_progress" ? "Live now" : "No summary");
+    const summaryLine = call.summary || (call.status === "in_progress" ? "Live now" : "No summary");
+    summary.textContent = summaryLine;
+    if (call.reviewNote) {
+      const review = document.createElement("div");
+      review.className = "quiet";
+      review.style.marginTop = "4px";
+      review.style.fontSize = "0.85em";
+      review.textContent = call.reviewNote;
+      summary.append(review);
+    }
     row.append(when, agent, duration, status, summary);
     body.append(row);
   }
@@ -79,7 +88,7 @@ filter.addEventListener("change", () => {
 
 async function load() {
   try {
-    const body = await readJson(await fetch(`/api/history${params()}`));
+    const body = await readJson(await fetch(`/api/history${params()}`, { credentials: "same-origin" }));
     render(body.calls || []);
   } catch (error) {
     list.replaceChildren(emptyState("History unavailable", error.message || "Could not load calls."));

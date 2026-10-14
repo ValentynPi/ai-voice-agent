@@ -19,12 +19,14 @@ function render(call) {
   document.title = `${title.textContent} · Voice Desk`;
   summary.textContent = call.summary || "No post-call summary.";
   if (call.agentId) agentLink.href = `/agents/${encodeURIComponent(call.agentId)}`;
-  meta.replaceChildren(
+  const metaPills = [
     pill(statusLabel(call.status), statusClass(call.status)),
     pill(formatDuration(call.durationMs)),
     pill(formatWhen(call.startedAt)),
     pill(call.voice || "voice"),
-  );
+  ];
+  if (call.reviewNote) metaPills.push(pill(call.reviewNote, call.reviewLessons ? "ok" : ""));
+  meta.replaceChildren(...metaPills);
   transcript.replaceChildren();
   const turns = call.transcript || [];
   if (!turns.length) {
@@ -57,7 +59,7 @@ function render(call) {
 
 async function load() {
   try {
-    const body = await readJson(await fetch(`/api/history/${encodeURIComponent(id)}`));
+    const body = await readJson(await fetch(`/api/history/${encodeURIComponent(id)}`, { credentials: "same-origin" }));
     render(body.call);
   } catch (error) {
     title.textContent = "Call not found";

@@ -1,5 +1,7 @@
+import { DEMO_ACCOUNT_ID } from "../accounts.js";
 import { listActivePublicCalls } from "../store.js";
 import { httpError, page, publicBase } from "./http.js";
+import { parseAgentIdFromVoiceUrl, resolveAgentsPublicUrl } from "./public-url.js";
 import { isSid } from "./ids.js";
 import {
   createApplication,
@@ -55,7 +57,10 @@ export function accountView(req) {
   const live = env.live;
   const apiKey = envApiKey();
   const base = req ? publicBase(req) : "";
+  const agentsBase = resolveAgentsPublicUrl(req) || base;
   const accountSid = live?.accountSid || stored.account_sid;
+  const voicePath = "/twilio/voice";
+  const statusPath = "/twilio/status";
   return {
     mode: live ? "connected" : "demo",
     demo: !live,
@@ -69,8 +74,10 @@ export function accountView(req) {
     api_key_sid: (live && apiKey.sid) || stored.api_key_sid || null,
     api_key_secret_set: Boolean((live && apiKey.secretSet) || stored.api_key_secret),
     environment_warning: env.warning,
-    voice_webhook_url: base ? `${base}/twilio/voice` : "/twilio/voice",
-    status_callback_url: base ? `${base}/twilio/status` : "/twilio/status",
+    // Point Twilio Voice / Status at the Agents brain, not the telephony host.
+    agents_public_url: agentsBase || "",
+    voice_webhook_url: agentsBase ? `${agentsBase}${voicePath}` : voicePath,
+    status_callback_url: agentsBase ? `${agentsBase}${statusPath}` : statusPath,
     voice_method: "POST",
     status_callback_method: "POST",
     date_created: stored.date_created,
@@ -78,6 +85,45 @@ export function accountView(req) {
     uri: `/api/twilio/v1/Accounts/${accountSid}`,
   };
 }
+
+/** Build the exact Voice URL a number/app should use for a given agent. */
+export function agentsVoiceUrl(req, agentId = "") {
+  const agentsBase = resolveAgentsPublicUrl(req) || (req ? publicBase(req) : "");
+  if (!agentsBase) return agentId ? `/twilio/voice?agentId=${encodeURIComponent(agentId)}` : "/twilio/voice";
+  const url = new URL(`${agentsBase}/twilio/voice`);
+  if (agentId) url.searchParams.set("agentId", agentId);
+  return url.toString();
+}
+
+export function agentsStatusUrl(req) {
+  const agentsBase = resolveAgentsPublicUrl(req) || (req ? publicBase(req) : "");
+  if (!agentsBase) return "/twilio/status";
+  return `${agentsBase}/twilio/status`;
+}
+
+/**
+ * Point a number's Voice URL at Agents /twilio/voice?agentId=… and status at Agents.
+ * Empty agentId clears the query (default Maison Sol / getDefaultAgent).
+ */
+export async function assignAgentToNumber(accountSid, numberSid, agentId, req = null) {
+  const id = String(agentId || "").trim();
+  const voiceUrl = agentsVoiceUrl(req, id);
+  const statusUrl = agentsStatusUrl(req);
+  const current = await getPhoneNumber(accountSid, numberSid);
+  const updated = await changePhoneNumber(accountSid, numberSid, {
+    friendlyName: current.friendly_name,
+    voiceUrl,
+    voiceMethod: "POST",
+    statusCallback: statusUrl,
+    statusCallbackMethod: "POST",
+  });
+  return {
+    ...updated,
+    agent_id: parseAgentIdFromVoiceUrl(updated.voice_url) || (id || null),
+  };
+}
+
+export { parseAgentIdFromVoiceUrl };
 
 export function updateCredentials(input) {
   saveCredentials(input);
@@ -128,6 +174,7 @@ function mapLiveNumber(row, accountSid) {
     status_callback_method: row.status_callback_method || "POST",
     sms_url: row.sms_url || null,
     sms_method: row.sms_method || "POST",
+    agent_id: parseAgentIdFromVoiceUrl(row.voice_url) || null,
     capabilities: {
       voice: Boolean(caps.voice),
       sms: Boolean(caps.sms ?? caps.SMS),
@@ -231,16 +278,18 @@ function dedupeCalls(calls) {
   });
 }
 
-function localSupplement() {
+function localSupplement(tenantId = DEMO_ACCOUNT_ID) {
+  const tid = tenantId || DEMO_ACCOUNT_ID;
   const active = listActivePublicCalls()
+    .filter((call) => (call.accountId || DEMO_ACCOUNT_ID) === tid)
     .map((call) => previewBrowserCall(call))
     .filter(Boolean);
   const activeSids = new Set(active.map((call) => call.sid));
-  const stored = listStoredCalls(demoAccountSid()).filter((call) => !activeSids.has(call.sid));
+  const stored = listStoredCalls(demoAccountSid(), tid).filter((call) => !activeSids.has(call.sid));
   return [...stored, ...active];
 }
 
-export async function listPhoneNumbers(accountSid, query) {
+export async function listPhoneNumbers(accountSid, query = {}) {
   const ctx = resolve(accountSid);
   const path = uriFor(accountSid, "/IncomingPhoneNumbers");
   if (ctx.mode === "connected") {
@@ -292,6 +341,7 @@ export async function buyPhoneNumber(accountSid, input) {
     friendlyName: input.friendlyName,
     voiceUrl: input.voiceUrl,
     statusCallback: input.statusCallback,
+    tenantId: input.tenantId,
   });
 }
 
@@ -325,10 +375,10 @@ export async function searchNumbers(accountSid, country, query) {
   return page("available_phone_numbers", result.numbers, path, { message: result.message });
 }
 
-export async function listCallResources(accountSid, query) {
+export async function listCallResources(accountSid, query = {}) {
   const ctx = resolve(accountSid);
   const path = uriFor(accountSid, "/Calls");
-  const local = localSupplement().filter((call) => {
+  const local = localSupplement(query.tenantId).filter((call) => {
     if (ctx.mode === "demo") return call.account_sid === ctx.demoSid;
     return call.media === "browser-realtime" || call.from === "client:browser";
   });
@@ -387,7 +437,7 @@ export async function listRecordingResources(accountSid, callSid) {
   return page("recordings", recordingsFor(call), path);
 }
 
-export async function listAppResources(accountSid) {
+export async function listAppResources(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   const ctx = resolve(accountSid);
   const path = uriFor(accountSid, "/Applications");
   if (ctx.mode === "connected") {
@@ -395,7 +445,7 @@ export async function listAppResources(accountSid) {
     const items = (data.applications || []).map((row) => mapLiveApp(row, accountSid));
     return page("applications", items, path);
   }
-  return page("applications", listApps(accountSid), path);
+  return page("applications", listApps(accountSid, tenantId), path);
 }
 
 export async function getAppResource(accountSid, appSid) {
@@ -440,10 +490,10 @@ export async function changeAppResource(accountSid, appSid, input) {
   return updateDemoApp(accountSid, appSid, input);
 }
 
-export function listEventResources(accountSid) {
+export function listEventResources(accountSid, tenantId = DEMO_ACCOUNT_ID) {
   const ctx = resolve(accountSid);
   const sid = ctx.mode === "connected" ? ctx.demoSid : accountSid;
-  const items = listEvents(sid).map((event) => ({ ...event, account_sid: accountSid }));
+  const items = listEvents(sid, tenantId).map((event) => ({ ...event, account_sid: accountSid }));
   return page("events", items, uriFor(accountSid, "/Monitor/Events"));
 }
 

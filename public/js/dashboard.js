@@ -1,7 +1,6 @@
 let latest = null;
 let signature = "";
 let mcpSignature = "";
-
 const statusPill = document.querySelector("#statusPill");
 const security = document.querySelector("#security");
 const mcpStatus = document.querySelector("#mcpStatus");
@@ -13,6 +12,7 @@ const mcpDisconnect = document.querySelector("#mcpDisconnect");
 const mcpMessage = document.querySelector("#mcpMessage");
 const mcpTools = document.querySelector("#mcpTools");
 const mcpCalls = document.querySelector("#mcpCalls");
+const toolsLede = document.querySelector("#toolsLede");
 const updated = document.querySelector("#updated");
 
 async function poll() {
@@ -91,8 +91,11 @@ function renderMcp(mcp, calls) {
       : "Bearer token if the server requires one";
   }
   if (mcp.error) mcpMessage.textContent = mcp.error;
-  else if (connected) mcpMessage.textContent = "Enabled tools are offered to Sol on the next call.";
-  else mcpMessage.textContent = "Not connected. Sol will greet, but she has no tools until you connect one.";
+  else if (connected) {
+    mcpMessage.textContent = "Enabled MCP tools are offered on the next call.";
+  } else {
+    mcpMessage.textContent = "No MCP server connected. Connect one to offer tools on the next call.";
+  }
 
   const nextSignature = JSON.stringify(mcp.tools || []);
   if (nextSignature !== mcpSignature) {
@@ -238,7 +241,7 @@ mcpDisconnect.addEventListener("click", async () => {
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || "Could not disconnect");
     mcpToken.value = "";
-    mcpMessage.textContent = "Disconnected. Sol will not call those tools.";
+    mcpMessage.textContent = "Disconnected. MCP tools will not be offered until you connect again.";
     await refresh();
   } catch (error) {
     mcpMessage.textContent = error.message || "Could not disconnect";
@@ -263,5 +266,8 @@ function clock(iso) {
   }).format(new Date(iso));
 }
 
+if (toolsLede) {
+  toolsLede.textContent = "Connect a remote MCP server — the token stays on the server — to offer tools on the next test call. New accounts start with no tools until you connect MCP.";
+}
 poll();
 setInterval(poll, 1500);

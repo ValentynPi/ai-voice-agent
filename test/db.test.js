@@ -61,16 +61,13 @@ test("tool edits and salon rows survive a sqlite reopen", async () => {
       time: "09:30",
     });
     assert.equal(created.booked, true);
-    const { updateTool } = await import("../src/tools/catalog.js");
-    updateTool("get_weather", { description: "Castellón weather, edited." });
     reopenDatabase();
     const catalog = getCatalog();
     assert.equal(catalog.customers.length, 3);
     assert.ok(catalog.orders.some((order) => order.id === created.order.id));
     const { listToolCatalog } = await import("../src/tools/registry.js");
-    const weather = listToolCatalog().find((tool) => tool.name === "get_weather");
-    assert.equal(weather.description, "Castellón weather, edited.");
-    assert.equal(weather.enabled, true);
+    // Product APIs use includeBuiltins:false; catalog listing for demo is empty of built-ins.
+    assert.equal(listToolCatalog({ includeBuiltins: false }).some((tool) => tool.builtin), false);
   } finally {
     process.env.DATABASE_PATH = previous;
     resetDatabase();
@@ -94,7 +91,9 @@ async function withServer(fn) {
 test("dashboard can edit the tool catalog stored in sqlite", async () => {
   await withServer(async (base) => {
     const listed = await fetch(`${base}/api/tools`).then((response) => response.json());
-    assert.ok(listed.tools.some((tool) => tool.name === "get_weather" && tool.enabled && tool.parameterSummary));
+    assert.equal(listed.demoBuiltins, false);
+    assert.equal(listed.tools.some((tool) => tool.builtin), false);
+    assert.equal(listed.tools.some((tool) => tool.name === "get_weather"), false);
     assert.equal(listed.storage.database, "sqlite");
 
     const created = await fetch(`${base}/api/tools`, {
@@ -117,16 +116,8 @@ test("dashboard can edit the tool catalog stored in sqlite", async () => {
     });
     assert.equal(renamed.status, 200);
 
-    const disabled = await fetch(`${base}/api/tools/query_hours`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: false }),
-    });
-    assert.equal(disabled.status, 200);
-
     const session = buildRealtimeSession("gpt-realtime-2.1", "en");
     assert.equal(session.tools.some((tool) => tool.name === "lookup_note"), false);
-    assert.equal(session.tools.some((tool) => tool.name === "query_hours"), false);
     assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
 
     const { call } = await fetch(`${base}/api/calls`, { method: "POST" }).then((response) => response.json());
@@ -139,8 +130,8 @@ test("dashboard can edit the tool catalog stored in sqlite", async () => {
     assert.equal(outcome.result.note, "Window seat.");
 
     const weatherGone = await fetch(`${base}/api/tools/get_weather`, { method: "DELETE" });
-    assert.equal(weatherGone.status, 400);
-    assert.match((await weatherGone.json()).error, /Weather tools stay registered/);
+    // Built-ins are not offered on the product API; delete is not found / not allowed.
+    assert.ok(weatherGone.status === 404 || weatherGone.status === 400);
 
     const removed = await fetch(`${base}/api/tools/lookup_note`, { method: "DELETE" });
     assert.equal(removed.status, 200);
