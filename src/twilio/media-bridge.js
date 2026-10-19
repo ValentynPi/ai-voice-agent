@@ -14,8 +14,7 @@ import {
   applyCallerTranscript,
   queueResponseCreate,
   queueSessionUpdate,
-  withTimeout,
-} from "../../public/js/realtime-turn.js";
+  withTimeout, withSessionInstructions } from "../../public/js/realtime-turn.js";
 import { applyCallerTurn } from "../../public/js/caller-language.js";
 import {
   buildRealtimeSession,
@@ -243,7 +242,9 @@ async function handleTwilioMedia(twilioWs, url) {
   };
 
   const sendOpenAi = (payload) => {
-    if (openai?.ws?.readyState === WebSocket.OPEN) openai.ws.send(JSON.stringify(payload));
+    if (openai?.ws?.readyState === WebSocket.OPEN) {
+      openai.ws.send(JSON.stringify(withSessionInstructions(payload, openai.session?.instructions)));
+    }
   };
 
   twilioWs.on("close", () => closeAll("hangup"));

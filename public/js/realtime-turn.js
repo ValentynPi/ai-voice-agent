@@ -513,3 +513,23 @@ export function armToolFiller(gate, emit) {
     pumpToolFiller(gate, emit);
   }, wait);
 }
+
+
+/**
+ * A response.create with its own `instructions` REPLACES the session
+ * instructions for that response (OpenAI Realtime semantics). Our per-reply
+ * nudges (language restart, tool follow-up, filler, refusal) carried only a
+ * language line, so the model answered with no Bot task at all — the live
+ * Oct 19 "I can help with texts, images, recipes…" pitch on the Weather agent.
+ * Every per-reply instruction now rides on top of the full session instructions.
+ */
+export const REPLY_SCOPE_MARKER = "For this reply only:";
+export function withSessionInstructions(event, base) {
+  const extra = event?.type === "response.create" ? event.response?.instructions : undefined;
+  const full = String(base || "").trim();
+  if (typeof extra !== "string" || !full || extra.includes(REPLY_SCOPE_MARKER) || extra.startsWith(full)) return event;
+  return {
+    ...event,
+    response: { ...event.response, instructions: `${full}\n\n${REPLY_SCOPE_MARKER} ${extra}` },
+  };
+}

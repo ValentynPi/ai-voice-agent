@@ -13,6 +13,7 @@ import {
   queueResponseCreate,
   queueSessionUpdate,
   shouldHoldForSpeech,
+  withSessionInstructions,
 } from "./realtime-turn.js";
 
 const CHIPS = [
@@ -176,7 +177,7 @@ function stopMic() {
 
 function sendEvent(event) {
   if (!realtime || realtime.dc.readyState !== "open") return false;
-  realtime.dc.send(JSON.stringify(event));
+  realtime.dc.send(JSON.stringify(withSessionInstructions(event, realtime.session?.instructions ? instructionsForLang(realtime.session.instructions) : "")));
   return true;
 }
 

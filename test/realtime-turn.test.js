@@ -376,3 +376,26 @@ test("late transcript rewrites a pending tool answer and can restart a wrong-lan
   assert.match(toolGate.pendingCreates[0].response.instructions, /Ukrainian/);
   assert.match(toolGate.pendingCreates[0].response.instructions, /Speak the tool result/);
 });
+
+test("per-reply instructions never drop the Bot task (response.instructions replaces session instructions)", async () => {
+  const { withSessionInstructions, toolFillerEvent } = await import("../public/js/realtime-turn.js");
+  const { buildRealtimeSession } = await import("../src/realtime.js");
+  const base = buildRealtimeSession("gpt-realtime-2.1", "en", {
+    systemPrompt: "You are Weather. Your mission is the weather.",
+    greeting: "Hello",
+  }).instructions;
+  const restart = {
+    type: "response.create",
+    response: { output_modalities: ["audio"], instructions: "Reply only in Ukrainian. Answer now in that language." },
+  };
+  const sent = withSessionInstructions(restart, base);
+  assert.ok(sent.response.instructions.startsWith(base));
+  assert.match(sent.response.instructions, /Bot task:\nYou are Weather/);
+  assert.match(sent.response.instructions, /For this reply only: Reply only in Ukrainian/);
+  assert.equal(withSessionInstructions(sent, base), sent, "idempotent");
+  assert.match(withSessionInstructions(toolFillerEvent("Що ти вмієш?"), base).response.instructions, /never let them pull you into English/);
+  const plain = { type: "response.create" };
+  assert.equal(withSessionInstructions(plain, base), plain);
+  const update = { type: "session.update", session: { instructions: "x" } };
+  assert.equal(withSessionInstructions(update, base), update);
+});
