@@ -15,6 +15,7 @@ import {
   queueSessionUpdate,
   shouldHoldForSpeech,
   withSessionInstructions,
+  greetingLanguageNote,
 } from "./realtime-turn.js";
 
 const CHIPS = [
@@ -55,6 +56,7 @@ let channelOpen = false;
 let sessionReady = false;
 let answerApplied = false;
 let greetingSent = false;
+let greetingNoteSent = false;
 let greetingTries = 0;
 let greetingHeardAudio = false;
 let greetingBubble = null;
@@ -240,6 +242,7 @@ function resetGreetingState() {
   sessionReady = false;
   answerApplied = false;
   greetingSent = false;
+  greetingNoteSent = false;
   greetingTries = 0;
   greetingHeardAudio = false;
   greetingBubble = null;
@@ -282,6 +285,10 @@ function releaseGreetingMic() {
   }
   if (!micHeldForGreeting) return;
   micHeldForGreeting = false;
+  if (!greetingNoteSent && greetingSent) {
+    greetingNoteSent = true;
+    sendEvent(greetingLanguageNote());
+  }
   realtime?.mic?.getAudioTracks().forEach((track) => {
     track.enabled = true;
   });

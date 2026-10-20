@@ -399,3 +399,31 @@ test("per-reply instructions never drop the Bot task (response.instructions repl
   const update = { type: "session.update", session: { instructions: "x" } };
   assert.equal(withSessionInstructions(update, base), update);
 });
+
+test("English greeting does not anchor the reply language; correct replies are not restarted", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const note = RT.greetingLanguageNote();
+  assert.equal(note.type, "conversation.item.create");
+  assert.equal(note.item.role, "system");
+  assert.match(note.item.content[0].text, /not the caller's language/);
+
+  const voice = fs.readFileSync(new URL("../public/js/voice.js", import.meta.url), "utf8");
+  const dial = fs.readFileSync(new URL("../public/js/console-dial.js", import.meta.url), "utf8");
+  const bridge = fs.readFileSync(new URL("../src/twilio/media-bridge.js", import.meta.url), "utf8");
+  for (const source of [voice, dial, bridge]) assert.match(source, /greetingLanguageNote\(\)/);
+
+  assert.equal(RT.replyInLanguage("Я даю", "uk"), true);
+  assert.equal(RT.replyInLanguage("I give you", "uk"), false);
+  assert.equal(RT.replyInLanguage("Это погода", "uk"), false);
+  assert.equal(RT.replyInLanguage("", "uk"), false);
+
+  const gate = RT.createResponseGate();
+  RT.ingestRealtimeEvent(gate, { type: "response.created" });
+  RT.ingestRealtimeEvent(gate, { type: "response.output_audio_transcript.delta", delta: "Я даю поточну" });
+  assert.equal(RT.applyCallerTranscript(gate, "Що ти вмієш?").restart, false, "already Ukrainian: no cut");
+
+  const english = RT.createResponseGate();
+  RT.ingestRealtimeEvent(english, { type: "response.created" });
+  RT.ingestRealtimeEvent(english, { type: "response.output_audio_transcript.delta", delta: "I give you" });
+  assert.equal(RT.applyCallerTranscript(english, "Що ти вмієш?").restart, true, "English reply to Ukrainian is restarted");
+});

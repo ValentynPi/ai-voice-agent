@@ -17,7 +17,7 @@
  * - On an active-response error, requeue and drain after the next settle.
  */
 
-import { callerTurnLine, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
+import { callerTurnLine, detectCallerLanguage, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
 
 export const TOOL_TURN_TIMEOUT_MS = 10000;
 export const TOOL_FETCH_TIMEOUT_MS = 15000;
@@ -57,6 +57,8 @@ export function createResponseGate() {
     /** True when a create was rejected as "active response" and is waiting for idle. */
     waitingForIdle: false,
     callerLanguage: "",
+    /** Transcript of the reply in flight, to tell whether a restart is needed. */
+    replyText: "",
     toolStartedAt: 0,
     fillerUsed: false,
     fillerTimer: null,
@@ -121,7 +123,9 @@ export function applyCallerTranscript(gate, text) {
   const out = { language, previous, changed, restart: false };
   // Only restart a wrong-language auto-reply when nothing is already queued.
   // Queued tool answers / fillers were rewritten above; do not replace them.
-  if (changed && gate.active && gate.tools.size === 0 && gate.pendingCreates.length === 0) {
+  // Do not cut a reply that is already speaking the caller's language.
+  if (changed && gate.active && gate.tools.size === 0 && gate.pendingCreates.length === 0
+    && !replyInLanguage(gate.replyText, language)) {
     out.restart = true;
     gate.pendingCreates = [languageRestartEvent(gate.userText, language)];
     gate.pendingFiller = false;
@@ -446,8 +450,23 @@ function noteResponseError(gate, message) {
   return [];
 }
 
+/** True when the reply spoken so far is already in `code`. Empty means unknown. */
+export function replyInLanguage(text, code) {
+  const t = String(text || "").trim();
+  if (!t || !code) return false;
+  if (code === "uk") return /[а-яіїєґ]/i.test(t) && !/[ыэъё]/i.test(t);
+  if (code === "ru") return /[а-я]/i.test(t) && !/[іїєґ]/i.test(t);
+  if (code === "he") return /[\u0590-\u05FF]/.test(t);
+  if (code === "ar") return /[\u0600-\u06FF]/.test(t);
+  return detectCallerLanguage(t) === code;
+}
+
 export function ingestRealtimeEvent(gate, event, { suppressFallback = false } = {}) {
   if (AUDIO_EVENT.has(event?.type)) gate.heardAudio = true;
+  if (event?.type === "response.created") gate.replyText = "";
+  if ((event?.type === "response.output_audio_transcript.delta" || event?.type === "response.audio_transcript.delta") && event.delta) {
+    gate.replyText = `${gate.replyText || ""}${event.delta}`;
+  }
   const toolCalls = [];
   for (const call of functionCallsFrom(event)) {
     if (beginTool(gate, call.callId, call.name)) toolCalls.push(call);
@@ -531,5 +550,23 @@ export function withSessionInstructions(event, base) {
   return {
     ...event,
     response: { ...event.response, instructions: `${full}\n\n${REPLY_SCOPE_MARKER} ${extra}` },
+  };
+}
+
+
+/**
+ * Sent once, right after the greeting finishes. Without it the English
+ * "Hello" greeting in the conversation anchored the model's first auto-reply to
+ * English (live call_14, Oct 20; probe 0/5 Ukrainian without it, 5/5 with it).
+ */
+export const GREETING_LANGUAGE_NOTE = "That greeting was a fixed opening line, not the caller's language. Reply in the language the caller speaks.";
+export function greetingLanguageNote() {
+  return {
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "system",
+      content: [{ type: "input_text", text: GREETING_LANGUAGE_NOTE }],
+    },
   };
 }

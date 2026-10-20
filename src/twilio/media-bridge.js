@@ -14,7 +14,7 @@ import {
   applyCallerTranscript,
   queueResponseCreate,
   queueSessionUpdate,
-  withTimeout, withSessionInstructions } from "../../public/js/realtime-turn.js";
+  withTimeout, withSessionInstructions, greetingLanguageNote } from "../../public/js/realtime-turn.js";
 import { applyCallerTurn } from "../../public/js/caller-language.js";
 import {
   buildRealtimeSession,
@@ -319,7 +319,10 @@ async function handleTwilioMedia(twilioWs, url) {
       const epoch = responseGate.epoch;
       void runToolCall(toolCall, epoch);
     }
-    if (event.type === "response.done" && !greetingDone) greetingDone = true;
+    if (event.type === "response.done" && !greetingDone) {
+      greetingDone = true;
+      sendOpenAi(greetingLanguageNote());
+    }
 
     if (
       (event.type === "response.output_audio.delta" || event.type === "response.audio.delta")
