@@ -794,7 +794,7 @@ app.use((error, req, res, next) => {
   const status = error.status || 500;
   if (status >= 500 && !error.expose) console.error(error);
   const message = error.expose || status < 500 ? error.message : "Something went wrong";
-  res.status(status).json({ error: message });
+  res.status(status).json(error.code && error.expose ? { error: message, code: error.code } : { error: message });
 });
 
 async function seedDemo() {

@@ -1,3 +1,4 @@
+import { tokenFailure, voiceUnavailableHint } from "./voice-failure.js";
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
 import { composeSessionInstructions, isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
 import {
@@ -279,7 +280,7 @@ function nudgeRemoteAudio() {
   const play = remoteAudio.play?.();
   if (play && typeof play.catch === "function") {
     play.catch(() => {
-      hintEl.textContent = "Tap the page if the browser blocked Chloe audio.";
+      hintEl.textContent = "Tap the page if the browser blocked the agent's audio.";
     });
   }
 }
@@ -362,7 +363,7 @@ function failGreeting(status) {
   if (action === "ignore") return false;
   greetingSent = false;
   if (action === "give-up") {
-    hintEl.textContent = `${agentLabel} could not start the greeting. You can speak or type. Marin will not use a browser voice.`;
+    hintEl.textContent = `${agentLabel} could not start the greeting. You can speak or type. The agent will not use a browser voice.`;
     releaseGreetingMic();
     return true;
   }
@@ -420,11 +421,10 @@ async function connectRealtime(activeCallId = callId) {
   });
   if (!tokenResponse.ok) {
     const errBody = await tokenResponse.json().catch(() => ({}));
-    const detail = errBody.error || `HTTP ${tokenResponse.status}`;
-    if (tokenResponse.status === 401) {
-      throw new Error(`${detail}. Open Sign in, then try Start call again.`);
-    }
-    throw new Error(`Realtime token failed: ${detail}`);
+    const failure = tokenFailure(tokenResponse.status, errBody);
+    const error = new Error(failure.message);
+    error.kind = failure.kind;
+    throw error;
   }
   const token = await tokenResponse.json();
   if (!token.value) throw new Error("Realtime token response was missing a client secret");
@@ -569,19 +569,21 @@ async function startCall() {
     }, 5000);
 
     let connected = false;
-    let failure = `OpenAI Realtime voice Chloe is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
+    let failure = voiceUnavailableHint("", agentLabel);
+    let failureKind = "";
     try {
       connected = await connectRealtime(callId);
     } catch (error) {
       closeRealtime();
       const micBlocked = /NotAllowedError|Permission|not-allowed|denied/i.test(`${error.name || ""} ${error.message || ""}`);
       failure = micBlocked
-        ? "Microphone blocked. Marin needs the microphone and will not fall back to a browser voice. You can still type and read the reply."
-        : `OpenAI Realtime voice Chloe is unavailable (${error.message || "connection failed"}). ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
+        ? "Microphone blocked. Allow the microphone for this page to talk; you can still type and read the reply."
+        : voiceUnavailableHint(error.message, agentLabel);
+      failureKind = error.kind || "";
     }
     if (!connected) {
       closeRealtime();
-      const authFail = /sign in/i.test(failure);
+      const authFail = failureKind === "signin";
       if (authFail) {
         if (heartbeat) clearInterval(heartbeat);
         heartbeat = null;
@@ -594,7 +596,7 @@ async function startCall() {
           fetch(`/api/calls/${failedId}/end`, { method: "POST", credentials: "same-origin" }).catch(() => {});
         }
       }
-      modeBadge.textContent = authFail ? "Sign in required" : "Marin unavailable";
+      modeBadge.textContent = authFail ? "Sign in required" : "Voice off";
       setPhase("idle", authFail ? "Sign in required" : "Voice unavailable");
       hintEl.textContent = failure;
     }
@@ -744,7 +746,7 @@ function speakRefusal(reply) {
   let sent = false;
   for (const follow of queued) sent = sendEvent(follow) || sent;
   if (sent || responseGate.pendingCreates.length) setPhase("speaking", "Speaking");
-  else hintEl.textContent = "OpenAI Realtime voice Chloe is unavailable, so that refusal was not spoken.";
+  else hintEl.textContent = "Live voice is off, so that refusal was not spoken.";
 }
 
 async function submitFallback(text) {
@@ -768,9 +770,9 @@ async function submitFallback(text) {
     });
     if (realtime) setPhase("speaking", "Speaking");
     else {
-      modeBadge.textContent = "Marin unavailable";
+      modeBadge.textContent = "Voice off";
       setPhase("idle", "Voice unavailable");
-      hintEl.textContent = `OpenAI Realtime voice Chloe is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
+      hintEl.textContent = voiceUnavailableHint("", agentLabel);
     }
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
@@ -806,7 +808,9 @@ async function handleRealtimeEvent(event) {
     if (/active response/i.test(message)) {
       // Follow-up response.create was early; ingestRealtimeEvent requeues it for response.done.
     } else if (!failGreeting("error")) {
-      hintEl.textContent = `Realtime error: ${message}. ${agentLabel} is not using a browser voice.`;
+      hintEl.textContent = /quota|credit/i.test(`${event.error?.code || ""} ${message}`)
+        ? voiceUnavailableHint(tokenFailure(503, { code: "openai_quota" }).message, agentLabel)
+        : voiceUnavailableHint(`OpenAI reported an error: ${message}.`, agentLabel);
       if (micHeldForGreeting) releaseGreetingMic();
     }
   }

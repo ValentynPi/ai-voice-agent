@@ -268,11 +268,35 @@ export function nextSessionAttempt(attempt, status, body) {
   return { fatal: true };
 }
 
+/**
+ * OpenAI account problems are not the caller's sign-in. They used to come back
+ * as our own 401, and the page told the user to "Open Sign in".
+ */
+export function classifyOpenAiFailure(status, raw) {
+  const body = String(raw || "");
+  const make = (code, message) => {
+    const error = new Error(message);
+    error.status = 503;
+    error.code = code;
+    error.expose = true;
+    return error;
+  };
+  if (status === 401 || /invalid_api_key|token_invalidated|Incorrect API key/i.test(body)) {
+    return make("openai_key_invalid", "The server's OpenAI API key was rejected (invalid or revoked)");
+  }
+  if (/insufficient_quota|credit_balance/i.test(body)) {
+    return make("openai_quota", "The OpenAI account is out of credits");
+  }
+  if (status === 429) return make("openai_busy", "OpenAI is rate-limiting requests");
+  return null;
+}
+
 export async function mintRealtimeClientSecret({ lang, agent, fetchImpl = fetch } = {}) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) {
     const error = new Error("Realtime voice needs OPENAI_API_KEY");
     error.status = 503;
+    error.code = "openai_key_missing";
     error.expose = true;
     throw error;
   }
@@ -327,10 +351,17 @@ export async function mintRealtimeClientSecret({ lang, agent, fetchImpl = fetch 
         };
       }
       lastDetail = raw.slice(0, 240);
+      const providerFailure = classifyOpenAiFailure(response.status, raw);
+      if (providerFailure) {
+        console.error(`Realtime token: OpenAI ${response.status} ${providerFailure.code}`);
+        throw providerFailure;
+      }
       const next = nextSessionAttempt(attempt, response.status, raw);
       if (next.fatal) {
-        const error = new Error("Realtime token request failed");
-        error.status = response.status >= 500 ? 502 : response.status;
+        console.error(`Realtime token: OpenAI ${response.status} rejected the session: ${raw.slice(0, 200)}`);
+        const error = new Error("OpenAI rejected the voice session");
+        error.status = 502;
+        error.code = "openai_error";
         error.expose = true;
         throw error;
       }
