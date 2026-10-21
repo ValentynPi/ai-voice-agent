@@ -1,6 +1,6 @@
-import { tokenFailure, voiceUnavailableHint } from "./voice-failure.js";
+import { realtimeAccountFailure, realtimeEventFailure, tokenFailure, voiceUnavailableHint } from "./voice-failure.js";
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
-import { composeSessionInstructions, isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
+import { isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
 import {
   TOOL_FETCH_TIMEOUT_MS,
   completeTool,
@@ -15,7 +15,9 @@ import {
   queueResponseCreate,
   queueSessionUpdate,
   shouldHoldForSpeech,
-  withSessionInstructions,
+  toCachedResponse,
+  createCallBudget,
+  budgetEndMessage,
   greetingLanguageNote,
 } from "./realtime-turn.js";
 
@@ -200,16 +202,15 @@ function stopMic() {
 
 function sendEvent(event) {
   if (!realtime || realtime.dc.readyState !== "open") return false;
-  realtime.dc.send(JSON.stringify(withSessionInstructions(event, realtime.session?.instructions ? instructionsForLang(realtime.session.instructions) : "")));
+  // No per-response `instructions`: they replace the session prompt and defeat
+  // the prompt cache. The nudge goes in as a one-line system item instead.
+  for (const item of toCachedResponse(event, { botTask: realtime.botTask || "" })) realtime.dc.send(JSON.stringify(item));
   return true;
 }
 
+/** Session instructions stay byte-identical for the whole call (prompt cache). */
 function instructionsForLang(instructions) {
-  return composeSessionInstructions(instructions, {
-    uiLang: langSelect.value,
-    callerText: realtime?.callerText || "",
-    established: realtime?.callerLanguage || "",
-  });
+  return instructions;
 }
 
 function sessionAudio() {
@@ -223,7 +224,9 @@ function rememberCallerLanguage(text) {
   if (code) realtime.callerLanguage = code;
   if (responseGate) responseGate.callerLanguage = realtime.callerLanguage || "";
   if (!realtime.callerText || isClearLanguageTurn(text)) realtime.callerText = text;
-  if (code && code !== previous) pushSession(realtime.session?.tools);
+  // No session.update on a language switch: the per-reply note carries the
+  // language, and rewriting the instructions would bust the prompt cache.
+  void previous;
 }
 
 function pushSession(tools) {
@@ -251,10 +254,12 @@ function sendSessionLanguage() {
     .then((response) => (response.ok ? response.json() : null))
     .then((body) => {
       if (!realtime) return;
-      if (Array.isArray(body?.realtime)) realtime.session.tools = body.realtime;
+      // Only when the tool list really changed since the token was minted.
+      if (!Array.isArray(body?.realtime) || JSON.stringify(body.realtime) === JSON.stringify(realtime.session.tools || [])) return;
+      realtime.session.tools = body.realtime;
       pushSession(realtime.session.tools);
     })
-    .catch(() => pushSession(realtime.session?.tools));
+    .catch(() => {});
 }
 
 function resetGreetingState() {
@@ -406,6 +411,7 @@ function scheduleGreetingFallback() {
 }
 
 function markGreetingAudio() {
+  callBudget?.noteActivity();
   if (greetingSent) greetingHeardAudio = true;
   if (silentGreetingTimer) {
     clearTimeout(silentGreetingTimer);
@@ -450,8 +456,10 @@ async function connectRealtime(activeCallId = callId) {
     model: token.model,
     voice: token.voice || "chloe",
     greeting: token.greeting,
+    botTask: token.botTask || "",
     updated: false,
   };
+  responseGate.botTask = realtime.botTask;
   modeBadge.textContent = `Realtime · ${realtime.voice}`;
 
   pc.addEventListener("track", (event) => {
@@ -494,7 +502,13 @@ async function connectRealtime(activeCallId = callId) {
       "Content-Type": "application/sdp",
     },
   });
-  if (!sdpResponse.ok) throw new Error(`Realtime call was rejected (HTTP ${sdpResponse.status})`);
+  if (!sdpResponse.ok) {
+    const body = await sdpResponse.text().catch(() => "");
+    const account = realtimeAccountFailure(body, sdpResponse.status);
+    const error = new Error(account ? account.message : `Realtime call was rejected (HTTP ${sdpResponse.status})`);
+    error.kind = account?.kind || "";
+    throw error;
+  }
   const answer = await sdpResponse.text();
   if (!answer.startsWith("v=")) throw new Error("Realtime did not return an SDP answer");
   await pc.setRemoteDescription({ type: "answer", sdp: answer });
@@ -591,6 +605,7 @@ async function startCall() {
         : voiceUnavailableHint(error.message, agentLabel);
       failureKind = error.kind || "";
     }
+    if (connected) startCallBudget();
     if (!connected) {
       closeRealtime();
       const authFail = failureKind === "signin";
@@ -607,7 +622,8 @@ async function startCall() {
         }
       }
       modeBadge.textContent = authFail ? "Sign in required" : "Voice off";
-      setPhase("idle", authFail ? "Sign in required" : "Voice unavailable");
+      const noCredits = failureKind === "openai" && /out of credits/.test(failure);
+      setPhase("idle", authFail ? "Sign in required" : noCredits ? "Out of OpenAI credits" : "Voice unavailable");
       hintEl.textContent = failure;
     }
   } finally {
@@ -615,7 +631,38 @@ async function startCall() {
   }
 }
 
-async function endCall() {
+function stopVoiceForAccount(failure) {
+  closeRealtime();
+  stopCallBudget();
+  modeBadge.textContent = "Voice off";
+  setPhase("idle", failure.kind === "openai" && /credits/.test(failure.message) ? "Out of OpenAI credits" : "Voice unavailable");
+  hintEl.textContent = voiceUnavailableHint(failure.message, agentLabel);
+}
+
+let callBudget = null;
+let budgetTimer = 0;
+function startCallBudget() {
+  stopCallBudget();
+  callBudget = createCallBudget();
+  budgetTimer = setInterval(() => {
+    if (!callActive || !callBudget) return stopCallBudget();
+    const busy = shouldHoldForSpeech(responseGate) || micHeldForGreeting;
+    const reason = callBudget.check(busy);
+    if (reason) {
+      stopCallBudget();
+      void endCall(budgetEndMessage(reason));
+    }
+  }, 1000);
+}
+function stopCallBudget() {
+  if (budgetTimer) clearInterval(budgetTimer);
+  budgetTimer = 0;
+  callBudget = null;
+}
+
+async function endCall(note = "") {
+  const endNote = typeof note === "string" ? note : "";
+  stopCallBudget();
   callActive = false;
   micSuppressed = false;
   stopMic();
@@ -637,10 +684,10 @@ async function endCall() {
   }
   hintEl.replaceChildren();
   if (!saved) {
-    hintEl.textContent = "The call ended, but it could not be saved.";
+    hintEl.textContent = `${endNote ? `${endNote} ` : ""}The call ended, but it could not be saved.`;
     return;
   }
-  hintEl.append(document.createTextNode("Call saved on Agents. "));
+  hintEl.append(document.createTextNode(`${endNote ? `${endNote} ` : ""}Call saved on Agents. `));
   if (agentsHistoryBase) {
     const link = document.createElement("a");
     link.href = `${agentsHistoryBase}/history/${encodeURIComponent(id)}`;
@@ -813,6 +860,13 @@ async function handleRealtimeEvent(event) {
     sessionReady = true;
     maybeSendGreeting();
   }
+  const accountFailure = realtimeEventFailure(event);
+  if (accountFailure) {
+    // Out of credits / key revoked after the token minted: say so, stop the
+    // session (no retries that would bill or loop), keep typing available.
+    stopVoiceForAccount(accountFailure);
+    return;
+  }
   if (event.type === "error") {
     const message = event.error?.message || event.message || "Realtime error";
     if (isBenignRealtimeError(message, event.error?.code)) {
@@ -890,6 +944,7 @@ async function handleRealtimeEvent(event) {
       sendEvent({ type: "response.cancel" });
       sendEvent({ type: "output_audio_buffer.clear" });
     }
+    callBudget?.noteActivity();
     for (const follow of callerTurn.send) sendEvent(follow);
     await onCallerAudio(spoken, event.item_id);
   }

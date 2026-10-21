@@ -17,7 +17,7 @@
  * - On an active-response error, requeue and drain after the next settle.
  */
 
-import { callerTurnLine, classifyCallerTranscript, detectCallerLanguage, isClearLanguageTurn, replyLanguageLine, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
+import { classifyCallerTranscript, detectCallerLanguage, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
 
 export const TOOL_TURN_TIMEOUT_MS = 10000;
 export const TOOL_FETCH_TIMEOUT_MS = 15000;
@@ -36,6 +36,7 @@ const AUDIO_EVENT = new Set([
 
 export function createResponseGate() {
   return {
+    botTask: "",
     active: false,
     epoch: 0,
     heardAudio: false,
@@ -140,17 +141,24 @@ export function applyCallerTranscript(gate, text) {
   return out;
 }
 
+/**
+ * Per-reply language nudge, kept to one line: it is billed as new input on
+ * every response (the session instructions are cached, this is not).
+ */
+export function shortLanguageLine(code, text = "") {
+  const name = languageName(code);
+  if (name) return `Reply ONLY in ${name}.`;
+  const clean = String(text || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  return clean ? `Reply ONLY in the language of the caller's words: "${clean}".` : "Reply in the caller's language.";
+}
+
 function languageRestartEvent(userText, established) {
   return {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
       tool_choice: "auto",
-      instructions: [
-        callerTurnLine(userText, established),
-        "The caller already spoke this turn. Answer now in that language.",
-        "English Bot task text, an English greeting, Model notes, or tool JSON must not make you answer in English.",
-      ].join(" "),
+      instructions: `${shortLanguageLine(resolveReplyLanguage(established, userText) || established, userText)} The caller already spoke this turn. Answer now in that language.`,
     },
   };
 }
@@ -180,7 +188,7 @@ function rewritePendingSpoken(gate) {
       ...event,
       response: {
         ...(event.response || {}),
-        instructions: `${callerTurnLine(userText, code)} ${instructions}`.trim(),
+        instructions: `${shortLanguageLine(code, userText)} ${instructions}`.trim(),
       },
     };
   });
@@ -253,13 +261,12 @@ export function functionOutputEvent(callId, output) {
 
 export function toolFollowUpEvent(name, failed, userText = "", established = "", { allowMore = false } = {}) {
   const line = spokenFailure(name, userText, established);
-  const turn = callerTurnLine(userText, established);
-  const more = allowMore
-    ? " If this result only identifies the place (for example a location search) and you still need its weather or forecast, call that lookup now instead of answering; otherwise answer."
-    : " Do not call tools.";
+  const turn = shortLanguageLine(resolveReplyLanguage(established, userText) || established, userText);
+  // The how-to-speak-a-result rules live in the cached session instructions.
+  const more = allowMore ? " If it only identifies the place, call the weather lookup first." : "";
   const instructions = failed
-    ? `${turn} The tool failed, timed out, or is missing. Say this in the caller's language, then stop: ${line} Do not invent a result. Do not call tools.`
-    : `${turn} Speak the tool result to the caller in their language. One to two short sentences. Use only facts from the tool result. The tool payload may be English or include a place name such as Castellón. That is not a language switch. If it includes current conditions, speak the temperature and condition. An airport or aerodrome of the city the caller named is the right place: say the weather and do not ask them to clarify. Ask for a different place only when the result says the match is a different city. If the result is an error, say you can't get that right now and do not invent data.${more}`;
+    ? `${turn} The tool failed, timed out, or is missing. Say this, then stop: ${line}`
+    : `${turn} Speak the tool result in one or two short sentences, only its facts.${more}`;
   return {
     type: "response.create",
     response: {
@@ -293,7 +300,7 @@ export function toolFillerEvent(userText = "", established = "") {
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
-      instructions: `Say exactly this, in ${name}, then stop: ${line} Do not give the result. Do not invent weather, prices, or appointments. Do not call tools.`,
+      instructions: `Say exactly this, in ${name}, then stop: ${line}`,
     },
   };
 }
@@ -315,7 +322,7 @@ export function silenceFallbackEvent(userText, established = "") {
     response: {
       output_modalities: ["audio"],
       tool_choice: "none",
-      instructions: `${callerTurnLine(userText, code)} You produced no speech. Say this in the caller's language, then stop: ${line} Do not invent weather, records, or tool results. Do not call tools.`,
+      instructions: `${shortLanguageLine(code, userText)} You produced no speech. Say this, then stop: ${line}`,
     },
   };
 }
@@ -555,23 +562,44 @@ export function armToolFiller(gate, emit) {
 
 /**
  * A response.create with its own `instructions` REPLACES the session
- * instructions for that response (OpenAI Realtime semantics). Our per-reply
- * nudges (language restart, tool follow-up, filler, refusal) carried only a
- * language line, so the model answered with no Bot task at all — the live
- * Oct 19 "I can help with texts, images, recipes…" pitch on the Weather agent.
- * Every per-reply instruction now rides on top of the full session instructions.
+ * instructions for that response (OpenAI Realtime semantics). Until a85fa0f we
+ * re-sent the whole ~1k-token prompt on every response to keep the Bot task
+ * (01f8b7e); that also changed the very start of the prompt every time, so
+ * nothing after it — ~12k tokens of tool schemas and the whole conversation —
+ * could hit the prompt cache. That was most of the text-input bill.
+ *
+ * Now every response.create goes out WITHOUT instructions, so the stable
+ * session instructions (Bot task included) apply and stay cached. The
+ * per-reply nudge ("Reply ONLY in Ukrainian. Stay on: …") rides as a one-line
+ * system item appended to the conversation just before it.
  */
-export const REPLY_SCOPE_MARKER = "For this reply only:";
-export function withSessionInstructions(event, base) {
-  const extra = event?.type === "response.create" ? event.response?.instructions : undefined;
-  const full = String(base || "").trim();
-  if (typeof extra !== "string" || !full || extra.includes(REPLY_SCOPE_MARKER) || extra.startsWith(full)) return event;
+export const REPLY_NOTE_PREFIX = "For this reply only:";
+export function replyNoteItem(text) {
   return {
-    ...event,
-    response: { ...event.response, instructions: `${full}\n\n${REPLY_SCOPE_MARKER} ${extra}` },
+    type: "conversation.item.create",
+    item: { type: "message", role: "system", content: [{ type: "input_text", text }] },
   };
 }
 
+export function toCachedResponse(event, { botTask = "" } = {}) {
+  if (event?.type !== "response.create" || typeof event.response?.instructions !== "string") return [event];
+  const { instructions, ...response } = event.response;
+  let note = instructions.trim();
+  const task = String(botTask || "").trim();
+  if (task && note && !/Stay on:/.test(note) && !/^(The call just connected|Say exactly)/.test(note)) {
+    note = `${note} Stay on: ${task}.`;
+  }
+  const out = [];
+  if (note) out.push(replyNoteItem(`${REPLY_NOTE_PREFIX} ${note}`));
+  out.push({ ...event, response });
+  return out;
+}
+
+/** @deprecated kept for old callers: returns the last event of toCachedResponse. */
+export function withSessionInstructions(event) {
+  const events = toCachedResponse(event);
+  return events[events.length - 1];
+}
 
 /**
  * Sent once, right after the greeting finishes. Without it the English
@@ -611,16 +639,16 @@ function noteSpeechTiming(gate, event) {
   if (gate.speechMs.size > 50) gate.speechMs.delete(gate.speechMs.keys().next().value);
 }
 
-/** The reply to one caller turn: Bot task rides on via withSessionInstructions. */
+/** The reply to one caller turn; toCachedResponse adds "Stay on: <Bot task>". */
 export function callerReplyEvent(text, code, { partial = false } = {}) {
   // A partial transcript only fixes the language; the model hears the full audio.
-  const line = partial ? replyLanguageLine(code, "") : replyLanguageLine(code, text);
+  const line = shortLanguageLine(code, partial ? "" : text);
   return {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
       tool_choice: "auto",
-      instructions: `${line} Answer the caller's latest turn now in one or two short sentences. Do not ask the caller to repeat.`,
+      instructions: `${line} Answer their latest turn in one or two short sentences; don't ask them to repeat.`,
     },
   };
 }
@@ -701,4 +729,33 @@ export function handleCallerTurn(gate, text, { itemId = "", partial = false } = 
 export function isBenignRealtimeError(message = "", code = "") {
   return /active response|no active response|response_cancel_not_active|not found|item_id|output_audio_buffer|nothing to cancel|buffer too small|input_audio_buffer_commit_empty/i
     .test(`${code} ${message}`);
+}
+
+/**
+ * Cost guard: a Realtime session bills while it is open and every response
+ * re-reads the prompt. End the call after SILENCE_HANGUP_MS without real
+ * speech from either side (noise does not count), and always at MAX_CALL_MS.
+ */
+export const SILENCE_HANGUP_MS = 30_000;
+export const MAX_CALL_MS = 10 * 60_000;
+export function createCallBudget({ now = () => Date.now(), silenceMs = SILENCE_HANGUP_MS, maxMs = MAX_CALL_MS } = {}) {
+  const startedAt = now();
+  let lastActivity = startedAt;
+  return {
+    startedAt,
+    noteActivity() { lastActivity = now(); },
+    /** "max" | "silence" | "" — `busy` (agent speaking, tool running) holds the silence timer. */
+    check(busy = false) {
+      const t = now();
+      if (t - startedAt >= maxMs) return "max";
+      if (busy) { lastActivity = t; return ""; }
+      return t - lastActivity >= silenceMs ? "silence" : "";
+    },
+  };
+}
+
+export function budgetEndMessage(reason) {
+  if (reason === "max") return "Call ended: the 10-minute limit for a voice call was reached.";
+  if (reason === "silence") return "Call ended after 30 seconds of silence.";
+  return "";
 }

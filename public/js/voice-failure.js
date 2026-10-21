@@ -28,3 +28,39 @@ export function voiceUnavailableHint(reason, agentLabel = "The agent") {
   const why = String(reason || "The voice connection failed.").trim();
   return `Live voice is off: ${why} ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
 }
+
+/**
+ * The token can mint (200) while the account is already out of credits: the
+ * failure then arrives later, as the WebRTC SDP answer (HTTP 429), an `error`
+ * event, or a response.done with status "failed" and
+ * status_details.error.code "insufficient_quota". Those used to show a plain
+ * "Voice unavailable". Returns a tokenFailure-style object or null.
+ */
+export function realtimeAccountFailure(source, status = 0) {
+  let text = "";
+  try {
+    text = typeof source === "string" ? source : JSON.stringify(source ?? "");
+  } catch {
+    text = String(source || "");
+  }
+  if (/insufficient_quota|credit_balance|out of credits|exceeded your current quota|billing/i.test(text)) {
+    return tokenFailure(503, { code: "openai_quota" });
+  }
+  if (status === 401 || /invalid_api_key|token_invalidated|Incorrect API key/i.test(text)) {
+    return tokenFailure(503, { code: "openai_key_invalid" });
+  }
+  if (status === 429 || /rate_limit_exceeded/i.test(text)) {
+    return tokenFailure(503, { code: "openai_busy" });
+  }
+  return null;
+}
+
+/** Failure details carried by a Realtime server event, if any. */
+export function realtimeEventFailure(event) {
+  if (!event || typeof event !== "object") return null;
+  if (event.type === "error") return realtimeAccountFailure(event.error || event);
+  if (event.type === "response.done" && event.response?.status === "failed") {
+    return realtimeAccountFailure(event.response?.status_details || event.response);
+  }
+  return null;
+}

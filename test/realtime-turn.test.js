@@ -268,8 +268,7 @@ test("dialer, voice test, and media bridge share the gated turn path", () => {
 test("a Ukrainian Castellón weather turn is not rewritten into English", () => {
   const uk = "Привіт, скажи мені, будь ласка, яка сьогодні погода в Кастельон-де-ла-Плана?";
   const follow = toolFollowUpEvent("get_weather", false, uk);
-  assert.match(follow.response.instructions, /Кастельон-де-ла-Плана/);
-  assert.match(follow.response.instructions, /Ukrainian/);
+  assert.match(follow.response.instructions, /^Reply ONLY in Ukrainian\./);
   assert.match(follow.response.instructions, /Speak the tool result/);
   assert.doesNotMatch(follow.response.instructions, /Reply in English/);
   assert.doesNotMatch(follow.response.instructions, /What is the weather in/);
@@ -283,7 +282,7 @@ test("a Ukrainian Castellón weather turn is not rewritten into English", () => 
   });
   const sent = completeTool(gate, "uk", gate.epoch, true);
   assert.equal(sent.length, 1);
-  assert.match(sent[0].response.instructions, /Кастельон-де-ла-Плана/);
+  assert.match(sent[0].response.instructions, /Reply ONLY in Ukrainian/);
 });
 
 test("session language update waits until the model is done speaking", () => {
@@ -363,7 +362,7 @@ test("late transcript rewrites a pending tool answer and can restart a wrong-lan
   assert.equal(early.restart, true);
   assert.equal(gate.pendingCreates.length, 1);
   assert.match(gate.pendingCreates[0].response.instructions, /Ukrainian/);
-  assert.match(gate.pendingCreates[0].response.instructions, /Кастельон-де-ла-Плана|Яка погода/);
+  assert.doesNotMatch(gate.pendingCreates[0].response.instructions, /English/);
 
   // Tool path: follow-up is queued behind an active response; late transcript rewrites it.
   const toolGate = createResponseGate();
@@ -378,27 +377,24 @@ test("late transcript rewrites a pending tool answer and can restart a wrong-lan
   assert.match(toolGate.pendingCreates[0].response.instructions, /Speak the tool result/);
 });
 
-test("per-reply instructions never drop the Bot task (response.instructions replaces session instructions)", async () => {
-  const { withSessionInstructions, toolFillerEvent } = await import("../public/js/realtime-turn.js");
-  const { buildRealtimeSession } = await import("../src/realtime.js");
-  const base = buildRealtimeSession("gpt-realtime-2.1", "en", {
-    systemPrompt: "You are Weather. Your mission is the weather.",
-    greeting: "Hello",
-  }).instructions;
+test("per-reply nudges keep the Bot task without replacing the session instructions", async () => {
+  const { toCachedResponse, toolFillerEvent } = await import("../public/js/realtime-turn.js");
   const restart = {
     type: "response.create",
     response: { output_modalities: ["audio"], instructions: "Reply only in Ukrainian. Answer now in that language." },
   };
-  const sent = withSessionInstructions(restart, base);
-  assert.ok(sent.response.instructions.startsWith(base));
-  assert.match(sent.response.instructions, /Bot task:\nYou are Weather/);
-  assert.match(sent.response.instructions, /For this reply only: Reply only in Ukrainian/);
-  assert.equal(withSessionInstructions(sent, base), sent, "idempotent");
-  assert.match(withSessionInstructions(toolFillerEvent("Що ти вмієш?"), base).response.instructions, /never let them pull you into English/);
+  const sent = toCachedResponse(restart, { botTask: "the weather" });
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].item.role, "system");
+  assert.equal(sent[0].item.content[0].text, "For this reply only: Reply only in Ukrainian. Answer now in that language. Stay on: the weather.");
+  assert.equal(sent[1].response.instructions, undefined, "session instructions (Bot task) apply");
+  assert.deepEqual(toCachedResponse(sent[1]), [sent[1]], "idempotent");
+  const filler = toCachedResponse(toolFillerEvent("Що ти вмієш?"), { botTask: "the weather" });
+  assert.match(filler[0].item.content[0].text, /^For this reply only: Say exactly this/);
   const plain = { type: "response.create" };
-  assert.equal(withSessionInstructions(plain, base), plain);
+  assert.deepEqual(toCachedResponse(plain), [plain]);
   const update = { type: "session.update", session: { instructions: "x" } };
-  assert.equal(withSessionInstructions(update, base), update);
+  assert.deepEqual(toCachedResponse(update), [update]);
 });
 
 test("English greeting does not anchor the reply language; correct replies are not restarted", async () => {
@@ -508,8 +504,8 @@ test("a place search may chain into the forecast lookup, capped", async () => {
   RT.ingestRealtimeEvent(gate, { type: "response.done", response: { status: "completed", output: [] } });
   const follow = RT.completeTool(gate, "c1", gate.epoch, true);
   assert.equal(follow[0].response.tool_choice, "auto");
-  assert.match(follow[0].response.instructions, /call that lookup now/);
-  assert.match(follow[0].response.instructions, /Reply only in Ukrainian/);
+  assert.match(follow[0].response.instructions, /call the weather lookup first/);
+  assert.match(follow[0].response.instructions, /Reply ONLY in Ukrainian/);
   const failed = RT.toolFollowUpEvent("weather", true, "Яка погода?", "uk", { allowMore: true });
   assert.equal(failed.response.tool_choice, "none");
 });

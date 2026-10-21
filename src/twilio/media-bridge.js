@@ -14,9 +14,11 @@ import {
   handleCallerPartial,
   queueResponseCreate,
   queueSessionUpdate,
-  withTimeout, withSessionInstructions, greetingLanguageNote } from "../../public/js/realtime-turn.js";
-import { applyCallerTurn } from "../../public/js/caller-language.js";
+  shouldHoldForSpeech,
+  withTimeout, toCachedResponse, greetingLanguageNote, createCallBudget } from "../../public/js/realtime-turn.js";
+import { realtimeEventFailure } from "../../public/js/voice-failure.js";
 import {
+  botTaskLine,
   buildRealtimeSession,
   greetingEvent,
   nextSessionAttempt,
@@ -98,7 +100,7 @@ async function openOpenAiRealtime({ lang, agent }) {
     let attempt = { dropTurnFlags: false, transcription: "multilingual", reasoning: "minimal" };
     const seen = new Set();
     while (attempt && !attempt.nextModel && !attempt.fatal) {
-      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}:${attempt.reasoning}`;
+      const keyAttempt = `${attempt.transcription}:${attempt.dropTurnFlags}:${attempt.reasoning}:${attempt.dropBudget}`;
       if (seen.has(keyAttempt)) break;
       seen.add(keyAttempt);
       const session = sessionVariant(
@@ -106,6 +108,7 @@ async function openOpenAiRealtime({ lang, agent }) {
           telephony: true,
           transcription: attempt.transcription,
           reasoning: attempt.reasoning,
+          dropBudget: Boolean(attempt.dropBudget),
         }),
         attempt.dropTurnFlags,
       );
@@ -115,7 +118,7 @@ async function openOpenAiRealtime({ lang, agent }) {
         ws.send(JSON.stringify({ type: "session.update", session }));
         await waitForEvent(ws, "session.updated", 15000);
         noteRealtimeModel(model);
-        return { ws, model, session, voice: String(agent?.voice || "").trim() || voiceName() };
+        return { ws, model, session, botTask: botTaskLine(agent), voice: String(agent?.voice || "").trim() || voiceName() };
       } catch (error) {
         lastError = error?.message || lastError;
         try {
@@ -216,9 +219,13 @@ async function handleTwilioMedia(twilioWs, url) {
   let lang = String(url.searchParams.get("lang") || "multi").trim().toLowerCase();
   if (lang !== "es" && lang !== "en" && lang !== "multi") lang = "multi";
 
+  let callBudget = null;
+  let budgetTimer = null;
   const closeAll = (reason = "client") => {
     if (closed) return;
     closed = true;
+    if (budgetTimer) clearInterval(budgetTimer);
+    budgetTimer = null;
     if (deskCall?.id) {
       try {
         endCall(deskCall.id, reason);
@@ -244,7 +251,8 @@ async function handleTwilioMedia(twilioWs, url) {
 
   const sendOpenAi = (payload) => {
     if (openai?.ws?.readyState === WebSocket.OPEN) {
-      openai.ws.send(JSON.stringify(withSessionInstructions(payload, openai.session?.instructions)));
+      // Never per-response instructions (they replace the cached prompt): a one-line system note instead.
+      for (const item of toCachedResponse(payload, { botTask: openai.botTask || "" })) openai.ws.send(JSON.stringify(item));
     }
   };
 
@@ -284,6 +292,15 @@ async function handleTwilioMedia(twilioWs, url) {
           greetingSent = true;
           sendOpenAi(greetingEvent(lang, agent));
         }
+        // Cost guard: hang up after 30 s with no real speech, and at 10 minutes.
+        callBudget = createCallBudget();
+        budgetTimer = setInterval(() => {
+          const reason = callBudget?.check(shouldHoldForSpeech(responseGate) || !greetingDone);
+          if (reason) {
+            console.info(`Twilio bridge: ending call (${reason === "max" ? "10-minute limit" : "30 s silence"})`);
+            closeAll(reason === "max" ? "max-duration" : "silence");
+          }
+        }, 1000);
       } catch (error) {
         console.error("Failed to start Realtime for Media Stream:", error?.message || error);
         closeAll("failed");
@@ -312,6 +329,13 @@ async function handleTwilioMedia(twilioWs, url) {
 
     if (deskCall?.id) touchCall(deskCall.id);
 
+    const accountFailure = realtimeEventFailure(event);
+    if (accountFailure) {
+      console.error(`Twilio bridge: OpenAI account failure (${accountFailure.message})`);
+      closeAll("failed");
+      return;
+    }
+
     const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: !greetingDone });
     for (const follow of turn.send) sendOpenAi(follow);
     if (turn.toolCalls.length) armToolFiller(responseGate, sendOpenAi);
@@ -329,6 +353,7 @@ async function handleTwilioMedia(twilioWs, url) {
       && event.delta
       && streamSid
     ) {
+      callBudget?.noteActivity();
       sendTwilio({
         event: "media",
         streamSid,
@@ -366,26 +391,9 @@ async function handleTwilioMedia(twilioWs, url) {
         sendOpenAi({ type: "response.cancel" });
       }
       for (const follow of callerTurn.send) sendOpenAi(follow);
-      // Only when the caller actually switched. A session.update on every
-      // fragment rewrites the reply and adds a round trip before the next audio.
-      if (openai?.session) {
-        const patch = applyCallerTurn(openai.session, userText, responseGate.callerLanguage || "");
-        openai.session = {
-          ...openai.session,
-          instructions: patch.instructions,
-          baseInstructions: patch.baseInstructions,
-          callerLanguage: patch.language || openai.session.callerLanguage,
-        };
-        if (patch.changed || langTurn.changed) {
-          for (const follow of queueSessionUpdate(responseGate, {
-            type: "session.update",
-            session: {
-              type: "realtime",
-              instructions: patch.instructions,
-            },
-          })) sendOpenAi(follow);
-        }
-      }
+      // No session.update on a language switch: the per-reply note carries the
+      // language, and new instructions would bust the prompt cache.
+      callBudget?.noteActivity();
       try {
         const outcome = recordRealtimeUtterance({
           callId: deskCall.id,
