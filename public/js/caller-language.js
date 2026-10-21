@@ -233,7 +233,8 @@ const FILLERS = /^(?:u+h+|u+m+|h+m+|m+h*|a+h+|e+h+|o+h+|е+|э+|м+|м+м+|а+|�
  * known hallucination). "speech" — a real caller turn.
  */
 export function classifyCallerTranscript(text) {
-  const raw = String(text || "").trim();
+  // "[cough]", "(кашель)", "*noise*": sound descriptions, not words.
+  const raw = String(text || "").replace(/\[[^\]]*\]|\([^)]*\)|\*[^*]*\*/g, " ").trim();
   const letters = raw.match(/\p{L}/gu) || [];
   if (letters.length < 2) return "noise";
   const plain = raw.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();

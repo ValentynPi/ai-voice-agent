@@ -16,6 +16,9 @@ import {
   queueSessionUpdate,
   shouldHoldForSpeech,
   toCachedResponse,
+  agentSpeaking,
+  bargeTick,
+  DUCK_VOLUME,
   createCallBudget,
   budgetEndMessage,
   greetingLanguageNote,
@@ -453,9 +456,10 @@ async function connectRealtime(activeCallId = callId) {
   });
 
   const mic = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audio: { echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, autoGainControl: { ideal: true } },
   });
   realtime.mic = mic;
+  await ensureEchoCancellation(mic);
   holdMicForGreeting();
   for (const track of mic.getAudioTracks()) {
     track.enabled = false;
@@ -571,8 +575,15 @@ async function startCall() {
     callBtn.classList.add("live");
     callMeta.textContent = callId;
     setPhase("thinking", "Connecting");
+    pushTrace("client", TRACE_VERSION);
     heartbeat = setInterval(() => {
-      if (callId) fetch(`/api/calls/${callId}/heartbeat`, { method: "POST", credentials: "same-origin" });
+      if (!callId) return;
+      fetch(`/api/calls/${callId}/heartbeat`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trace: takeTrace() }),
+      });
     }, 5000);
 
     let connected = false;
@@ -614,6 +625,48 @@ async function startCall() {
   }
 }
 
+/**
+ * The browser's echo canceller only works when it is really on and the agent
+ * plays through a media element (remoteAudio <audio>, not WebAudio). Verify it
+ * and record what the browser applied, so a call that "hears itself" shows up
+ * in the server log.
+ */
+async function ensureEchoCancellation(stream) {
+  const track = stream?.getAudioTracks?.()[0];
+  if (!track) return;
+  let settings = track.getSettings?.() || {};
+  if (settings.echoCancellation === false) {
+    try {
+      await track.applyConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: true });
+      settings = track.getSettings?.() || settings;
+    } catch { /* keep what we have */ }
+  }
+  pushTrace("mic", `ec=${settings.echoCancellation} ns=${settings.noiseSuppression} agc=${settings.autoGainControl} out=${remoteAudio?.tagName || "none"}`);
+}
+
+/** Agent volume: ducked to DUCK_VOLUME while unconfirmed caller sound plays over it. */
+function applyAgentVolume(action, why = "") {
+  if (!action || !remoteAudio) return;
+  const next = action === "duck" ? DUCK_VOLUME : 1;
+  if (remoteAudio.volume === next) return;
+  remoteAudio.volume = next;
+  pushTrace(action, why);
+}
+
+/** Small server-side trace (Fly logs) of barge-in decisions; rides on the heartbeat. */
+const TRACE_VERSION = "barge-v1";
+let traceQueue = [];
+function pushTrace(kind, detail = "") {
+  if (!callId) return;
+  traceQueue.push({ t: Date.now(), kind: String(kind).slice(0, 24), detail: String(detail).slice(0, 80) });
+  if (traceQueue.length > 60) traceQueue.shift();
+}
+function takeTrace() {
+  const out = traceQueue;
+  traceQueue = [];
+  return out;
+}
+
 function stopVoiceForAccount(failure) {
   closeRealtime();
   stopCallBudget();
@@ -624,27 +677,34 @@ function stopVoiceForAccount(failure) {
 
 let callBudget = null;
 let budgetTimer = 0;
+let bargeTimer = 0;
 function startCallBudget() {
   stopCallBudget();
   callBudget = createCallBudget();
+  bargeTimer = setInterval(() => applyAgentVolume(bargeTick(responseGate), "timeout"), 200);
   budgetTimer = setInterval(() => {
     if (!callActive || !callBudget) return stopCallBudget();
     const busy = shouldHoldForSpeech(responseGate) || micHeldForGreeting;
     const reason = callBudget.check(busy);
     if (reason) {
       stopCallBudget();
-      void endCall(budgetEndMessage(reason));
+      void endCall(budgetEndMessage(reason), reason);
     }
   }, 1000);
 }
 function stopCallBudget() {
   if (budgetTimer) clearInterval(budgetTimer);
+  if (bargeTimer) clearInterval(bargeTimer);
   budgetTimer = 0;
+  bargeTimer = 0;
+  if (remoteAudio) remoteAudio.volume = 1;
   callBudget = null;
 }
 
-async function endCall(note = "") {
+async function endCall(note = "", reason = "") {
   const endNote = typeof note === "string" ? note : "";
+  const endReason = reason === "silence" || reason === "max" ? reason : "";
+  const endTrace = takeTrace();
   stopCallBudget();
   callActive = false;
   micSuppressed = false;
@@ -660,7 +720,12 @@ async function endCall(note = "") {
   if (!id) return;
   let saved = false;
   try {
-    const response = await fetch(`/api/calls/${id}/end`, { method: "POST", credentials: "same-origin" });
+    const response = await fetch(`/api/calls/${id}/end`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: endReason, trace: endTrace }),
+    });
     saved = response.ok;
   } catch {
     saved = false;
@@ -856,13 +921,14 @@ async function handleRealtimeEvent(event) {
       if (micHeldForGreeting) releaseGreetingMic();
     }
   }
-  if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting) {
+  if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting && !agentSpeaking(responseGate)) {
     // No barge-in here: noise also starts "speech". handleCallerTurn cancels
     // the agent only for a real transcript of at least BARGE_IN_MIN_MS.
     interimEl.textContent = "";
     setPhase("listening", "Listening");
   }
   const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: micHeldForGreeting });
+  applyAgentVolume(turn.volume, event.type === "input_audio_buffer.speech_started" ? "sound" : "playback-end");
   for (const follow of turn.send) sendEvent(follow);
   if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
     interimEl.textContent = `${interimEl.textContent}${event.delta}`;
@@ -871,9 +937,11 @@ async function handleRealtimeEvent(event) {
     const early = handleCallerPartial(responseGate, soFar, { itemId: event.item_id });
     if (early?.kind === "speech") {
       if (early.cancel) {
+        pushTrace("interrupt", `partial: ${soFar}`);
         sendEvent({ type: "response.cancel" });
         sendEvent({ type: "output_audio_buffer.clear" });
       }
+      applyAgentVolume(early.volume, "interrupt");
       for (const follow of early.send) sendEvent(follow);
     }
   }
@@ -911,13 +979,17 @@ async function handleRealtimeEvent(event) {
     const callerTurn = handleCallerTurn(responseGate, spoken, { itemId: event.item_id });
     interimEl.textContent = "";
     partialTranscripts.delete(event.item_id);
-    if (callerTurn.kind === "noise" || callerTurn.kind === "short") {
-      // Noise / filler / hallucinated transcript: no reply, no "please repeat",
-      // and drop it from the model's context.
+    if (callerTurn.kind === "noise" || callerTurn.kind === "short" || callerTurn.kind === "ignored") {
+      // Noise / filler / backchannel / own echo: no reply, no "please repeat",
+      // the agent keeps talking, and the item leaves the model's context.
+      pushTrace(`drop-${callerTurn.reason || callerTurn.kind}`, spoken);
+      applyAgentVolume(callerTurn.volume, callerTurn.reason || callerTurn.kind);
       if (callerTurn.deleteItem && event.item_id) sendEvent({ type: "conversation.item.delete", item_id: event.item_id });
       return;
     }
+    applyAgentVolume(callerTurn.volume, "interrupt");
     if (callerTurn.cancel) {
+      pushTrace("interrupt", spoken);
       sendEvent({ type: "response.cancel" });
       sendEvent({ type: "output_audio_buffer.clear" });
     }

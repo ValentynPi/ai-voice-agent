@@ -309,19 +309,40 @@ function callBelongsToRequest(call, req) {
   return requestHasTelephonySecret(req);
 }
 
+/**
+ * Barge-in trace from the browser call (duck / restore / interrupt / dropped
+ * noise, mic echo-cancellation settings). Logged only, so a live complaint
+ * like "it stops on every sound" can be read back from Fly logs for free.
+ */
+export function logCallTrace(callId, trace) {
+  if (!Array.isArray(trace) || !trace.length) return 0;
+  const lines = trace.slice(0, 60).map((entry) => {
+    const at = Number(entry?.t) ? new Date(Number(entry.t)).toISOString().slice(11, 23) : "--";
+    const kind = String(entry?.kind || "").replace(/[^\w-]/g, "").slice(0, 24);
+    const detail = String(entry?.detail || "").replace(/[\r\n\t]+/g, " ").slice(0, 80);
+    return `${at} ${kind}${detail ? ` ${detail}` : ""}`;
+  });
+  for (const line of lines) console.info(`call-trace ${String(callId).slice(0, 40)} ${line}`);
+  return lines.length;
+}
+
 app.post("/api/calls/:id/heartbeat", (req, res) => {
   const call = touchCall(req.params.id);
   if (!call || call.status !== "active" || !callBelongsToRequest(call, req)) {
     return res.status(404).json({ error: "Call not found" });
   }
+  logCallTrace(call.id, req.body?.trace);
   res.json({ ok: true });
 });
 
 app.post("/api/calls/:id/end", (req, res) => {
   const existing = getCall(req.params.id);
   if (!existing || !callBelongsToRequest(existing, req)) return res.status(404).json({ error: "Call not found" });
-  const reason = req.body?.status === "failed" ? "failed" : "client";
+  const asked = String(req.body?.reason || "");
+  const reason = req.body?.status === "failed" ? "failed" : asked === "silence" || asked === "max" ? asked : "client";
+  logCallTrace(existing.id, req.body?.trace);
   const call = endCall(req.params.id, reason);
+  if (call && reason !== "client") console.info(`call-end ${existing.id}: ${reason === "max" ? "10-minute limit" : "30 s silence"}`);
   if (!call) return res.status(404).json({ error: "Call not found" });
   res.json({ ok: true, call });
 });

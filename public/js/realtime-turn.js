@@ -483,12 +483,30 @@ export function replyInLanguage(text, code) {
   return detectCallerLanguage(t) === code;
 }
 
-export function ingestRealtimeEvent(gate, event, { suppressFallback = false } = {}) {
+export function ingestRealtimeEvent(gate, event, { suppressFallback = false, now = Date.now() } = {}) {
   if (AUDIO_EVENT.has(event?.type)) gate.heardAudio = true;
   noteSpeechTiming(gate, event);
-  if (event?.type === "response.created") gate.replyText = "";
+  let volume = "";
+  if (event?.type === "response.created") {
+    if (gate.replyText) gate.lastReplyText = gate.replyText;
+    gate.replyText = "";
+    gate.replyAudioAt = 0;
+  }
   if ((event?.type === "response.output_audio_transcript.delta" || event?.type === "response.audio_transcript.delta") && event.delta) {
     gate.replyText = `${gate.replyText || ""}${event.delta}`;
+  }
+  // Playback state. WebRTC reports it (output_audio_buffer.*); the Twilio
+  // bridge estimates it from the bytes it forwarded (setAgentPlayback).
+  if (event?.type === "output_audio_buffer.started") setAgentPlayback(gate, true, now);
+  if (event?.type === "output_audio_buffer.stopped" || event?.type === "output_audio_buffer.cleared") {
+    setAgentPlayback(gate, false, now);
+    if (gate.duck) { gate.duck = null; volume = "restore"; }
+  }
+  if ((event?.type === "response.output_audio.delta" || event?.type === "response.audio.delta") && !gate.replyAudioAt) {
+    gate.replyAudioAt = now;
+  }
+  if (event?.type === "input_audio_buffer.speech_started") {
+    volume = bargeSpeechStart(gate, event.item_id || "", now) || volume;
   }
   const toolCalls = [];
   for (const call of functionCallsFrom(event)) {
@@ -497,7 +515,7 @@ export function ingestRealtimeEvent(gate, event, { suppressFallback = false } = 
   const send = event?.type === "error"
     ? noteResponseError(gate, event.error?.message || event.message || "")
     : settleResponse(gate, event, { suppressFallback });
-  return { send, toolCalls, hold: shouldHoldForSpeech(gate) };
+  return { send, toolCalls, hold: shouldHoldForSpeech(gate), volume };
 }
 
 export function completeTool(gate, callId, epoch, ok) {
@@ -665,6 +683,8 @@ export function handleCallerPartial(gate, partialText, { itemId = "" } = {}) {
   if (gate.answeredItems.has(itemId)) return null;
   const clean = String(partialText || "").replace(/\s+/g, " ").trim();
   if (classifyCallerTranscript(clean) !== "speech" || !isClearLanguageTurn(clean)) return null;
+  // While the agent talks, a partial only stops it once it is confirmed speech.
+  if (agentSpeaking(gate) && interruptionVerdict(clean, agentHeardText(gate)) !== "interrupt") return null;
   const result = handleCallerTurn(gate, clean, { itemId, partial: true });
   if (result.kind === "speech") gate.answeredItems.add(itemId);
   return result;
@@ -689,12 +709,23 @@ export function handleCallerTurn(gate, text, { itemId = "", partial = false } = 
     if (classifyCallerTranscript(clean) === "speech") gate.userText = clean;
     return { kind: "answered", send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: false };
   }
-  if (classifyCallerTranscript(clean) === "noise") {
-    return { kind: "noise", send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: Boolean(itemId) };
-  }
+  const speaking = agentSpeaking(gate);
+  const ignore = (kind, reason) => {
+    const restore = Boolean(gate.duck);
+    gate.duck = null;
+    return { kind, reason, send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: Boolean(itemId), volume: restore ? "restore" : "" };
+  };
+  if (classifyCallerTranscript(clean) === "noise") return ignore("noise", "noise");
   const speechMs = itemId && gate.speechMs ? gate.speechMs.get(itemId) : undefined;
-  if (gate.active && speechMs != null && speechMs < BARGE_IN_MIN_MS) {
-    return { kind: "short", send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: Boolean(itemId) };
+  if (speaking) {
+    // The agent is talking: only confirmed interrupting speech stops it.
+    // Coughs, "ага", TV words and its own voice through the speakers do not.
+    if (speechMs != null && speechMs < BARGE_IN_MIN_MS) return ignore("short", "short");
+    const verdict = interruptionVerdict(clean, agentHeardText(gate));
+    if (verdict !== "interrupt") return ignore(verdict === "noise" ? "noise" : "ignored", verdict);
+  } else if (gate.playEndedAt && Date.now() - gate.playEndedAt < ECHO_TAIL_MS && isEchoOf(clean, agentHeardText(gate))) {
+    // The tail of the agent's own reply, picked up after playback ended.
+    return ignore("noise", "echo");
   }
   const detected = detectCallerLanguage(clean);
   noteCallerSpeech(gate, clean);
@@ -706,6 +737,8 @@ export function handleCallerTurn(gate, text, { itemId = "", partial = false } = 
   gate.toolRounds = 0;
   gate.fallbackArmed = true;
   const interrupt = gate.active;
+  const stopPlayback = speaking;
+  gate.duck = null;
   if (gate.active || gate.tools.size > 0 || gate.waitingForIdle) {
     // A real new turn supersedes the reply in flight and any tool wait.
     gate.epoch += 1;
@@ -720,9 +753,14 @@ export function handleCallerTurn(gate, text, { itemId = "", partial = false } = 
   }
   gate.pendingCreates = [reply];
   gate.pendingFiller = false;
-  if (interrupt) return { kind: "speech", send: [], cancel: true, language, deleteItem: false };
+  if (interrupt) return { kind: "speech", send: [], cancel: true, language, deleteItem: false, volume: "restore" };
   gate.waitingForIdle = false;
-  return { kind: "speech", send: drain(gate), cancel: false, language, deleteItem: false };
+  if (stopPlayback) {
+    // Response already done but its audio is still playing: clear it, answer now.
+    gate.playing = false;
+    return { kind: "speech", send: drain(gate), cancel: true, language, deleteItem: false, volume: "restore" };
+  }
+  return { kind: "speech", send: drain(gate), cancel: false, language, deleteItem: false, volume: "" };
 }
 
 /** Errors from our own cancel/clear/delete racing the server: never user-facing. */
@@ -757,5 +795,114 @@ export function createCallBudget({ now = () => Date.now(), silenceMs = SILENCE_H
 export function budgetEndMessage(reason) {
   if (reason === "max") return "Call ended: the 10-minute limit for a voice call was reached.";
   if (reason === "silence") return "Call ended after 30 seconds of silence.";
+  return "";
+}
+
+
+/* ------------------------------------------------------------------------ *
+ * Barge-in: duck first, stop only on confirmed speech.
+ *
+ * Any sound while the agent talks only lowers its volume (DUCK_VOLUME). The
+ * agent stops only when the caller's transcript is real interrupting speech:
+ * >= 2 real words or >= 6 letters (or an explicit "stop"), not a filler or
+ * backchannel ("ага", "угу", "так", "mm", "ok", "yeah", "sí"), not a known
+ * transcription hallucination, and not an echo of the agent's own words.
+ * Nothing confirmed within DUCK_CONFIRM_MS -> volume restored, reply goes on.
+ * ------------------------------------------------------------------------ */
+export const DUCK_VOLUME = 0.3;
+export const DUCK_CONFIRM_MS = 1200;
+/** Sound in the first moments of each reply is mostly the reply's own echo. */
+export const ECHO_GUARD_MS = 400;
+/** After playback ends, a transcript of the agent's own last words is echo. */
+export const ECHO_TAIL_MS = 2500;
+
+const BACKCHANNEL = new Set([
+  "ага", "угу", "так", "аха", "ага-ага", "ну", "да", "ок", "окей", "добре", "ясно", "зрозуміло", "понятно", "хорошо", "звісно", "авжеж", "ладно",
+  "mm", "mmm", "mhm", "mm-hmm", "mmhmm", "uh-huh", "uhhuh", "aha", "ok", "okay", "yeah", "yes", "yep", "yup", "right", "sure", "cool", "nice", "alright",
+  "sí", "si", "vale", "claro", "ya", "bueno", "oui", "ja", "d'accord",
+]);
+const STOP_WORDS = /^(?:стоп|стій|стоп-стоп|зачекай(?:те)?|почекай(?:те)?|підожди|подожди|погоди|хвилинку|секунду|stop|wait|hold|espera|para|un momento|attends|halt)$/iu;
+const FILLER_WORD = /^(?:u+h+|u+m+|h+m+|m+h*m*|a+h+|e+h+|o+h+|е+|э+|м+|а+|ее+|эм+|хм+|ммм+|ой|ах)$/iu;
+
+function hasVowel(word) {
+  if (!/[a-zа-яіїєґё]/i.test(word)) return true; // other scripts: no vowel rule
+  return /[aeiouyáéíóúüàèòâêôаеєиіїоуюяыэё]/i.test(word);
+}
+
+function plainWords(text) {
+  return String(text || "").toLowerCase()
+    .replace(/[^\p{L}\p{N}\s'-]/gu, " ")
+    .split(/\s+/)
+    .map((w) => w.replace(/^[-']+|[-']+$/g, ""))
+    .filter(Boolean);
+}
+
+function stemMatch(word, agentSet, agentStems) {
+  if (agentSet.has(word)) return true;
+  return word.length >= 5 && agentStems.has(word.slice(0, 5));
+}
+
+/** True when most of the caller's words are words the agent is (just) saying. */
+export function isEchoOf(text, agentText) {
+  const caller = plainWords(text).filter((w) => (w.match(/\p{L}/gu) || []).length >= 2);
+  const agent = plainWords(agentText);
+  if (!caller.length || !agent.length) return false;
+  const set = new Set(agent);
+  const stems = new Set(agent.filter((w) => w.length >= 5).map((w) => w.slice(0, 5)));
+  const hit = caller.filter((w) => stemMatch(w, set, stems)).length;
+  return hit / caller.length >= 0.6;
+}
+
+/** "interrupt" | "noise" | "backchannel" | "echo" | "short" for speech heard while the agent talks. */
+export function interruptionVerdict(text, agentText = "") {
+  const clean = String(text || "").replace(/\[[^\]]*\]|\([^)]*\)|\*[^*]*\*/g, " ").trim();
+  if (classifyCallerTranscript(clean) === "noise") return "noise";
+  const words = plainWords(clean);
+  if (!words.length) return "noise";
+  if (isEchoOf(clean, agentText)) return "echo";
+  if (words.some((w) => STOP_WORDS.test(w)) || /\b(?:hold on|un momento|wait a (?:second|moment))\b/i.test(clean)) return "interrupt";
+  // A real word has a vowel ("кх", "хм", "pff" are coughs and clicks).
+  const real = words.filter((w) => !BACKCHANNEL.has(w) && !FILLER_WORD.test(w) && hasVowel(w));
+  if (!real.length) return "backchannel";
+  const letters = real.join("").match(/\p{L}/gu)?.length || 0;
+  if (real.length >= 2 || letters >= 6) return "interrupt";
+  return "short";
+}
+
+export function agentSpeaking(gate) {
+  return Boolean(gate.active || gate.playing);
+}
+
+function agentHeardText(gate) {
+  return `${gate.replyText || ""} ${gate.lastReplyText || ""}`.trim();
+}
+
+export function setAgentPlayback(gate, playing, now = Date.now()) {
+  if (playing) {
+    if (!gate.playing && !gate.replyAudioAt) gate.replyAudioAt = now;
+    gate.playing = true;
+    return;
+  }
+  if (gate.playing) gate.playEndedAt = now;
+  gate.playing = false;
+  if (gate.replyText) gate.lastReplyText = gate.replyText;
+}
+
+/** Caller sound started. Returns "duck" when the agent should get quieter. */
+export function bargeSpeechStart(gate, itemId = "", now = Date.now()) {
+  if (!agentSpeaking(gate)) return "";
+  if (gate.replyAudioAt && now - gate.replyAudioAt < ECHO_GUARD_MS) return "";
+  const already = Boolean(gate.duck);
+  gate.duck = { itemId, at: now };
+  return already ? "" : "duck";
+}
+
+/** Call every ~200 ms. Returns "restore" when an unconfirmed duck times out. */
+export function bargeTick(gate, now = Date.now()) {
+  if (!gate.duck) return "";
+  if (!agentSpeaking(gate) || now - gate.duck.at >= DUCK_CONFIRM_MS) {
+    gate.duck = null;
+    return "restore";
+  }
   return "";
 }

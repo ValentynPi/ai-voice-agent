@@ -238,9 +238,13 @@ export function turnDetection(vad = process.env.REALTIME_VAD || "server") {
   // server_vad with a higher threshold ignores room noise / keyboard / TV
   // murmur better than semantic_vad in our noise tests, and ends turns in a
   // predictable 700 ms.
+  // 0.8: server_vad scores speech probability, not loudness, so a quiet but
+  // clear voice still passes while keyboard/TV/room noise mostly does not.
+  // Sound that still gets through only ducks the agent (see bargeSpeechStart).
+  const threshold = Math.min(0.95, Math.max(0.5, Number(process.env.REALTIME_VAD_THRESHOLD) || 0.8));
   return {
     type: "server_vad",
-    threshold: 0.7,
+    threshold,
     prefix_padding_ms: 300,
     silence_duration_ms: 700,
     create_response: false,

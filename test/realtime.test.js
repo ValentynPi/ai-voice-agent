@@ -32,7 +32,7 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   // Structural turn-taking: the client answers each filtered transcript.
   assert.equal(session.audio.input.turn_detection.create_response, false);
   assert.equal(session.audio.input.turn_detection.type, "server_vad");
-  assert.equal(session.audio.input.turn_detection.threshold, 0.7);
+  assert.equal(session.audio.input.turn_detection.threshold, 0.8);
   assert.equal(session.audio.input.turn_detection.silence_duration_ms, 700);
   assert.equal(session.audio.input.noise_reduction.type, "near_field");
   assert.equal(session.reasoning.effort, "minimal");

@@ -15,8 +15,19 @@ import {
   queueResponseCreate,
   queueSessionUpdate,
   shouldHoldForSpeech,
+  bargeTick,
+  setAgentPlayback,
+  DUCK_VOLUME,
   withTimeout, toCachedResponse, greetingLanguageNote, createCallBudget } from "../../public/js/realtime-turn.js";
 import { realtimeEventFailure } from "../../public/js/voice-failure.js";
+import { mulawDurationMs, scaleMulawBase64 } from "./mulaw.js";
+
+/**
+ * Agent audio is paced to Twilio ~real time with a small lead instead of being
+ * dumped as fast as OpenAI sends it. With a whole reply already buffered at
+ * Twilio, neither ducking nor "clear" could act on what the caller hears.
+ */
+export const AUDIO_LEAD_MS = 500;
 import {
   botTaskLine,
   buildRealtimeSession,
@@ -221,11 +232,16 @@ async function handleTwilioMedia(twilioWs, url) {
 
   let callBudget = null;
   let budgetTimer = null;
+  let audioTimer = null;
+  let outQueue = [];
+  let playbackEndsAt = 0;
   const closeAll = (reason = "client") => {
     if (closed) return;
     closed = true;
     if (budgetTimer) clearInterval(budgetTimer);
     budgetTimer = null;
+    if (audioTimer) clearInterval(audioTimer);
+    audioTimer = null;
     if (deskCall?.id) {
       try {
         endCall(deskCall.id, reason);
@@ -247,6 +263,25 @@ async function handleTwilioMedia(twilioWs, url) {
 
   const sendTwilio = (payload) => {
     if (twilioWs.readyState === WebSocket.OPEN) twilioWs.send(JSON.stringify(payload));
+  };
+
+  const pumpAudio = (now = Date.now()) => {
+    while (outQueue.length && streamSid && playbackEndsAt - now < AUDIO_LEAD_MS) {
+      const chunk = outQueue.shift();
+      // Unconfirmed caller sound: the agent keeps talking, quieter.
+      const payload = responseGate.duck ? scaleMulawBase64(chunk, DUCK_VOLUME) : chunk;
+      sendTwilio({ event: "media", streamSid, media: { payload } });
+      playbackEndsAt = Math.max(now, playbackEndsAt) + mulawDurationMs(chunk);
+      setAgentPlayback(responseGate, true, now);
+    }
+    if (!outQueue.length && responseGate.playing && now >= playbackEndsAt) setAgentPlayback(responseGate, false, now);
+  };
+
+  const clearPlayback = () => {
+    outQueue = [];
+    playbackEndsAt = Date.now();
+    setAgentPlayback(responseGate, false);
+    if (streamSid) sendTwilio({ event: "clear", streamSid });
   };
 
   const sendOpenAi = (payload) => {
@@ -292,6 +327,10 @@ async function handleTwilioMedia(twilioWs, url) {
           greetingSent = true;
           sendOpenAi(greetingEvent(lang, agent));
         }
+        audioTimer = setInterval(() => {
+          pumpAudio();
+          bargeTick(responseGate);
+        }, 50);
         // Cost guard: hang up after 30 s with no real speech, and at 10 minutes.
         callBudget = createCallBudget();
         budgetTimer = setInterval(() => {
@@ -354,11 +393,8 @@ async function handleTwilioMedia(twilioWs, url) {
       && streamSid
     ) {
       callBudget?.noteActivity();
-      sendTwilio({
-        event: "media",
-        streamSid,
-        media: { payload: event.delta },
-      });
+      outQueue.push(event.delta);
+      pumpAudio();
       return;
     }
 
@@ -368,26 +404,29 @@ async function handleTwilioMedia(twilioWs, url) {
       const early = handleCallerPartial(responseGate, soFar, { itemId: event.item_id });
       if (early?.kind === "speech") {
         if (early.cancel) {
-          if (streamSid) sendTwilio({ event: "clear", streamSid });
+          console.info(`call-trace ${deskCall?.id || "twilio"} interrupt partial`);
+          clearPlayback();
           sendOpenAi({ type: "response.cancel" });
         }
         for (const follow of early.send) sendOpenAi(follow);
       }
       return;
     }
-    // No barge-in on speech_started: phone line noise starts "speech" too.
-    // handleCallerTurn cancels only for a real transcript (>= BARGE_IN_MIN_MS).
+    // speech_started only ducks (ingestRealtimeEvent -> bargeSpeechStart).
+    // handleCallerTurn stops the agent only for confirmed interrupting speech.
     const userText = transcriptFrom(event, "user");
     if (userText && deskCall?.id) {
       const callerTurn = handleCallerTurn(responseGate, userText, { itemId: event.item_id });
       partialTranscripts.delete(event.item_id);
-      if (callerTurn.kind === "noise" || callerTurn.kind === "short") {
+      if (callerTurn.kind === "noise" || callerTurn.kind === "short" || callerTurn.kind === "ignored") {
+        console.info(`call-trace ${deskCall.id} drop-${callerTurn.reason || callerTurn.kind}`);
         if (callerTurn.deleteItem && event.item_id) sendOpenAi({ type: "conversation.item.delete", item_id: event.item_id });
         return;
       }
       if (responseGate.callerLanguage) lang = responseGate.callerLanguage;
       if (callerTurn.cancel) {
-        if (streamSid) sendTwilio({ event: "clear", streamSid });
+        console.info(`call-trace ${deskCall.id} interrupt`);
+        clearPlayback();
         sendOpenAi({ type: "response.cancel" });
       }
       for (const follow of callerTurn.send) sendOpenAi(follow);
