@@ -171,7 +171,30 @@ export function voiceLabel(agent) {
   return picked || voiceName();
 }
 
-export function buildRealtimeSession(model, lang, agent, { telephony = false, transcription = "multilingual", reasoning = "minimal" } = {}) {
+/**
+ * Structural turn-taking: the model never answers raw audio itself
+ * (create_response=false) and noise never cuts it off (interrupt_response=false).
+ * The client answers each finished, noise-filtered transcript with its own
+ * response.create carrying "Reply ONLY in <language>". See handleCallerTurn.
+ */
+export function turnDetection(vad = process.env.REALTIME_VAD || "server") {
+  if (vad === "semantic") {
+    return { type: "semantic_vad", eagerness: "low", create_response: false, interrupt_response: false };
+  }
+  // server_vad with a higher threshold ignores room noise / keyboard / TV
+  // murmur better than semantic_vad in our noise tests, and ends turns in a
+  // predictable 700 ms.
+  return {
+    type: "server_vad",
+    threshold: 0.7,
+    prefix_padding_ms: 300,
+    silence_duration_ms: 700,
+    create_response: false,
+    interrupt_response: false,
+  };
+}
+
+export function buildRealtimeSession(model, lang, agent, { telephony = false, transcription = "multilingual", reasoning = "minimal", vad } = {}) {
   const pcmu = telephony ? { type: "audio/pcmu" } : null;
   const transcriptionConfig = transcription === "open"
     ? { model: "gpt-4o-mini-transcribe" }
@@ -185,14 +208,9 @@ export function buildRealtimeSession(model, lang, agent, { telephony = false, tr
       input: {
         ...(pcmu ? { format: pcmu } : {}),
         transcription: transcriptionConfig,
-        turn_detection: {
-          type: "semantic_vad",
-          // Auto-answer when the caller finishes — do not wait on transcription (empty/late transcripts caused silence).
-          create_response: true,
-          interrupt_response: true,
-          // high (~2s) false-started on room noise / keyboard. medium max ~4s; clear speech still ends promptly (semantic end-prob).
-          eagerness: "medium",
-        },
+        // Phone audio is far-field; a browser headset/laptop mic is near-field.
+        noise_reduction: { type: telephony ? "far_field" : "near_field" },
+        turn_detection: turnDetection(vad),
       },
       output: {
         ...(pcmu ? { format: pcmu } : {}),
@@ -215,7 +233,7 @@ function sessionVariant(session, dropTurnFlags) {
   const next = structuredClone(session);
   const detection = next.audio?.input?.turn_detection;
   if (detection) {
-    delete detection.create_response;
+    // Keep create_response=false: auto replies are what made the first answer English.
     delete detection.interrupt_response;
     delete detection.eagerness;
   }

@@ -10,8 +10,8 @@ import {
   functionOutputEvent,
   ingestRealtimeEvent,
   armToolFiller,
-  noteBargeIn,
-  applyCallerTranscript,
+  handleCallerTurn,
+  handleCallerPartial,
   queueResponseCreate,
   queueSessionUpdate,
   withTimeout, withSessionInstructions, greetingLanguageNote } from "../../public/js/realtime-turn.js";
@@ -77,7 +77,7 @@ function sessionVariant(session, dropTurnFlags) {
   const next = structuredClone(session);
   const detection = next.audio?.input?.turn_detection;
   if (detection) {
-    delete detection.create_response;
+    // Keep create_response=false: replies are created from transcripts.
     delete detection.interrupt_response;
     delete detection.eagerness;
   }
@@ -211,6 +211,7 @@ async function handleTwilioMedia(twilioWs, url) {
   let greetingSent = false;
   const responseGate = createResponseGate();
   let greetingDone = false;
+  const partialTranscripts = new Map();
   const agentHint = String(url.searchParams.get("agentId") || "").trim();
   let lang = String(url.searchParams.get("lang") || "multi").trim().toLowerCase();
   if (lang !== "es" && lang !== "en" && lang !== "multi") lang = "multi";
@@ -311,7 +312,6 @@ async function handleTwilioMedia(twilioWs, url) {
 
     if (deskCall?.id) touchCall(deskCall.id);
 
-    if (event.type === "input_audio_buffer.speech_started" && greetingDone) noteBargeIn(responseGate);
     const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: !greetingDone });
     for (const follow of turn.send) sendOpenAi(follow);
     if (turn.toolCalls.length) armToolFiller(responseGate, sendOpenAi);
@@ -337,26 +337,35 @@ async function handleTwilioMedia(twilioWs, url) {
       return;
     }
 
-    if (event.type === "input_audio_buffer.speech_started" && streamSid) {
-      // Only clear playback when a response is actually active. Cancel-while-idle
-      // errors and false barge-ins during MCP waits were racing the shared gate.
-      // The salon demo does not send a second response.cancel: semantic VAD
-      // interrupt_response already stops the model. An extra cancel races that
-      // and cuts the reply. Sessions that dropped the flag still need a cancel.
-      if (responseGate.active) {
-        sendTwilio({ event: "clear", streamSid });
-        const serverInterrupts = openai?.session?.audio?.input?.turn_detection?.interrupt_response === true;
-        if (!serverInterrupts) sendOpenAi({ type: "response.cancel" });
+    if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta && event.item_id) {
+      const soFar = `${partialTranscripts.get(event.item_id) || ""}${event.delta}`;
+      partialTranscripts.set(event.item_id, soFar);
+      const early = handleCallerPartial(responseGate, soFar, { itemId: event.item_id });
+      if (early?.kind === "speech") {
+        if (early.cancel) {
+          if (streamSid) sendTwilio({ event: "clear", streamSid });
+          sendOpenAi({ type: "response.cancel" });
+        }
+        for (const follow of early.send) sendOpenAi(follow);
       }
       return;
     }
-
+    // No barge-in on speech_started: phone line noise starts "speech" too.
+    // handleCallerTurn cancels only for a real transcript (>= BARGE_IN_MIN_MS).
     const userText = transcriptFrom(event, "user");
     if (userText && deskCall?.id) {
-      const langTurn = applyCallerTranscript(responseGate, userText);
+      const callerTurn = handleCallerTurn(responseGate, userText, { itemId: event.item_id });
+      partialTranscripts.delete(event.item_id);
+      if (callerTurn.kind === "noise" || callerTurn.kind === "short") {
+        if (callerTurn.deleteItem && event.item_id) sendOpenAi({ type: "conversation.item.delete", item_id: event.item_id });
+        return;
+      }
       if (responseGate.callerLanguage) lang = responseGate.callerLanguage;
-      // Cancel a wrong-language auto-reply; response.done/cancelled drains the restart.
-      if (langTurn.restart && responseGate.active) sendOpenAi({ type: "response.cancel" });
+      if (callerTurn.cancel) {
+        if (streamSid) sendTwilio({ event: "clear", streamSid });
+        sendOpenAi({ type: "response.cancel" });
+      }
+      for (const follow of callerTurn.send) sendOpenAi(follow);
       // Only when the caller actually switched. A session.update on every
       // fragment rewrites the reply and adds a round trip before the next audio.
       if (openai?.session) {
@@ -398,7 +407,7 @@ ${outcome.reply}`,
             },
           })) sendOpenAi(follow);
         }
-        // create_response=true on semantic_vad already answers the caller turn.
+        // handleCallerTurn sent the reply (create_response=false on the session).
       } catch (error) {
         console.error("Utterance screen failed:", error?.message || error);
       }

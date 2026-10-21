@@ -37,6 +37,19 @@ function contentWords(text) {
   return withoutPlaceNames(text).match(/\p{L}{2,}/gu) || [];
 }
 
+const UK_WORDS = /(?:^|[^\p{L}])(що|як|яка|який|яке|які|чи|ти|ви|мені|тобі|вмієш|можеш|будь|ласка|привіт|вітаю|дякую|сьогодні|завтра|скажи|скажіть|погода|зараз|де|коли|так|ні|добре|розкажи|розкажіть)(?=$|[^\p{L}])/giu;
+const RU_WORDS = /(?:^|[^\p{L}])(что|как|какая|какой|какое|ты|мне|тебе|умеешь|можешь|пожалуйста|привет|здравствуйте|спасибо|сегодня|сейчас|где|когда|да|нет|хорошо|это|расскажи|расскажите)(?=$|[^\p{L}])/giu;
+
+/** Ukrainian evidence: і/ї/є/ґ letters and common Ukrainian-only words. */
+function ukrainianScore(value) {
+  return (value.match(/[іїєґІЇЄҐ]/g) || []).length * 2 + (value.match(UK_WORDS) || []).length;
+}
+
+/** Russian evidence: ы/э/ъ/ё letters and common Russian-only words. */
+function russianScore(value) {
+  return (value.match(/[ыэъёЫЭЪЁ]/g) || []).length * 2 + (value.match(RU_WORDS) || []).length;
+}
+
 /**
  * Guess the language of a transcript. A place name, one function word,
  * or a short noisy fragment returns "" so it cannot flip the call.
@@ -47,11 +60,13 @@ export function detectCallerLanguage(text) {
   if ((value.match(/[\u0590-\u05FF]/g) || []).length >= 2) return "he";
   if ((value.match(/[\u0600-\u06FF]/g) || []).length >= 2) return "ar";
   if (/[\u0400-\u04FF]/.test(value)) {
-    if (/[іїєґІЇЄҐ]/.test(value) || /привіт|будь ласка|сьогодні|скажи|дякую|яка|який|яке|які|мені/i.test(value)) {
-      return "uk";
-    }
-    if (contentWords(value).length < 2) return "";
-    return "ru";
+    const uk = ukrainianScore(value);
+    const ru = russianScore(value);
+    if (uk > ru) return "uk";
+    if (ru > uk) return "ru";
+    // No Ukrainian or Russian evidence either way: do not guess (a guess flipped
+    // Ukrainian callers to Russian). The reply follows the caller's own words.
+    return "";
   }
   const sample = value.normalize("NFD").replace(/\p{M}/gu, "");
   const esHits = sample.match(/\b(hola|gracias|por favor|tiempo|clima|que|como|donde|hoy|buenos|buenas)\b/gi)?.length || 0;
@@ -196,4 +211,47 @@ export function applyCallerTurn(session, text, established = "") {
     language,
     changed: Boolean(language) && language !== previous,
   };
+}
+
+
+/**
+ * Transcripts the speech model invents from silence, room noise, keyboard, a
+ * cough or TV murmur. Whole-turn matches only (after trimming punctuation).
+ */
+const HALLUCINATIONS = [
+  "thank you", "thanks", "thank you for watching", "thanks for watching", "you", "bye", "okay", "ok",
+  "so", "the end", "subtitles by the amara.org community", "please subscribe",
+  "продолжение следует", "субтитры", "субтитры сделал dimatorzok", "субтитры создавал dimatorzok",
+  "редактор субтитров", "спасибо за просмотр", "дякую за перегляд", "это место",
+  "gracias", "gracias por ver", "subtítulos", "subtítulos realizados por la comunidad de amara.org",
+  "merci", "sous-titres", "ご視聴ありがとうございました",
+];
+const FILLERS = /^(?:u+h+|u+m+|h+m+|m+h*|a+h+|e+h+|o+h+|е+|э+|м+|м+м+|а+|ее+|эм+|хм+|ага?|угу|ммм+|ой|ах)$/iu;
+
+/**
+ * "noise" — never answer it (empty, punctuation, <2 letters, filler,
+ * known hallucination). "speech" — a real caller turn.
+ */
+export function classifyCallerTranscript(text) {
+  const raw = String(text || "").trim();
+  const letters = raw.match(/\p{L}/gu) || [];
+  if (letters.length < 2) return "noise";
+  const plain = raw.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();
+  if (!plain) return "noise";
+  if (HALLUCINATIONS.includes(plain)) return "noise";
+  if (/^(?:субтитры|subtitles|sous-titres|subtítulos)\b/.test(plain)) return "noise";
+  const words = plain.split(" ");
+  if (words.every((word) => FILLERS.test(word))) return "noise";
+  return "speech";
+}
+
+/** The hard per-reply language line built from the caller's own transcript. */
+export function replyLanguageLine(code, text = "") {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  const name = languageName(code);
+  const words = clean ? ` The caller said: "${clean}".` : "";
+  if (name) {
+    return `Reply ONLY in ${name}. Every word of this reply must be ${name}, even though the greeting, the Bot task, and tool data are English.${words}`;
+  }
+  return `Reply ONLY in the language the caller used in their words below, not English unless those words are English.${words}`;
 }

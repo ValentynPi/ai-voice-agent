@@ -9,8 +9,9 @@ import {
   functionOutputEvent,
   ingestRealtimeEvent,
   armToolFiller,
-  noteBargeIn,
-  applyCallerTranscript,
+  handleCallerTurn,
+  handleCallerPartial,
+  isBenignRealtimeError,
   queueResponseCreate,
   queueSessionUpdate,
   shouldHoldForSpeech,
@@ -61,6 +62,8 @@ let sessionReady = false;
 let answerApplied = false;
 let greetingSent = false;
 let greetingNoteSent = false;
+/** item_id -> streaming caller transcript, for the early reply. */
+const partialTranscripts = new Map();
 let greetingTries = 0;
 let greetingHeardAudio = false;
 let greetingBubble = null;
@@ -812,8 +815,9 @@ async function handleRealtimeEvent(event) {
   }
   if (event.type === "error") {
     const message = event.error?.message || event.message || "Realtime error";
-    if (/active response/i.test(message)) {
-      // Follow-up response.create was early; ingestRealtimeEvent requeues it for response.done.
+    if (isBenignRealtimeError(message, event.error?.code)) {
+      // Our own cancel/clear/delete raced the server, or an early create that
+      // ingestRealtimeEvent requeues for response.done. Not a voice failure.
     } else if (!failGreeting("error")) {
       hintEl.textContent = /quota|credit/i.test(`${event.error?.code || ""} ${message}`)
         ? voiceUnavailableHint(tokenFailure(503, { code: "openai_quota" }).message, agentLabel)
@@ -822,7 +826,8 @@ async function handleRealtimeEvent(event) {
     }
   }
   if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting) {
-    noteBargeIn(responseGate);
+    // No barge-in here: noise also starts "speech". handleCallerTurn cancels
+    // the agent only for a real transcript of at least BARGE_IN_MIN_MS.
     interimEl.textContent = "";
     setPhase("listening", "Listening");
   }
@@ -830,6 +835,16 @@ async function handleRealtimeEvent(event) {
   for (const follow of turn.send) sendEvent(follow);
   if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
     interimEl.textContent = `${interimEl.textContent}${event.delta}`;
+    const soFar = `${partialTranscripts.get(event.item_id) || ""}${event.delta}`;
+    partialTranscripts.set(event.item_id, soFar);
+    const early = handleCallerPartial(responseGate, soFar, { itemId: event.item_id });
+    if (early?.kind === "speech") {
+      if (early.cancel) {
+        sendEvent({ type: "response.cancel" });
+        sendEvent({ type: "output_audio_buffer.clear" });
+      }
+      for (const follow of early.send) sendEvent(follow);
+    }
   }
   if (
     event.type === "output_audio_buffer.started"
@@ -862,10 +877,20 @@ async function handleRealtimeEvent(event) {
 
   const spoken = userTranscript(event);
   if (spoken) {
-    const langTurn = applyCallerTranscript(responseGate, spoken);
+    const callerTurn = handleCallerTurn(responseGate, spoken, { itemId: event.item_id });
     interimEl.textContent = "";
-    // Cancel a wrong-language auto-reply; response.done/cancelled drains the restarted create.
-    if (langTurn.restart && responseGate.active) sendEvent({ type: "response.cancel" });
+    partialTranscripts.delete(event.item_id);
+    if (callerTurn.kind === "noise" || callerTurn.kind === "short") {
+      // Noise / filler / hallucinated transcript: no reply, no "please repeat",
+      // and drop it from the model's context.
+      if (callerTurn.deleteItem && event.item_id) sendEvent({ type: "conversation.item.delete", item_id: event.item_id });
+      return;
+    }
+    if (callerTurn.cancel) {
+      sendEvent({ type: "response.cancel" });
+      sendEvent({ type: "output_audio_buffer.clear" });
+    }
+    for (const follow of callerTurn.send) sendEvent(follow);
     await onCallerAudio(spoken, event.item_id);
   }
 
@@ -902,7 +927,7 @@ async function onCallerAudio(text, itemId) {
     speakRefusal(payload.reply);
     return;
   }
-  // Semantic VAD create_response=true already starts the reply; do not double-fire response.create.
+  // handleCallerTurn already sent the reply (create_response=false on the session).
 }
 
 async function onAssistantAudio(text) {

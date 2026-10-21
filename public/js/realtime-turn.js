@@ -17,7 +17,7 @@
  * - On an active-response error, requeue and drain after the next settle.
  */
 
-import { callerTurnLine, detectCallerLanguage, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
+import { callerTurnLine, classifyCallerTranscript, detectCallerLanguage, isClearLanguageTurn, replyLanguageLine, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
 
 export const TOOL_TURN_TIMEOUT_MS = 10000;
 export const TOOL_FETCH_TIMEOUT_MS = 15000;
@@ -59,6 +59,12 @@ export function createResponseGate() {
     callerLanguage: "",
     /** Transcript of the reply in flight, to tell whether a restart is needed. */
     replyText: "",
+    /** item_id -> ms of caller speech (from VAD start/stop), for barge-in. */
+    speechStart: new Map(),
+    speechMs: new Map(),
+    lastReply: null,
+    replyRetried: false,
+    toolRounds: 0,
     toolStartedAt: 0,
     fillerUsed: false,
     fillerTimer: null,
@@ -245,17 +251,20 @@ export function functionOutputEvent(callId, output) {
   };
 }
 
-export function toolFollowUpEvent(name, failed, userText = "", established = "") {
+export function toolFollowUpEvent(name, failed, userText = "", established = "", { allowMore = false } = {}) {
   const line = spokenFailure(name, userText, established);
   const turn = callerTurnLine(userText, established);
+  const more = allowMore
+    ? " If this result only identifies the place (for example a location search) and you still need its weather or forecast, call that lookup now instead of answering; otherwise answer."
+    : " Do not call tools.";
   const instructions = failed
     ? `${turn} The tool failed, timed out, or is missing. Say this in the caller's language, then stop: ${line} Do not invent a result. Do not call tools.`
-    : `${turn} Speak the tool result to the caller in their language. One to two short sentences. Use only facts from the tool result. The tool payload may be English or include a place name such as Castellón. That is not a language switch. If it includes current conditions, speak the temperature and condition. An airport or aerodrome of the city the caller named is the right place: say the weather and do not ask them to clarify. Ask for a different place only when the result says the match is a different city. If the result is an error, say you can't get that right now and do not invent data. Do not call tools.`;
+    : `${turn} Speak the tool result to the caller in their language. One to two short sentences. Use only facts from the tool result. The tool payload may be English or include a place name such as Castellón. That is not a language switch. If it includes current conditions, speak the temperature and condition. An airport or aerodrome of the city the caller named is the right place: say the weather and do not ask them to clarify. Ask for a different place only when the result says the match is a different city. If the result is an error, say you can't get that right now and do not invent data.${more}`;
   return {
     type: "response.create",
     response: {
       output_modalities: ["audio"],
-      tool_choice: "none",
+      tool_choice: failed || !allowMore ? "none" : "auto",
       instructions,
     },
   };
@@ -416,7 +425,13 @@ function settleResponse(gate, event, { suppressFallback = false } = {}) {
     && gate.pendingCreates.length === 0
   ) {
     gate.fallbackArmed = false;
-    if (isClearLanguageTurn(gate.userText || "")) {
+    // Never dead air, never "please repeat": re-send the caller's reply once.
+    if (gate.lastReply && !gate.replyRetried) {
+      gate.replyRetried = true;
+      gate.pendingCreates = [gate.lastReply];
+      gate.pendingFiller = false;
+    } else if (isWeatherTopic(gate.userText || "") && isClearLanguageTurn(gate.userText || "")) {
+      // Still silent on a clear weather ask: say the lookup failed, not "repeat".
       gate.pendingCreates = [silenceFallbackEvent(gate.userText, gate.callerLanguage)];
       gate.pendingFiller = false;
     }
@@ -463,6 +478,7 @@ export function replyInLanguage(text, code) {
 
 export function ingestRealtimeEvent(gate, event, { suppressFallback = false } = {}) {
   if (AUDIO_EVENT.has(event?.type)) gate.heardAudio = true;
+  noteSpeechTiming(gate, event);
   if (event?.type === "response.created") gate.replyText = "";
   if ((event?.type === "response.output_audio_transcript.delta" || event?.type === "response.audio_transcript.delta") && event.delta) {
     gate.replyText = `${gate.replyText || ""}${event.delta}`;
@@ -500,7 +516,10 @@ export function completeTool(gate, callId, epoch, ok) {
   disarmToolFiller(gate);
   gate.fillerUsed = false;
   gate.toolStartedAt = 0;
-  gate.pendingCreates = [toolFollowUpEvent(label, failed, gate.userText, gate.callerLanguage)];
+  gate.toolRounds = (gate.toolRounds || 0) + 1;
+  gate.pendingCreates = [toolFollowUpEvent(label, failed, gate.userText, gate.callerLanguage, {
+    allowMore: gate.toolRounds < MAX_TOOL_ROUNDS,
+  })];
   gate.pendingFiller = false;
   return drain(gate);
 }
@@ -569,4 +588,117 @@ export function greetingLanguageNote() {
       content: [{ type: "input_text", text: GREETING_LANGUAGE_NOTE }],
     },
   };
+}
+
+
+/** Caller speech shorter than this never interrupts the agent (cough, click, "mm"). */
+export const BARGE_IN_MIN_MS = 400;
+/** Place search -> forecast needs two lookups; cap the chain. */
+export const MAX_TOOL_ROUNDS = 3;
+
+function noteSpeechTiming(gate, event) {
+  if (!gate.speechStart) gate.speechStart = new Map();
+  if (!gate.speechMs) gate.speechMs = new Map();
+  const id = event?.item_id;
+  if (!id) return;
+  if (event.type === "input_audio_buffer.speech_started") {
+    gate.speechStart.set(id, Number(event.audio_start_ms) || 0);
+  } else if (event.type === "input_audio_buffer.speech_stopped") {
+    const start = gate.speechStart.get(id);
+    if (start != null) gate.speechMs.set(id, Math.max(0, (Number(event.audio_end_ms) || 0) - start));
+    gate.speechStart.delete(id);
+  }
+  if (gate.speechMs.size > 50) gate.speechMs.delete(gate.speechMs.keys().next().value);
+}
+
+/** The reply to one caller turn: Bot task rides on via withSessionInstructions. */
+export function callerReplyEvent(text, code, { partial = false } = {}) {
+  // A partial transcript only fixes the language; the model hears the full audio.
+  const line = partial ? replyLanguageLine(code, "") : replyLanguageLine(code, text);
+  return {
+    type: "response.create",
+    response: {
+      output_modalities: ["audio"],
+      tool_choice: "auto",
+      instructions: `${line} Answer the caller's latest turn now in one or two short sentences. Do not ask the caller to repeat.`,
+    },
+  };
+}
+
+/**
+ * Early start: the transcript streams in deltas. As soon as the partial text is
+ * clearly real speech in a known language, answer without waiting for the
+ * final transcript (saves the tail of transcription). The final transcript for
+ * the same item is then only recorded, not answered again.
+ */
+export function handleCallerPartial(gate, partialText, { itemId = "" } = {}) {
+  if (!itemId) return null;
+  if (!gate.answeredItems) gate.answeredItems = new Set();
+  if (gate.answeredItems.has(itemId)) return null;
+  const clean = String(partialText || "").replace(/\s+/g, " ").trim();
+  if (classifyCallerTranscript(clean) !== "speech" || !isClearLanguageTurn(clean)) return null;
+  const result = handleCallerTurn(gate, clean, { itemId, partial: true });
+  if (result.kind === "speech") gate.answeredItems.add(itemId);
+  return result;
+}
+
+/**
+ * Structural turn-taking. The session runs with create_response=false and
+ * interrupt_response=false, so the model never answers raw audio on its own.
+ * Each finished caller transcript lands here:
+ *  - noise (empty, punctuation, filler, known hallucination) -> ignored, and
+ *    the item is dropped from the conversation;
+ *  - real speech -> language from the transcript, then one response.create
+ *    whose instructions say "Reply ONLY in <language>".
+ * Real speech of at least BARGE_IN_MIN_MS while the agent talks cancels it
+ * (`cancel: true`: the caller sends response.cancel and clears playback).
+ */
+export function handleCallerTurn(gate, text, { itemId = "", partial = false } = {}) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!partial && itemId && gate.answeredItems?.has(itemId)) {
+    // Already answered from the streaming transcript; keep the full words for tool follow-ups.
+    gate.answeredItems.delete(itemId);
+    if (classifyCallerTranscript(clean) === "speech") gate.userText = clean;
+    return { kind: "answered", send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: false };
+  }
+  if (classifyCallerTranscript(clean) === "noise") {
+    return { kind: "noise", send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: Boolean(itemId) };
+  }
+  const speechMs = itemId && gate.speechMs ? gate.speechMs.get(itemId) : undefined;
+  if (gate.active && speechMs != null && speechMs < BARGE_IN_MIN_MS) {
+    return { kind: "short", send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: Boolean(itemId) };
+  }
+  const detected = detectCallerLanguage(clean);
+  noteCallerSpeech(gate, clean);
+  gate.userText = clean;
+  const language = gate.callerLanguage || detected || "";
+  const reply = callerReplyEvent(clean, language, { partial });
+  gate.lastReply = reply;
+  gate.replyRetried = false;
+  gate.toolRounds = 0;
+  gate.fallbackArmed = true;
+  const interrupt = gate.active;
+  if (gate.active || gate.tools.size > 0 || gate.waitingForIdle) {
+    // A real new turn supersedes the reply in flight and any tool wait.
+    gate.epoch += 1;
+    gate.tools.clear();
+    disarmToolFiller(gate);
+    gate.turnNames = [];
+    gate.turnOk = false;
+    gate.turnFailed = false;
+    gate.lastSent = null;
+    gate.fillerUsed = false;
+    gate.toolStartedAt = 0;
+  }
+  gate.pendingCreates = [reply];
+  gate.pendingFiller = false;
+  if (interrupt) return { kind: "speech", send: [], cancel: true, language, deleteItem: false };
+  gate.waitingForIdle = false;
+  return { kind: "speech", send: drain(gate), cancel: false, language, deleteItem: false };
+}
+
+/** Errors from our own cancel/clear/delete racing the server: never user-facing. */
+export function isBenignRealtimeError(message = "", code = "") {
+  return /active response|no active response|response_cancel_not_active|not found|item_id|output_audio_buffer|nothing to cancel|buffer too small|input_audio_buffer_commit_empty/i
+    .test(`${code} ${message}`);
 }

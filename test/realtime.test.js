@@ -29,14 +29,22 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   const session = buildRealtimeSession("gpt-realtime-2.1", "en");
   assert.equal(session.model, "gpt-realtime-2.1");
   assert.equal(session.audio.output.voice, "marin");
-  assert.equal(session.audio.input.turn_detection.create_response, true);
-  assert.equal(session.audio.input.turn_detection.eagerness, "medium");
-  assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
+  // Structural turn-taking: the client answers each filtered transcript.
+  assert.equal(session.audio.input.turn_detection.create_response, false);
+  assert.equal(session.audio.input.turn_detection.type, "server_vad");
+  assert.equal(session.audio.input.turn_detection.threshold, 0.7);
+  assert.equal(session.audio.input.turn_detection.silence_duration_ms, 700);
+  assert.equal(session.audio.input.noise_reduction.type, "near_field");
   assert.equal(session.reasoning.effort, "minimal");
   assert.match(session.instructions, /Ukrainian is not Russian/);
   assert.match(session.instructions, /Ignore background noise/i);
   assert.match(session.instructions, /Europe\/Madrid/);
-  assert.equal(session.audio.input.turn_detection.interrupt_response, true);
+  assert.equal(session.audio.input.turn_detection.interrupt_response, false);
+  const phone = buildRealtimeSession("gpt-realtime-2.1", "en", null, { telephony: true });
+  assert.equal(phone.audio.input.noise_reduction.type, "far_field");
+  const semantic = buildRealtimeSession("gpt-realtime-2.1", "en", null, { vad: "semantic" });
+  assert.equal(semantic.audio.input.turn_detection.eagerness, "low");
+  assert.equal(semantic.audio.input.turn_detection.create_response, false);
   assert.ok(Array.isArray(session.tools));
   assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
   assert.equal(session.tools.some((tool) => tool.name === "book_appointment"), false);
@@ -391,7 +399,7 @@ test("reasoning rejection keeps multilingual transcription and drops effort", ()
   const session = buildRealtimeSession("gpt-realtime", "en", null, { reasoning: "off" });
   assert.equal(session.reasoning, undefined);
   assert.equal(session.audio.input.transcription.model, "gpt-transcribe");
-  assert.equal(session.audio.input.turn_detection.eagerness, "medium");
+  assert.equal(session.audio.input.turn_detection.create_response, false);
 });
 
 test("a place name or noisy fragment does not switch an established language", async () => {
