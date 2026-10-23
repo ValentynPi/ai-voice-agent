@@ -64,3 +64,55 @@ export function realtimeEventFailure(event) {
   }
   return null;
 }
+
+/**
+ * Whether this connect attempt may still apply an SDP answer. A hangup,
+ * pagehide, or a newer connectRealtime bumps the generation and/or closes
+ * the peer connection; a late answer must not call setRemoteDescription.
+ */
+export function canApplyRemoteAnswer(pc, generation, currentGeneration) {
+  if (generation !== currentGeneration) return false;
+  if (!pc) return false;
+  try {
+    if (pc.signalingState === "closed") return false;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Map a connectRealtime throw to a kind/message the UI can show. Prefer an
+ * earlier account failure (credits/key) over the cryptic WebRTC closed-state
+ * InvalidStateError that appears when hangup raced the SDP answer.
+ */
+export function connectFailure(error, agentLabel = "The agent") {
+  if (!error) {
+    return { kind: "server", message: voiceUnavailableHint("", agentLabel) };
+  }
+  if (error.kind === "cancelled") {
+    return { kind: "cancelled", message: "The voice connection was cancelled before it finished. Press Start call to try again." };
+  }
+  if (error.kind === "signin" || error.kind === "openai" || error.kind === "call" || error.kind === "server") {
+    return { kind: error.kind, message: voiceUnavailableHint(error.message, agentLabel) };
+  }
+  const name = String(error.name || "");
+  const raw = String(error.message || error || "");
+  if (
+    name === "InvalidStateError"
+    || /signalingState is ['"]?closed['"]?/i.test(raw)
+    || /setRemoteDescription/i.test(raw) && /closed/i.test(raw)
+  ) {
+    return {
+      kind: "cancelled",
+      message: "The voice connection closed before it finished (the page was left or the call was ended mid-connect). Press Start call to try again.",
+    };
+  }
+  if (/NotAllowedError|Permission|not-allowed|denied/i.test(`${name} ${raw}`)) {
+    return {
+      kind: "mic",
+      message: "Microphone blocked. Allow the microphone for this page to talk; you can still type and read the reply.",
+    };
+  }
+  return { kind: error.kind || "server", message: voiceUnavailableHint(raw || "The voice connection failed.", agentLabel) };
+}

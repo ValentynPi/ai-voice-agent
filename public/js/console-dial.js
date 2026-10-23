@@ -1,4 +1,4 @@
-import { realtimeAccountFailure, realtimeEventFailure, tokenFailure, voiceUnavailableHint } from "./voice-failure.js";
+import { canApplyRemoteAnswer, connectFailure, realtimeAccountFailure, realtimeEventFailure, tokenFailure, voiceUnavailableHint } from "./voice-failure.js";
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
 import { isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
 import {
@@ -65,6 +65,8 @@ let responseGate = createResponseGate();
 let channelOpen = false;
 let sessionReady = false;
 let answerApplied = false;
+/** Bumped by closeRealtime so a late SDP answer cannot touch a closed PC. */
+let connectGeneration = 0;
 let greetingSent = false;
 let greetingNoteSent = false;
 /** item_id -> streaming caller transcript, for the early reply. */
@@ -432,6 +434,7 @@ async function connectRealtime(activeCallId = callId) {
   if (!activeCallId) {
     throw new Error("callId is required before requesting a Realtime token");
   }
+  const generation = ++connectGeneration;
   const tokenResponse = await fetch("/api/realtime/token", {
     method: "POST",
     credentials: "same-origin",
@@ -461,7 +464,14 @@ async function connectRealtime(activeCallId = callId) {
     greeting: token.greeting,
     botTask: token.botTask || "",
     updated: false,
+    generation,
   };
+  if (generation !== connectGeneration) {
+    closeRealtime();
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
   responseGate.botTask = realtime.botTask;
   modeBadge.textContent = `Realtime · ${realtime.voice}`;
 
@@ -475,8 +485,19 @@ async function connectRealtime(activeCallId = callId) {
   const mic = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, autoGainControl: { ideal: true } },
   });
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    mic.getTracks().forEach((track) => track.stop());
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
   realtime.mic = mic;
   await ensureEchoCancellation(mic);
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
   holdMicForGreeting();
   for (const track of mic.getAudioTracks()) {
     track.enabled = false;
@@ -498,6 +519,11 @@ async function connectRealtime(activeCallId = callId) {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await waitForIce(pc);
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
   const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
     method: "POST",
     body: pc.localDescription?.sdp || offer.sdp,
@@ -515,7 +541,21 @@ async function connectRealtime(activeCallId = callId) {
   }
   const answer = await sdpResponse.text();
   if (!answer.startsWith("v=")) throw new Error("Realtime did not return an SDP answer");
-  await pc.setRemoteDescription({ type: "answer", sdp: answer });
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
+  try {
+    await pc.setRemoteDescription({ type: "answer", sdp: answer });
+  } catch (sdpError) {
+    if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || /signalingState is ['"]?closed['"]?/i.test(String(sdpError?.message || ""))) {
+      const err = new Error("Voice connection was cancelled before it finished.");
+      err.kind = "cancelled";
+      throw err;
+    }
+    throw sdpError;
+  }
   answerApplied = true;
   nudgeRemoteAudio();
   hintEl.textContent = `Connecting the ${token.voice || "chloe"} voice. ${agentLabel} will speak first.`;
@@ -541,6 +581,7 @@ function waitForIce(pc) {
 }
 
 function closeRealtime() {
+  connectGeneration += 1;
   resetGreetingState();
   const current = realtime;
   realtime = null;
@@ -610,15 +651,16 @@ async function startCall() {
       connected = await connectRealtime(callId);
     } catch (error) {
       closeRealtime();
-      const micBlocked = /NotAllowedError|Permission|not-allowed|denied/i.test(`${error.name || ""} ${error.message || ""}`);
-      failure = micBlocked
-        ? "Microphone blocked. Allow the microphone for this page to talk; you can still type and read the reply."
-        : voiceUnavailableHint(error.message, agentLabel);
-      failureKind = error.kind || "";
+      // Hangup / pagehide already ended the call — don't overwrite "Call saved".
+      if (!callActive) return;
+      const mapped = connectFailure(error, agentLabel);
+      failure = mapped.message;
+      failureKind = mapped.kind || "";
     }
     if (connected) startCallBudget();
     if (!connected) {
       closeRealtime();
+      if (!callActive) return;
       const authFail = failureKind === "signin";
       if (authFail) {
         if (heartbeat) clearInterval(heartbeat);
