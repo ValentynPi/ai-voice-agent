@@ -22,7 +22,12 @@ import {
   createCallBudget,
   budgetEndMessage,
   greetingLanguageNote,
+  enableSpeakVad,
+  localSpeechEnd,
+  localSpeechStart,
+  speakVadTick,
 } from "./realtime-turn.js";
+import { startMicVad } from "./mic-vad.js";
 
 const CHIPS = [
   { label: "Help", text: "What can you help me with?" },
@@ -192,8 +197,31 @@ function sendEvent(event) {
   if (!realtime || realtime.dc.readyState !== "open") return false;
   // No per-response `instructions`: they replace the session prompt and defeat
   // the prompt cache. The nudge goes in as a one-line system item instead.
+  const input = event?.type === "session.update" ? event.session?.audio?.input : null;
+  if (input && "turn_detection" in input) pushTrace("vad", input.turn_detection ? "server" : "local");
+  if (event?.type === "input_audio_buffer.commit") pushTrace("commit", "local");
   for (const item of toCachedResponse(event, { botTask: realtime.botTask || "" })) realtime.dc.send(JSON.stringify(item));
   return true;
+}
+
+/**
+ * WebRTC: the server clears our audio on every VAD speech_started, even with
+ * interrupt_response=false, so a "yeah" killed the reply. While the agent
+ * talks, server VAD is off and this local mic VAD ducks / commits instead.
+ */
+function startSpeakVad(mic) {
+  if (!realtime || !enableSpeakVad(responseGate, realtime.session?.audio?.input)) return;
+  realtime.micVad = startMicVad(mic, (kind, ms) => {
+    if (!realtime) return;
+    if (kind === "start") {
+      const heard = localSpeechStart(responseGate);
+      applyAgentVolume(heard.volume, "local-sound");
+      for (const follow of heard.send) sendEvent(follow);
+    } else if (kind === "end") {
+      for (const follow of localSpeechEnd(responseGate, ms).send) sendEvent(follow);
+    }
+  });
+  if (!realtime.micVad) responseGate.speakVad = null;
 }
 
 /** Session instructions stay byte-identical for the whole call (prompt cache). */
@@ -476,6 +504,7 @@ async function connectRealtime(activeCallId = callId) {
   }
   realtime.mic = mic;
   await ensureEchoCancellation(mic);
+  startSpeakVad(mic);
   if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
     const err = new Error("Voice connection was cancelled before it finished.");
     err.kind = "cancelled";
@@ -571,6 +600,7 @@ function closeRealtime() {
   if (!current) return;
   try { current.dc.close(); } catch { /* already closed */ }
   try { current.pc.close(); } catch { /* already closed */ }
+  current.micVad?.stop();
   current.mic?.getTracks().forEach((track) => track.stop());
   if (remoteAudio) {
     remoteAudio.pause();
@@ -696,7 +726,7 @@ function applyAgentVolume(action, why = "") {
 }
 
 /** Small server-side trace (Fly logs) of barge-in decisions; rides on the heartbeat. */
-const TRACE_VERSION = "barge-v1";
+const TRACE_VERSION = "barge-v2";
 let traceQueue = [];
 function pushTrace(kind, detail = "") {
   if (!callId) return;
@@ -723,7 +753,10 @@ let bargeTimer = 0;
 function startCallBudget() {
   stopCallBudget();
   callBudget = createCallBudget();
-  bargeTimer = setInterval(() => applyAgentVolume(bargeTick(responseGate), "timeout"), 200);
+  bargeTimer = setInterval(() => {
+    applyAgentVolume(bargeTick(responseGate), "timeout");
+    for (const follow of speakVadTick(responseGate)) sendEvent(follow);
+  }, 200);
   budgetTimer = setInterval(() => {
     if (!callActive || !callBudget) return stopCallBudget();
     const busy = shouldHoldForSpeech(responseGate) || micHeldForGreeting;

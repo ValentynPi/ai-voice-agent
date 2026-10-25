@@ -18,6 +18,9 @@
  */
 
 import { classifyCallerTranscript, detectCallerLanguage, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
+import { BACKCHANNEL_WORDS, FILLER_TOKEN, isBackchannel, isStopWord, transcriptTokens } from "./backchannel.js";
+
+export { isBackchannel, isStopWord } from "./backchannel.js";
 
 export const TOOL_TURN_TIMEOUT_MS = 10000;
 export const TOOL_FETCH_TIMEOUT_MS = 15000;
@@ -395,13 +398,13 @@ function drain(gate) {
     gate.lastSent = event;
     gate.active = true;
     gate.waitingForIdle = false;
-    return [event];
+    return [...speakVadOff(gate), event];
   }
-  if (gate.tools.size > 0 || gate.holdSession) return [];
+  if (gate.tools.size > 0 || gate.holdSession || gate.playing) return [];
   if (!gate.pendingSession) return [];
   const session = gate.pendingSession;
   gate.pendingSession = null;
-  return [session];
+  return [withSpeakVad(gate, session)];
 }
 
 function settleResponse(gate, event, { suppressFallback = false } = {}) {
@@ -506,7 +509,12 @@ export function ingestRealtimeEvent(gate, event, { suppressFallback = false, now
     gate.replyAudioAt = now;
   }
   if (event?.type === "input_audio_buffer.speech_started") {
+    if (event.item_id && agentSpeaking(gate)) markOverSpeech(gate, event.item_id);
     volume = bargeSpeechStart(gate, event.item_id || "", now) || volume;
+  }
+  if (event?.type === "input_audio_buffer.committed" && gate.speakVad?.commitOverSpeech != null) {
+    if (gate.speakVad.commitOverSpeech && event.item_id) markOverSpeech(gate, event.item_id);
+    gate.speakVad.commitOverSpeech = null;
   }
   const toolCalls = [];
   for (const call of functionCallsFrom(event)) {
@@ -515,6 +523,11 @@ export function ingestRealtimeEvent(gate, event, { suppressFallback = false, now
   const send = event?.type === "error"
     ? noteResponseError(gate, event.error?.message || event.message || "")
     : settleResponse(gate, event, { suppressFallback });
+  if (/^(?:output_audio_buffer\.(?:stopped|cleared)|response\.(?:done|cancelled))$/.test(event?.type || "")) {
+    // A session.update held back while audio played can go now.
+    if (/^output_audio_buffer\./.test(event.type) && !send.length) send.push(...drain(gate));
+    send.push(...speakVadRelease(gate, now));
+  }
   return { send, toolCalls, hold: shouldHoldForSpeech(gate), volume };
 }
 
@@ -683,6 +696,9 @@ export function handleCallerPartial(gate, partialText, { itemId = "" } = {}) {
   if (gate.answeredItems.has(itemId)) return null;
   const clean = String(partialText || "").replace(/\s+/g, " ").trim();
   if (classifyCallerTranscript(clean) !== "speech" || !isClearLanguageTurn(clean)) return null;
+  // "yeah" / "ага" / "ok ok": maybe the start of a real turn, maybe just listening.
+  // Never cancel or answer on it; the final transcript (or more words) decides.
+  if (isBackchannel(clean)) return null;
   // While the agent talks, a partial only stops it once it is confirmed speech.
   if (agentSpeaking(gate) && interruptionVerdict(clean, agentHeardText(gate)) !== "interrupt") return null;
   const result = handleCallerTurn(gate, clean, { itemId, partial: true });
@@ -715,7 +731,13 @@ export function handleCallerTurn(gate, text, { itemId = "", partial = false } = 
     gate.duck = null;
     return { kind, reason, send: [], cancel: false, language: gate.callerLanguage || "", deleteItem: Boolean(itemId), volume: restore ? "restore" : "" };
   };
+  const overSpeech = Boolean(itemId && gate.overSpeech?.has(itemId));
+  if (itemId) gate.overSpeech?.delete(itemId);
   if (classifyCallerTranscript(clean) === "noise") return ignore("noise", "noise");
+  // "yeah", "ok ok", "ага-ага", "так, так" while the agent talks (or said over
+  // its last words, transcript landing just after): the agent keeps talking,
+  // nothing is cancelled, no new reply. Only when it is idle is "yeah" a turn.
+  if (isBackchannel(clean) && (speaking || overSpeech)) return ignore("ignored", "backchannel");
   const speechMs = itemId && gate.speechMs ? gate.speechMs.get(itemId) : undefined;
   if (speaking) {
     // The agent is talking: only confirmed interrupting speech stops it.
@@ -816,25 +838,13 @@ export const ECHO_GUARD_MS = 400;
 /** After playback ends, a transcript of the agent's own last words is echo. */
 export const ECHO_TAIL_MS = 2500;
 
-const BACKCHANNEL = new Set([
-  "ага", "угу", "так", "аха", "ага-ага", "ну", "да", "ок", "окей", "добре", "ясно", "зрозуміло", "понятно", "хорошо", "звісно", "авжеж", "ладно",
-  "mm", "mmm", "mhm", "mm-hmm", "mmhmm", "uh-huh", "uhhuh", "aha", "ok", "okay", "yeah", "yes", "yep", "yup", "right", "sure", "cool", "nice", "alright",
-  "sí", "si", "vale", "claro", "ya", "bueno", "oui", "ja", "d'accord",
-]);
-const STOP_WORDS = /^(?:стоп|стій|стоп-стоп|зачекай(?:те)?|почекай(?:те)?|підожди|подожди|погоди|хвилинку|секунду|stop|wait|hold|espera|para|un momento|attends|halt)$/iu;
-const FILLER_WORD = /^(?:u+h+|u+m+|h+m+|m+h*m*|a+h+|e+h+|o+h+|е+|э+|м+|а+|ее+|эм+|хм+|ммм+|ой|ах)$/iu;
-
 function hasVowel(word) {
   if (!/[a-zа-яіїєґё]/i.test(word)) return true; // other scripts: no vowel rule
   return /[aeiouyáéíóúüàèòâêôаеєиіїоуюяыэё]/i.test(word);
 }
 
 function plainWords(text) {
-  return String(text || "").toLowerCase()
-    .replace(/[^\p{L}\p{N}\s'-]/gu, " ")
-    .split(/\s+/)
-    .map((w) => w.replace(/^[-']+|[-']+$/g, ""))
-    .filter(Boolean);
+  return transcriptTokens(text);
 }
 
 function stemMatch(word, agentSet, agentStems) {
@@ -860,9 +870,11 @@ export function interruptionVerdict(text, agentText = "") {
   const words = plainWords(clean);
   if (!words.length) return "noise";
   if (isEchoOf(clean, agentText)) return "echo";
-  if (words.some((w) => STOP_WORDS.test(w)) || /\b(?:hold on|un momento|wait a (?:second|moment))\b/i.test(clean)) return "interrupt";
+  if (isStopWord(clean)) return "interrupt";
+  // "yeah yeah", "ага-ага", "okay, okay", "так, так, добре": listening, not a turn.
+  if (isBackchannel(clean)) return "backchannel";
   // A real word has a vowel ("кх", "хм", "pff" are coughs and clicks).
-  const real = words.filter((w) => !BACKCHANNEL.has(w) && !FILLER_WORD.test(w) && hasVowel(w));
+  const real = words.filter((w) => !BACKCHANNEL_WORDS.has(w) && !FILLER_TOKEN.test(w) && hasVowel(w));
   if (!real.length) return "backchannel";
   const letters = real.join("").match(/\p{L}/gu)?.length || 0;
   if (real.length >= 2 || letters >= 6) return "interrupt";
@@ -905,4 +917,151 @@ export function bargeTick(gate, now = Date.now()) {
     return "restore";
   }
   return "";
+}
+
+function markOverSpeech(gate, itemId) {
+  if (!gate.overSpeech) gate.overSpeech = new Set();
+  gate.overSpeech.add(itemId);
+  if (gate.overSpeech.size > 50) gate.overSpeech.delete(gate.overSpeech.values().next().value);
+}
+
+/* ------------------------------------------------------------------------ *
+ * WebRTC: no server VAD while the agent talks.
+ *
+ * Over WebRTC the server owns the playback buffer, and on every VAD
+ * speech_started it clears it (output_audio_buffer.cleared) and truncates the
+ * reply — even with interrupt_response=false (live call_18, Oct 25: "Угу."
+ * cut the reply 1 ms after speech_started; OpenAI community thread
+ * "Issues with realtime turn-taking" reports the same). So a "yeah" killed the
+ * reply before our transcript gate could say "that's only a backchannel".
+ *
+ * Fix: right before each reply the dialer switches server turn detection off
+ * (session.update turn_detection:null). While the agent talks, a local mic
+ * VAD in the browser ducks on sound and, when a sound of >= BARGE_IN_MIN_MS
+ * ends, commits the input buffer; the transcript then goes through
+ * handleCallerTurn as before (backchannel/noise/echo -> keep talking; real
+ * words/stop words -> cancel and answer). When the reply has finished playing,
+ * server VAD is switched back on for normal turns. The Twilio bridge talks to
+ * OpenAI over WebSocket and paces audio itself, so it does not need this.
+ * ------------------------------------------------------------------------ */
+/** Quiet stretches of the input buffer are dropped this often (no stale audio in the next commit). */
+export const SPEAK_VAD_TRIM_MS = 1500;
+
+/** Enable for a WebRTC call. `input` = the minted session's audio.input (with turn_detection). */
+export function enableSpeakVad(gate, input) {
+  if (!input || typeof input !== "object" || !input.turn_detection) return false;
+  gate.speakVad = {
+    input: JSON.parse(JSON.stringify(input)),
+    mode: "server",
+    localSpeech: false,
+    localOverSpeech: false,
+    commitOverSpeech: null,
+    lastTrimAt: 0,
+    voiceEndAt: 0,
+  };
+  return true;
+}
+
+function vadSessionUpdate(gate, on) {
+  const input = { ...gate.speakVad.input, turn_detection: on ? gate.speakVad.input.turn_detection : null };
+  return { type: "session.update", session: { type: "realtime", audio: { input } } };
+}
+
+/** A queued session.update must not switch server VAD back on mid-reply. */
+function withSpeakVad(gate, session) {
+  const v = gate.speakVad;
+  if (!v || v.mode !== "local" || !session?.session?.audio?.input) return session;
+  const next = JSON.parse(JSON.stringify(session));
+  next.session.audio.input.turn_detection = null;
+  return next;
+}
+
+function speakVadOff(gate) {
+  const v = gate.speakVad;
+  if (!v || v.mode === "local") return [];
+  v.mode = "local";
+  v.lastTrimAt = Date.now();
+  return [vadSessionUpdate(gate, false)];
+}
+
+/** Server VAD back on once nothing is speaking or queued and the caller is quiet. */
+export function speakVadRelease(gate, now = Date.now()) {
+  const v = gate.speakVad;
+  if (!v || v.mode !== "local") return [];
+  if (gate.active || gate.playing || gate.pendingCreates.length || gate.waitingForIdle || v.localSpeech) return [];
+  v.mode = "server";
+  v.lastTrimAt = now;
+  return [{ type: "input_audio_buffer.clear" }, vadSessionUpdate(gate, true)];
+}
+
+/** Local mic VAD: sound started. Ducks the agent like a server speech_started. */
+export function localSpeechStart(gate, now = Date.now()) {
+  const v = gate.speakVad;
+  if (!v || v.mode !== "local" || v.localSpeech) return { volume: "", send: [] };
+  v.localSpeech = true;
+  v.localOverSpeech = agentSpeaking(gate);
+  return { volume: bargeSpeechStart(gate, "local", now), send: [] };
+}
+
+/** Local mic VAD: sound ended after `ms`. Long enough -> commit it for a transcript. */
+export function localSpeechEnd(gate, ms, now = Date.now()) {
+  const v = gate.speakVad;
+  if (!v || !v.localSpeech) return { send: [] };
+  v.localSpeech = false;
+  v.voiceEndAt = now;
+  if (v.mode !== "local") return { send: [] };
+  const send = [];
+  if (ms >= BARGE_IN_MIN_MS) {
+    send.push({ type: "input_audio_buffer.commit" });
+    v.commitOverSpeech = v.localOverSpeech;
+    v.lastTrimAt = now;
+  }
+  send.push(...speakVadRelease(gate, now));
+  return { send };
+}
+
+/** Call every ~200 ms: drop quiet audio so a later commit holds only the caller's words. */
+export function speakVadTick(gate, now = Date.now()) {
+  const v = gate.speakVad;
+  if (!v || v.mode !== "local" || v.localSpeech) return [];
+  if (now - v.lastTrimAt < SPEAK_VAD_TRIM_MS || now - v.voiceEndAt < 300) return [];
+  v.lastTrimAt = now;
+  return [{ type: "input_audio_buffer.clear" }];
+}
+
+/**
+ * Pure level -> speech state machine for the browser mic VAD (RMS in dBFS).
+ * Adaptive: speech is `marginDb` above the tracked noise floor and above
+ * `minDb`; onset needs `onsetMs` of it, end needs `hangMs` below.
+ */
+export function createLevelVad({ minDb = -48, marginDb = 14, onsetMs = 120, hangMs = 600 } = {}) {
+  return { minDb, marginDb, onsetMs, hangMs, floor: -60, aboveSince: 0, belowSince: 0, speaking: false, startedAt: 0 };
+}
+
+/** Returns { event: "start" | "end" | "", ms } for one level sample. */
+export function stepLevelVad(vad, db, now) {
+  const level = Number.isFinite(db) ? db : -100;
+  // Floor falls fast, rises slowly (so speech does not become the floor).
+  vad.floor = level < vad.floor ? level : vad.floor + Math.min(0.05, level - vad.floor);
+  const loud = level >= Math.max(vad.minDb, vad.floor + vad.marginDb);
+  if (!vad.speaking) {
+    if (!loud) { vad.aboveSince = 0; return { event: "", ms: 0 }; }
+    if (!vad.aboveSince) vad.aboveSince = now;
+    if (now - vad.aboveSince >= vad.onsetMs) {
+      vad.speaking = true;
+      vad.startedAt = vad.aboveSince;
+      vad.belowSince = 0;
+      return { event: "start", ms: 0 };
+    }
+    return { event: "", ms: 0 };
+  }
+  if (loud) { vad.belowSince = 0; return { event: "", ms: 0 }; }
+  if (!vad.belowSince) vad.belowSince = now;
+  if (now - vad.belowSince >= vad.hangMs) {
+    vad.speaking = false;
+    vad.aboveSince = 0;
+    const ms = Math.max(0, vad.belowSince - vad.startedAt);
+    return { event: "end", ms };
+  }
+  return { event: "", ms: 0 };
 }
