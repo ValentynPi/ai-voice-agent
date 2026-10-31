@@ -17,7 +17,7 @@
  * - On an active-response error, requeue and drain after the next settle.
  */
 
-import { classifyCallerTranscript, detectCallerLanguage, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName } from "./caller-language.js";
+import { classifyCallerTranscript, detectCallerLanguage, isClearLanguageTurn, resolveReplyLanguage, spokenFailure, languageName, pronunciationHint } from "./caller-language.js";
 import { BACKCHANNEL_WORDS, FILLER_TOKEN, isBackchannel, isStopWord, transcriptTokens } from "./backchannel.js";
 
 export { isBackchannel, isStopWord } from "./backchannel.js";
@@ -150,7 +150,10 @@ export function applyCallerTranscript(gate, text) {
  */
 export function shortLanguageLine(code, text = "") {
   const name = languageName(code);
-  if (name) return `Reply ONLY in ${name}.`;
+  if (name) {
+    const accent = pronunciationHint(code);
+    return accent ? `Reply ONLY in ${name}. ${accent}` : `Reply ONLY in ${name}.`;
+  }
   const clean = String(text || "").replace(/\s+/g, " ").trim().slice(0, 160);
   return clean ? `Reply ONLY in the language of the caller's words: "${clean}".` : "Reply in the caller's language.";
 }
@@ -173,7 +176,7 @@ function rewritePendingSpoken(gate) {
   gate.pendingCreates = gate.pendingCreates.map((event) => {
     if (!event || event.type !== "response.create") return event;
     const instructions = String(event.response?.instructions || "");
-    if (gate.pendingFiller || /Still looking\.|Ще дивлюся\.|Sigo mirando\.|Ещё смотрю\.|Je regarde encore\./i.test(instructions)) {
+    if (gate.pendingFiller || /Still looking\.|Ще дивлюся\.|Sigo mirando\.|Ещё смотрю\.|Je regarde encore\.|עוד רגע, בודקים\./i.test(instructions)) {
       return toolFillerEvent(userText, code);
     }
     if (/Speak the tool result|tool failed, timed out, or is missing/i.test(instructions)) {
@@ -181,7 +184,7 @@ function rewritePendingSpoken(gate) {
       const name = isWeatherTopic(userText) || isWeatherTopic(instructions) ? "weather" : "";
       return toolFollowUpEvent(name, failed, userText, code);
     }
-    if (/You produced no speech\.|didn't catch that|не розчув|no te he oído|не расслышал/i.test(instructions)) {
+    if (/You produced no speech\.|didn't catch that|не розчув|no te he oído|не расслышал|לא שמעתי/i.test(instructions)) {
       return silenceFallbackEvent(userText, code);
     }
     if (/Reply only in |Their words, unchanged:/i.test(instructions)) {
@@ -287,7 +290,7 @@ const LOOKING = {
   ru: "Ещё смотрю.",
   fr: "Je regarde encore.",
   ar: "ما زلت أبحث.",
-  he: "עדיין בודק.",
+  he: "עוד רגע, בודקים.",
 };
 
 export function stillLookingLine(code) {
@@ -315,6 +318,7 @@ export function silenceFallbackEvent(userText, established = "") {
     en: "Sorry, I didn't catch that. Could you say it again?",
     ru: "Извините, я не расслышал. Повторите, пожалуйста.",
     fr: "Pardon, je n'ai pas compris. Pouvez-vous répéter ?",
+    he: "סליחה, לא שמעתי. אפשר לחזור על זה?",
   };
   const code = resolveReplyLanguage(established, userText) || established || "en";
   const line = isWeatherTopic(userText)

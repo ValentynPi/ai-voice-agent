@@ -37,7 +37,7 @@ The server listens on `PORT` (default `3000`).
 | `OPENAI_API_KEY` | No | Mints a Realtime client secret and, for the text fallback, calls Chat Completions. Same tools and security checks either way. |
 | `OPENAI_MODEL` | No | Text brain for `POST /api/chat`. Defaults to `gpt-5.1`. If that id is rejected, the server tries `gpt-5`, then `gpt-4.1`, then `gpt-4o-mini`. |
 | `OPENAI_REALTIME_MODEL` | No | Speech model for the voice desk. Defaults to `gpt-realtime-2.1`. |
-| `OPENAI_VOICE` | No | Realtime output voice. Defaults to `marin`. |
+| `OPENAI_VOICE` | No | Realtime output voice. Defaults to `marin`.  The desk label "Chloe" is an alias: it is sent to OpenAI as `marin` (one of the two voices OpenAI recommends as most natural for gpt-realtime; `cedar` is the other). |
 | `DATABASE_PATH` | No | SQLite file. Defaults to `data/maison-sol.sqlite`. Use `:memory:` for a throwaway database. |
 | `PORT` | No | HTTP port. Fly.io sets this for you. |
 | `TWILIO_ACCOUNT_SID` | No | With the auth token, switches `/console` from Demo to Connected and lists numbers and calls from the Twilio REST API. |
@@ -283,3 +283,7 @@ fly scale count 1 -a ai-voice-agent-telephony
 fly deploy -c fly.toml -a ai-voice-agent-valmax
 fly deploy -c fly.telephony.toml -a ai-voice-agent-telephony
 ```
+
+## Accent / pronunciation
+
+The cached session instructions carry a `PRONUNCIATION` rule: speak like a native speaker of the reply language (stress, intonation, no English accent), standard literary Ukrainian rather than Russian-accented, modern Israeli Hebrew with correct stress and gendered numbers, and numbers, temperatures, units, and dates as words in that language. The per-reply note adds one short hint for non-English replies, e.g. `Reply ONLY in Ukrainian. Native literary Ukrainian accent, not Russian; numbers as words.` (about 15 extra tokens per reply; English gets no hint). Realtime voices are trained mostly on English, so some accent can remain; a separate TTS engine would be the next step and is not implemented.

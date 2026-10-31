@@ -88,7 +88,9 @@ test("per-reply nudges never replace the cached session instructions", () => {
   const note = sent[0].item.content[0].text;
   assert.match(note, /^For this reply only: Reply ONLY in Ukrainian\./);
   assert.match(note, /Stay on: the weather/);
-  assert.ok(note.length < 220, `note stays one line (${note.length})`);
+  assert.match(note, /Native literary Ukrainian accent, not Russian; numbers as words\./);
+  // +~15 tokens for the accent hint; still one short line.
+  assert.ok(note.length < 240, `note stays one line (${note.length})`);
   assert.equal(sent[1].type, "response.create");
   assert.equal(sent[1].response.instructions, undefined, "session instructions apply (cached)");
   assert.equal(sent[1].response.tool_choice, "auto");
@@ -104,9 +106,9 @@ test("per-reply nudges never replace the cached session instructions", () => {
 
 test("tool follow-up and filler deltas are short; result rules live in the session", () => {
   const ok = toolFollowUpEvent("weather", false, "Яка погода в Кастельйоні?", "uk", { allowMore: true });
-  assert.match(ok.response.instructions, /^Reply ONLY in Ukrainian\. Speak the tool result/);
+  assert.match(ok.response.instructions, /^Reply ONLY in Ukrainian\. Native literary Ukrainian accent, not Russian; numbers as words\. Speak the tool result/);
   assert.match(ok.response.instructions, /call the weather lookup first/);
-  assert.ok(ok.response.instructions.length < 200);
+  assert.ok(ok.response.instructions.length < 230);
   const failed = toolFollowUpEvent("weather", true, "Яка погода?", "uk");
   assert.match(failed.response.instructions, /tool failed, timed out, or is missing/);
   assert.equal(failed.response.tool_choice, "none");
@@ -124,7 +126,7 @@ test("handleCallerTurn reply stays language-first and tiny (payload snapshot)", 
   assert.deepEqual(wire.map((e) => e.type), ["conversation.item.create", "response.create"]);
   assert.equal(
     wire[0].item.content[0].text,
-    "For this reply only: Reply ONLY in Ukrainian. Answer their latest turn in one or two short sentences; don't ask them to repeat. Stay on: the weather.",
+    "For this reply only: Reply ONLY in Ukrainian. Native literary Ukrainian accent, not Russian; numbers as words. Answer their latest turn in one or two short sentences; don't ask them to repeat. Stay on: the weather.",
   );
 });
 
@@ -232,4 +234,47 @@ test("post-call review: cheap model, and no API call without real caller turns",
     delete process.env.OPENAI_API_KEY;
     delete process.env.CALL_REVIEW_ALLOW_MODEL;
   }
+});
+
+test("accent: per-reply hint is native-pronunciation, English gets none; session has the full rule", async () => {
+  const { pronunciationHint } = await import("../public/js/caller-language.js");
+  assert.equal(pronunciationHint("en"), "");
+  assert.equal(pronunciationHint(""), "");
+  assert.match(pronunciationHint("uk"), /literary Ukrainian/);
+  assert.match(pronunciationHint("ru"), /^Native Russian accent, not English; numbers as words\.$/);
+  assert.match(pronunciationHint("es"), /Native Spanish accent/);
+  for (const code of ["uk", "ru", "es", "fr"]) assert.ok(pronunciationHint(code).length <= 70, code);
+  const session = receptionistInstructions("en", weatherAgent, { toolCount: 2 });
+  assert.match(session, /PRONUNCIATION: speak like a native speaker of the reply language/);
+  assert.match(session, /standard literary Ukrainian, not Russian-accented/);
+  assert.match(session, /двадцять градусів/);
+  assert.match(session, /numbers, temperatures, units, and dates as words/);
+});
+
+test("Hebrew: detection, per-reply note, transcription, native accent", async () => {
+  const lang = await import("../public/js/caller-language.js");
+  const turn = await import("../public/js/realtime-turn.js");
+  assert.equal(lang.detectCallerLanguage("מה מזג האוויר היום?"), "he");
+  assert.equal(lang.detectCallerLanguage("שָׁלוֹם, מָה שְׁלוֹמְךָ?"), "he", "niqqud");
+  assert.equal(lang.isClearLanguageTurn("שָׁלוֹם, מָה שְׁלוֹמְךָ?"), true);
+  assert.equal(lang.detectCallerLanguage("מה מזג האוויר בקסטיון?"), "he");
+  assert.equal(lang.detectCallerLanguage("ما هو الطقس اليوم؟"), "ar", "Arabic is not Hebrew");
+  assert.equal(lang.detectCallerLanguage("What is the weather today in שלום?"), "en", "one Hebrew word in English is not Hebrew");
+  assert.notEqual(lang.detectCallerLanguage("Що ти вмієш?"), "he");
+  assert.equal(lang.resolveReplyLanguage("uk", "מה מזג האוויר היום?"), "he");
+  assert.equal(lang.resolveReplyLanguage("he", "Castellón"), "he", "a place name is not a switch");
+  assert.equal(lang.resolveReplyLanguage("he", "כן"), "he");
+  assert.ok(lang.inputTranscription("he").languages[0] === "he");
+  assert.ok(lang.inputTranscription("").languages.includes("he"));
+  assert.equal(turn.shortLanguageLine("he"), "Reply ONLY in Hebrew. Native modern Israeli Hebrew accent and stress, not English; numbers as Hebrew words.");
+  const sent = toCachedResponse(callerReplyEvent("מה מזג האוויר היום?", "he"), { botTask: "the weather" });
+  assert.match(sent[0].item.content[0].text, /^For this reply only: Reply ONLY in Hebrew\. Native modern Israeli Hebrew/);
+  assert.ok(sent[0].item.content[0].text.length < 260);
+  assert.equal(turn.stillLookingLine("he"), "עוד רגע, בודקים.");
+  assert.match(turn.silenceFallbackEvent("שלום שלום", "he").response.instructions, /לא שמעתי/);
+  assert.match(lang.spokenFailure("weather", "מזג האוויר", "he"), /אי אפשר/);
+  assert.equal(turn.replyInLanguage("היום עשרים מעלות", "he"), true);
+  const session = receptionistInstructions("en", weatherAgent, { toolCount: 2 });
+  assert.match(session, /modern Israeli Hebrew with correct stress/);
+  assert.match(session, /עשרים מעלות/);
 });

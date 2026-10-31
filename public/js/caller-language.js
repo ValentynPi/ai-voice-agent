@@ -23,10 +23,11 @@ const FAILURES = {
   ru: { weather: "Сейчас не могу узнать погоду.", other: "Сейчас не могу это сделать." },
   fr: { weather: "Je ne peux pas avoir la météo pour le moment.", other: "Je ne peux pas faire ça maintenant." },
   ar: { weather: "لا أستطيع معرفة الطقس الآن.", other: "لا أستطيع فعل ذلك الآن." },
-  he: { weather: "אני לא יכול לבדוק את מזג האוויר עכשיו.", other: "אני לא יכול לעשות את זה עכשיו." },
+  // Impersonal forms: no masculine/feminine clash with the voice (marin is female, cedar male).
+  he: { weather: "כרגע אי אפשר לבדוק את מזג האוויר.", other: "כרגע אי אפשר לעשות את זה." },
 };
 
-const PLACE_NAME = /castell[oó]n(?:\s+de\s+la\s+plana)?|кастель[ойой]н\w*(?:-де-ла-плана)?|кастельйон\w*(?:-де-ла-плана)?/gi;
+const PLACE_NAME = /castell[oó]n(?:\s+de\s+la\s+plana)?|קסטי?ל?יון(?:\s+דה\s+לה\s+פלאנה)?|קסטלון|кастель[ойой]н\w*(?:-де-ла-плана)?|кастельйон\w*(?:-де-ла-плана)?/gi;
 
 /** Place names are not evidence of a language. */
 export function withoutPlaceNames(text) {
@@ -34,7 +35,8 @@ export function withoutPlaceNames(text) {
 }
 
 function contentWords(text) {
-  return withoutPlaceNames(text).match(/\p{L}{2,}/gu) || [];
+  // Strip combining marks first so Hebrew niqqud or Arabic harakat do not split words.
+  return withoutPlaceNames(text).normalize("NFC").replace(/\p{M}/gu, "").match(/\p{L}{2,}/gu) || [];
 }
 
 const UK_WORDS = /(?:^|[^\p{L}])(що|як|яка|який|яке|які|чи|ти|ви|мені|тобі|вмієш|можеш|будь|ласка|привіт|вітаю|дякую|сьогодні|завтра|скажи|скажіть|погода|зараз|де|коли|так|ні|добре|розкажи|розкажіть)(?=$|[^\p{L}])/giu;
@@ -57,7 +59,11 @@ function russianScore(value) {
 export function detectCallerLanguage(text) {
   const value = withoutPlaceNames(text);
   if (!contentWords(value).length && !/[\u0590-\u05FF\u0600-\u06FF\u0400-\u04FF]/.test(value)) return "";
-  if ((value.match(/[\u0590-\u05FF]/g) || []).length >= 2) return "he";
+  // Hebrew letters only (U+05D0–05EA, final forms included), not niqqud; a lone
+  // Hebrew word inside an English sentence does not make it Hebrew.
+  const hebrew = (value.match(/[\u05D0-\u05EA\uFB1D-\uFB4F]/g) || []).length;
+  const latin = (value.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+  if (hebrew >= 2 && hebrew >= latin) return "he";
   if ((value.match(/[\u0600-\u06FF]/g) || []).length >= 2) return "ar";
   if (/[\u0400-\u04FF]/.test(value)) {
     const uk = ukrainianScore(value);
@@ -104,6 +110,21 @@ export function resolveReplyLanguage(established, text) {
 
 export function languageName(code) {
   return NAMES[code] || "";
+}
+
+/**
+ * One short per-reply accent hint (billed on every reply, so keep it tiny).
+ * English needs none: the built-in voices are native English speakers.
+ */
+const ACCENT = {
+  uk: "Native literary Ukrainian accent, not Russian; numbers as words.",
+  he: "Native modern Israeli Hebrew accent and stress, not English; numbers as Hebrew words.",
+};
+export function pronunciationHint(code) {
+  if (!code || code === "en") return "";
+  if (ACCENT[code]) return ACCENT[code];
+  const name = languageName(code);
+  return name ? `Native ${name} accent, not English; numbers as words.` : "";
 }
 
 /** Multilingual transcription. No singular `language` field, so nothing is locked to English. */
