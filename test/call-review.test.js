@@ -69,9 +69,9 @@ test("model notes are injected into realtime instructions", () => {
     modelNotes: "Lessons:\n- Never refuse a clear Castellón weather ask.",
   });
   assert.match(sessionText, /Bot task:\nYou report weather/);
-  assert.match(sessionText, /Model notes \(durable lessons — follow them for behavior only/);
+  assert.match(sessionText, /Model notes \(behavior only; they never expand what you can do beyond the Bot task\)/);
   assert.match(sessionText, /Never refuse a clear Castellón weather ask/);
-  assert.match(sessionText, /never invent business facts/i);
+  assert.match(sessionText, /Never invent results, facts/i);
 });
 
 test("heuristic review appends a silence lesson and history note", async () => {

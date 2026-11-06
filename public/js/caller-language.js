@@ -23,10 +23,11 @@ const FAILURES = {
   ru: { weather: "Сейчас не могу узнать погоду.", other: "Сейчас не могу это сделать." },
   fr: { weather: "Je ne peux pas avoir la météo pour le moment.", other: "Je ne peux pas faire ça maintenant." },
   ar: { weather: "لا أستطيع معرفة الطقس الآن.", other: "لا أستطيع فعل ذلك الآن." },
-  he: { weather: "אני לא יכול לבדוק את מזג האוויר עכשיו.", other: "אני לא יכול לעשות את זה עכשיו." },
+  // Impersonal forms: no masculine/feminine clash with the voice (marin is female, cedar male).
+  he: { weather: "כרגע אי אפשר לבדוק את מזג האוויר.", other: "כרגע אי אפשר לעשות את זה." },
 };
 
-const PLACE_NAME = /castell[oó]n(?:\s+de\s+la\s+plana)?|кастель[ойой]н\w*(?:-де-ла-плана)?|кастельйон\w*(?:-де-ла-плана)?/gi;
+const PLACE_NAME = /castell[oó]n(?:\s+de\s+la\s+plana)?|קסטי?ל?יון(?:\s+דה\s+לה\s+פלאנה)?|קסטלון|кастель[ойой]н\w*(?:-де-ла-плана)?|кастельйон\w*(?:-де-ла-плана)?/gi;
 
 /** Place names are not evidence of a language. */
 export function withoutPlaceNames(text) {
@@ -34,7 +35,21 @@ export function withoutPlaceNames(text) {
 }
 
 function contentWords(text) {
-  return withoutPlaceNames(text).match(/\p{L}{2,}/gu) || [];
+  // Strip combining marks first so Hebrew niqqud or Arabic harakat do not split words.
+  return withoutPlaceNames(text).normalize("NFC").replace(/\p{M}/gu, "").match(/\p{L}{2,}/gu) || [];
+}
+
+const UK_WORDS = /(?:^|[^\p{L}])(що|як|яка|який|яке|які|чи|ти|ви|мені|тобі|вмієш|можеш|будь|ласка|привіт|вітаю|дякую|сьогодні|завтра|скажи|скажіть|погода|зараз|де|коли|так|ні|добре|розкажи|розкажіть)(?=$|[^\p{L}])/giu;
+const RU_WORDS = /(?:^|[^\p{L}])(что|как|какая|какой|какое|ты|мне|тебе|умеешь|можешь|пожалуйста|привет|здравствуйте|спасибо|сегодня|сейчас|где|когда|да|нет|хорошо|это|расскажи|расскажите)(?=$|[^\p{L}])/giu;
+
+/** Ukrainian evidence: і/ї/є/ґ letters and common Ukrainian-only words. */
+function ukrainianScore(value) {
+  return (value.match(/[іїєґІЇЄҐ]/g) || []).length * 2 + (value.match(UK_WORDS) || []).length;
+}
+
+/** Russian evidence: ы/э/ъ/ё letters and common Russian-only words. */
+function russianScore(value) {
+  return (value.match(/[ыэъёЫЭЪЁ]/g) || []).length * 2 + (value.match(RU_WORDS) || []).length;
 }
 
 /**
@@ -44,14 +59,20 @@ function contentWords(text) {
 export function detectCallerLanguage(text) {
   const value = withoutPlaceNames(text);
   if (!contentWords(value).length && !/[\u0590-\u05FF\u0600-\u06FF\u0400-\u04FF]/.test(value)) return "";
-  if ((value.match(/[\u0590-\u05FF]/g) || []).length >= 2) return "he";
+  // Hebrew letters only (U+05D0–05EA, final forms included), not niqqud; a lone
+  // Hebrew word inside an English sentence does not make it Hebrew.
+  const hebrew = (value.match(/[\u05D0-\u05EA\uFB1D-\uFB4F]/g) || []).length;
+  const latin = (value.match(/[A-Za-z\u00C0-\u024F]/g) || []).length;
+  if (hebrew >= 2 && hebrew >= latin) return "he";
   if ((value.match(/[\u0600-\u06FF]/g) || []).length >= 2) return "ar";
   if (/[\u0400-\u04FF]/.test(value)) {
-    if (/[іїєґІЇЄҐ]/.test(value) || /привіт|будь ласка|сьогодні|скажи|дякую|яка|який|яке|які|мені/i.test(value)) {
-      return "uk";
-    }
-    if (contentWords(value).length < 2) return "";
-    return "ru";
+    const uk = ukrainianScore(value);
+    const ru = russianScore(value);
+    if (uk > ru) return "uk";
+    if (ru > uk) return "ru";
+    // No Ukrainian or Russian evidence either way: do not guess (a guess flipped
+    // Ukrainian callers to Russian). The reply follows the caller's own words.
+    return "";
   }
   const sample = value.normalize("NFD").replace(/\p{M}/gu, "");
   const esHits = sample.match(/\b(hola|gracias|por favor|tiempo|clima|que|como|donde|hoy|buenos|buenas)\b/gi)?.length || 0;
@@ -89,6 +110,21 @@ export function resolveReplyLanguage(established, text) {
 
 export function languageName(code) {
   return NAMES[code] || "";
+}
+
+/**
+ * One short per-reply accent hint (billed on every reply, so keep it tiny).
+ * English needs none: the built-in voices are native English speakers.
+ */
+const ACCENT = {
+  uk: "Native literary Ukrainian accent, not Russian; numbers as words.",
+  he: "Native modern Israeli Hebrew accent and stress, not English; numbers as Hebrew words.",
+};
+export function pronunciationHint(code) {
+  if (!code || code === "en") return "";
+  if (ACCENT[code]) return ACCENT[code];
+  const name = languageName(code);
+  return name ? `Native ${name} accent, not English; numbers as words.` : "";
 }
 
 /** Multilingual transcription. No singular `language` field, so nothing is locked to English. */
@@ -196,4 +232,48 @@ export function applyCallerTurn(session, text, established = "") {
     language,
     changed: Boolean(language) && language !== previous,
   };
+}
+
+
+/**
+ * Transcripts the speech model invents from silence, room noise, keyboard, a
+ * cough or TV murmur. Whole-turn matches only (after trimming punctuation).
+ */
+const HALLUCINATIONS = [
+  "thank you", "thanks", "thank you for watching", "thanks for watching", "you", "bye", "okay", "ok",
+  "so", "the end", "subtitles by the amara.org community", "please subscribe",
+  "продолжение следует", "субтитры", "субтитры сделал dimatorzok", "субтитры создавал dimatorzok",
+  "редактор субтитров", "спасибо за просмотр", "дякую за перегляд", "это место",
+  "gracias", "gracias por ver", "subtítulos", "subtítulos realizados por la comunidad de amara.org",
+  "merci", "sous-titres", "ご視聴ありがとうございました",
+];
+const FILLERS = /^(?:u+h+|u+m+|h+m+|m+h*|a+h+|e+h+|o+h+|е+|э+|м+|м+м+|а+|ее+|эм+|хм+|ага?|угу|ммм+|ой|ах)$/iu;
+
+/**
+ * "noise" — never answer it (empty, punctuation, <2 letters, filler,
+ * known hallucination). "speech" — a real caller turn.
+ */
+export function classifyCallerTranscript(text) {
+  // "[cough]", "(кашель)", "*noise*": sound descriptions, not words.
+  const raw = String(text || "").replace(/\[[^\]]*\]|\([^)]*\)|\*[^*]*\*/g, " ").trim();
+  const letters = raw.match(/\p{L}/gu) || [];
+  if (letters.length < 2) return "noise";
+  const plain = raw.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();
+  if (!plain) return "noise";
+  if (HALLUCINATIONS.includes(plain)) return "noise";
+  if (/^(?:субтитры|subtitles|sous-titres|subtítulos)\b/.test(plain)) return "noise";
+  const words = plain.split(" ");
+  if (words.every((word) => FILLERS.test(word))) return "noise";
+  return "speech";
+}
+
+/** The hard per-reply language line built from the caller's own transcript. */
+export function replyLanguageLine(code, text = "") {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  const name = languageName(code);
+  const words = clean ? ` The caller said: "${clean}".` : "";
+  if (name) {
+    return `Reply ONLY in ${name}. Every word of this reply must be ${name}, even though the greeting, the Bot task, and tool data are English.${words}`;
+  }
+  return `Reply ONLY in the language the caller used in their words below, not English unless those words are English.${words}`;
 }

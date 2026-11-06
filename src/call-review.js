@@ -1,5 +1,6 @@
 import { getAgent, setCallReview, updateAgent } from "./desk.js";
-import { chatCandidates, noteChatModel } from "./models.js";
+import { noteChatModel } from "./models.js";
+import { classifyCallerTranscript } from "../public/js/caller-language.js";
 import { listToolCallsForCall } from "./store.js";
 
 const MODEL_NOTES_CAP = 1800;
@@ -171,8 +172,9 @@ async function askModel(agent, call, tools) {
     transcript: lines,
     tools,
   };
-  const models = chatCandidates().filter((model) => /mini|4o|4\.1|5/i.test(model)).slice(0, 3);
-  const candidates = models.length ? models : chatCandidates().slice(0, 2);
+  // A cheap model is plenty for "any lesson in this transcript?". It used to be
+  // the chat model (gpt-5.1) on every ended call.
+  const candidates = reviewCandidates();
   let lastError;
   for (const model of candidates) {
     try {
@@ -240,6 +242,18 @@ function normalizeReview(raw, fallbackLessons) {
  * After a call ends: review transcript/tools, optionally append Model notes lessons.
  * Fire-and-forget safe; never throws to the hangup path.
  */
+export const DEFAULT_REVIEW_MODEL = "gpt-4o-mini";
+export function reviewCandidates() {
+  const picked = String(process.env.OPENAI_REVIEW_MODEL || DEFAULT_REVIEW_MODEL).trim();
+  return [...new Set([picked, "gpt-4.1-mini"])];
+}
+
+/** Caller turns that are real speech (not noise, filler, or a transcription hallucination). */
+export function realCallerTurns(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter((message) => message.role === "user" && classifyCallerTranscript(String(message.text || "")) === "speech");
+}
+
 export async function reviewEndedCall(call) {
   if (!call?.id || call.source === "seed" || call.status === "active") return null;
   if (!call.agentId) {
@@ -263,7 +277,9 @@ export async function reviewEndedCall(call) {
     return { ok: true, lessons: [], historyNote: "Reviewed · no change" };
   }
 
-  const modelReview = await askModel(agent, call, tools);
+  // No real caller turn: nothing for a model to learn from. Heuristics only, no API call.
+  const modelReview = realCallerTurns(call.messages).length ? await askModel(agent, call, tools) : null;
+  if (!modelReview) console.info(`call-review ${call.id}: ${realCallerTurns(call.messages).length ? "model unavailable" : "no real caller turns"}; heuristics only`);
   const verdict = normalizeReview(modelReview, fallback);
 
   if (!verdict.lessons.length) {

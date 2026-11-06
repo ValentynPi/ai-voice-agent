@@ -1,3 +1,4 @@
+import { receptionistInstructions } from "../src/realtime.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { toolFollowUpEvent } from "../public/js/realtime-turn.js";
@@ -138,8 +139,8 @@ test("the spoken follow-up accepts an in-city airport", () => {
   const follow = toolFollowUpEvent("openmeteo_search_locations", false, "яка погода");
   assert.equal(follow.response.tool_choice, "none");
   assert.match(follow.response.instructions, /Speak the tool result/);
-  assert.match(follow.response.instructions, /airport or aerodrome/i);
-  assert.match(follow.response.instructions, /Do not call tools/);
+  // The airport rule lives in the cached session instructions (not per reply).
+  assert.match(receptionistInstructions("en", { systemPrompt: "You report weather." }), /airport station counts as that city/i);
 });
 
 test("a Ukrainian Castellón question matches the city airport, not a refusal", () => {

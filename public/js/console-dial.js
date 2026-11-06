@@ -1,5 +1,6 @@
+import { canApplyRemoteAnswer, connectFailure, realtimeAccountFailure, realtimeEventFailure, tokenFailure, voiceUnavailableHint } from "./voice-failure.js";
 import { MAX_GREETING_TRIES, canAttemptGreeting, greetingFailureAction, greetingLine } from "./speak-first.js";
-import { composeSessionInstructions, isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
+import { isClearLanguageTurn, resolveReplyLanguage, sessionAudioForCaller } from "./caller-language.js";
 import {
   TOOL_FETCH_TIMEOUT_MS,
   completeTool,
@@ -8,12 +9,25 @@ import {
   functionOutputEvent,
   ingestRealtimeEvent,
   armToolFiller,
-  noteBargeIn,
-  applyCallerTranscript,
+  handleCallerTurn,
+  handleCallerPartial,
+  isBenignRealtimeError,
   queueResponseCreate,
   queueSessionUpdate,
   shouldHoldForSpeech,
+  toCachedResponse,
+  agentSpeaking,
+  bargeTick,
+  DUCK_VOLUME,
+  createCallBudget,
+  budgetEndMessage,
+  greetingLanguageNote,
+  enableSpeakVad,
+  localSpeechEnd,
+  localSpeechStart,
+  speakVadTick,
 } from "./realtime-turn.js";
+import { startMicVad } from "./mic-vad.js";
 
 const CHIPS = [
   { label: "Help", text: "What can you help me with?" },
@@ -56,7 +70,12 @@ let responseGate = createResponseGate();
 let channelOpen = false;
 let sessionReady = false;
 let answerApplied = false;
+/** Bumped by closeRealtime so a late SDP answer cannot touch a closed PC. */
+let connectGeneration = 0;
 let greetingSent = false;
+let greetingNoteSent = false;
+/** item_id -> streaming caller transcript, for the early reply. */
+const partialTranscripts = new Map();
 let greetingTries = 0;
 let greetingHeardAudio = false;
 let greetingBubble = null;
@@ -193,16 +212,38 @@ function stopMic() {
 
 function sendEvent(event) {
   if (!realtime || realtime.dc.readyState !== "open") return false;
-  realtime.dc.send(JSON.stringify(event));
+  // No per-response `instructions`: they replace the session prompt and defeat
+  // the prompt cache. The nudge goes in as a one-line system item instead.
+  const input = event?.type === "session.update" ? event.session?.audio?.input : null;
+  if (input && "turn_detection" in input) pushTrace("vad", input.turn_detection ? "server" : "local");
+  if (event?.type === "input_audio_buffer.commit") pushTrace("commit", "local");
+  for (const item of toCachedResponse(event, { botTask: realtime.botTask || "" })) realtime.dc.send(JSON.stringify(item));
   return true;
 }
 
-function instructionsForLang(instructions) {
-  return composeSessionInstructions(instructions, {
-    uiLang: langSelect.value,
-    callerText: realtime?.callerText || "",
-    established: realtime?.callerLanguage || "",
+/**
+ * WebRTC: the server clears our audio on every VAD speech_started, even with
+ * interrupt_response=false, so a "yeah" killed the reply. While the agent
+ * talks, server VAD is off and this local mic VAD ducks / commits instead.
+ */
+function startSpeakVad(mic) {
+  if (!realtime || !enableSpeakVad(responseGate, realtime.session?.audio?.input)) return;
+  realtime.micVad = startMicVad(mic, (kind, ms) => {
+    if (!realtime) return;
+    if (kind === "start") {
+      const heard = localSpeechStart(responseGate);
+      applyAgentVolume(heard.volume, "local-sound");
+      for (const follow of heard.send) sendEvent(follow);
+    } else if (kind === "end") {
+      for (const follow of localSpeechEnd(responseGate, ms).send) sendEvent(follow);
+    }
   });
+  if (!realtime.micVad) responseGate.speakVad = null;
+}
+
+/** Session instructions stay byte-identical for the whole call (prompt cache). */
+function instructionsForLang(instructions) {
+  return instructions;
 }
 
 function sessionAudio() {
@@ -216,7 +257,9 @@ function rememberCallerLanguage(text) {
   if (code) realtime.callerLanguage = code;
   if (responseGate) responseGate.callerLanguage = realtime.callerLanguage || "";
   if (!realtime.callerText || isClearLanguageTurn(text)) realtime.callerText = text;
-  if (code && code !== previous) pushSession(realtime.session?.tools);
+  // No session.update on a language switch: the per-reply note carries the
+  // language, and rewriting the instructions would bust the prompt cache.
+  void previous;
 }
 
 function pushSession(tools) {
@@ -244,10 +287,12 @@ function sendSessionLanguage() {
     .then((response) => (response.ok ? response.json() : null))
     .then((body) => {
       if (!realtime) return;
-      if (Array.isArray(body?.realtime)) realtime.session.tools = body.realtime;
+      // Only when the tool list really changed since the token was minted.
+      if (!Array.isArray(body?.realtime) || JSON.stringify(body.realtime) === JSON.stringify(realtime.session.tools || [])) return;
+      realtime.session.tools = body.realtime;
       pushSession(realtime.session.tools);
     })
-    .catch(() => pushSession(realtime.session?.tools));
+    .catch(() => {});
 }
 
 function resetGreetingState() {
@@ -255,6 +300,7 @@ function resetGreetingState() {
   sessionReady = false;
   answerApplied = false;
   greetingSent = false;
+  greetingNoteSent = false;
   greetingTries = 0;
   greetingHeardAudio = false;
   greetingBubble = null;
@@ -278,7 +324,7 @@ function nudgeRemoteAudio() {
   const play = remoteAudio.play?.();
   if (play && typeof play.catch === "function") {
     play.catch(() => {
-      hintEl.textContent = "Tap the page if the browser blocked Chloe audio.";
+      hintEl.textContent = "Tap the page if the browser blocked the agent's audio.";
     });
   }
 }
@@ -297,6 +343,10 @@ function releaseGreetingMic() {
   }
   if (!micHeldForGreeting) return;
   micHeldForGreeting = false;
+  if (!greetingNoteSent && greetingSent) {
+    greetingNoteSent = true;
+    sendEvent(greetingLanguageNote());
+  }
   realtime?.mic?.getAudioTracks().forEach((track) => {
     track.enabled = true;
   });
@@ -361,7 +411,7 @@ function failGreeting(status) {
   if (action === "ignore") return false;
   greetingSent = false;
   if (action === "give-up") {
-    hintEl.textContent = `${agentLabel} could not start the greeting. You can speak or type. Marin will not use a browser voice.`;
+    hintEl.textContent = `${agentLabel} could not start the greeting. You can speak or type. The agent will not use a browser voice.`;
     releaseGreetingMic();
     return true;
   }
@@ -394,6 +444,7 @@ function scheduleGreetingFallback() {
 }
 
 function markGreetingAudio() {
+  callBudget?.noteActivity();
   if (greetingSent) greetingHeardAudio = true;
   if (silentGreetingTimer) {
     clearTimeout(silentGreetingTimer);
@@ -411,6 +462,7 @@ async function connectRealtime(activeCallId = callId) {
   if (!activeCallId) {
     throw new Error("callId is required before requesting a Realtime token");
   }
+  const generation = ++connectGeneration;
   const tokenResponse = await fetch("/api/realtime/token", {
     method: "POST",
     credentials: "same-origin",
@@ -419,11 +471,10 @@ async function connectRealtime(activeCallId = callId) {
   });
   if (!tokenResponse.ok) {
     const errBody = await tokenResponse.json().catch(() => ({}));
-    const detail = errBody.error || `HTTP ${tokenResponse.status}`;
-    if (tokenResponse.status === 401) {
-      throw new Error(`${detail}. Open Sign in, then try Start call again.`);
-    }
-    throw new Error(`Realtime token failed: ${detail}`);
+    const failure = tokenFailure(tokenResponse.status, errBody);
+    const error = new Error(failure.message);
+    error.kind = failure.kind;
+    throw error;
   }
   const token = await tokenResponse.json();
   if (!token.value) throw new Error("Realtime token response was missing a client secret");
@@ -439,8 +490,17 @@ async function connectRealtime(activeCallId = callId) {
     model: token.model,
     voice: token.voice || "chloe",
     greeting: token.greeting,
+    botTask: token.botTask || "",
     updated: false,
+    generation,
   };
+  if (generation !== connectGeneration) {
+    closeRealtime();
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
+  responseGate.botTask = realtime.botTask;
   modeBadge.textContent = `Realtime · ${realtime.voice}`;
 
   pc.addEventListener("track", (event) => {
@@ -451,9 +511,22 @@ async function connectRealtime(activeCallId = callId) {
   });
 
   const mic = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audio: { echoCancellation: { ideal: true }, noiseSuppression: { ideal: true }, autoGainControl: { ideal: true } },
   });
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    mic.getTracks().forEach((track) => track.stop());
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
   realtime.mic = mic;
+  await ensureEchoCancellation(mic);
+  startSpeakVad(mic);
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
   holdMicForGreeting();
   for (const track of mic.getAudioTracks()) {
     track.enabled = false;
@@ -475,6 +548,11 @@ async function connectRealtime(activeCallId = callId) {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await waitForIce(pc);
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
   const sdpResponse = await fetch("https://api.openai.com/v1/realtime/calls", {
     method: "POST",
     body: pc.localDescription?.sdp || offer.sdp,
@@ -483,10 +561,30 @@ async function connectRealtime(activeCallId = callId) {
       "Content-Type": "application/sdp",
     },
   });
-  if (!sdpResponse.ok) throw new Error(`Realtime call was rejected (HTTP ${sdpResponse.status})`);
+  if (!sdpResponse.ok) {
+    const body = await sdpResponse.text().catch(() => "");
+    const account = realtimeAccountFailure(body, sdpResponse.status);
+    const error = new Error(account ? account.message : `Realtime call was rejected (HTTP ${sdpResponse.status})`);
+    error.kind = account?.kind || "";
+    throw error;
+  }
   const answer = await sdpResponse.text();
   if (!answer.startsWith("v=")) throw new Error("Realtime did not return an SDP answer");
-  await pc.setRemoteDescription({ type: "answer", sdp: answer });
+  if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || realtime?.pc !== pc) {
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
+  try {
+    await pc.setRemoteDescription({ type: "answer", sdp: answer });
+  } catch (sdpError) {
+    if (!canApplyRemoteAnswer(pc, generation, connectGeneration) || /signalingState is ['"]?closed['"]?/i.test(String(sdpError?.message || ""))) {
+      const err = new Error("Voice connection was cancelled before it finished.");
+      err.kind = "cancelled";
+      throw err;
+    }
+    throw sdpError;
+  }
   answerApplied = true;
   nudgeRemoteAudio();
   hintEl.textContent = `Connecting the ${token.voice || "chloe"} voice. ${agentLabel} will speak first.`;
@@ -512,12 +610,14 @@ function waitForIce(pc) {
 }
 
 function closeRealtime() {
+  connectGeneration += 1;
   resetGreetingState();
   const current = realtime;
   realtime = null;
   if (!current) return;
   try { current.dc.close(); } catch { /* already closed */ }
   try { current.pc.close(); } catch { /* already closed */ }
+  current.micVad?.stop();
   current.mic?.getTracks().forEach((track) => track.stop());
   if (remoteAudio) {
     remoteAudio.pause();
@@ -563,24 +663,35 @@ async function startCall() {
     callBtn.classList.add("live");
     callMeta.textContent = callId;
     setPhase("thinking", "Connecting");
+    pushTrace("client", TRACE_VERSION);
     heartbeat = setInterval(() => {
-      if (callId) fetch(`/api/calls/${callId}/heartbeat`, { method: "POST", credentials: "same-origin" });
+      if (!callId) return;
+      fetch(`/api/calls/${callId}/heartbeat`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trace: takeTrace() }),
+      });
     }, 5000);
 
     let connected = false;
-    let failure = `OpenAI Realtime voice Chloe is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
+    let failure = voiceUnavailableHint("", agentLabel);
+    let failureKind = "";
     try {
       connected = await connectRealtime(callId);
     } catch (error) {
       closeRealtime();
-      const micBlocked = /NotAllowedError|Permission|not-allowed|denied/i.test(`${error.name || ""} ${error.message || ""}`);
-      failure = micBlocked
-        ? "Microphone blocked. Marin needs the microphone and will not fall back to a browser voice. You can still type and read the reply."
-        : `OpenAI Realtime voice Chloe is unavailable (${error.message || "connection failed"}). ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
+      // Hangup / pagehide already ended the call — don't overwrite "Call saved".
+      if (!callActive) return;
+      const mapped = connectFailure(error, agentLabel);
+      failure = mapped.message;
+      failureKind = mapped.kind || "";
     }
+    if (connected) startCallBudget();
     if (!connected) {
       closeRealtime();
-      const authFail = /sign in/i.test(failure);
+      if (!callActive) return;
+      const authFail = failureKind === "signin";
       if (authFail) {
         if (heartbeat) clearInterval(heartbeat);
         heartbeat = null;
@@ -593,8 +704,9 @@ async function startCall() {
           fetch(`/api/calls/${failedId}/end`, { method: "POST", credentials: "same-origin" }).catch(() => {});
         }
       }
-      modeBadge.textContent = authFail ? "Sign in required" : "Marin unavailable";
-      setPhase("idle", authFail ? "Sign in required" : "Voice unavailable");
+      modeBadge.textContent = authFail ? "Sign in required" : "Voice off";
+      const noCredits = failureKind === "openai" && /out of credits/.test(failure);
+      setPhase("idle", authFail ? "Sign in required" : noCredits ? "Out of OpenAI credits" : "Voice unavailable");
       hintEl.textContent = failure;
     }
   } finally {
@@ -602,7 +714,90 @@ async function startCall() {
   }
 }
 
-async function endCall() {
+/**
+ * The browser's echo canceller only works when it is really on and the agent
+ * plays through a media element (remoteAudio <audio>, not WebAudio). Verify it
+ * and record what the browser applied, so a call that "hears itself" shows up
+ * in the server log.
+ */
+async function ensureEchoCancellation(stream) {
+  const track = stream?.getAudioTracks?.()[0];
+  if (!track) return;
+  let settings = track.getSettings?.() || {};
+  if (settings.echoCancellation === false) {
+    try {
+      await track.applyConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: true });
+      settings = track.getSettings?.() || settings;
+    } catch { /* keep what we have */ }
+  }
+  pushTrace("mic", `ec=${settings.echoCancellation} ns=${settings.noiseSuppression} agc=${settings.autoGainControl} out=${remoteAudio?.tagName || "none"}`);
+}
+
+/** Agent volume: ducked to DUCK_VOLUME while unconfirmed caller sound plays over it. */
+function applyAgentVolume(action, why = "") {
+  if (!action || !remoteAudio) return;
+  const next = action === "duck" ? DUCK_VOLUME : 1;
+  if (remoteAudio.volume === next) return;
+  remoteAudio.volume = next;
+  pushTrace(action, why);
+}
+
+/** Small server-side trace (Fly logs) of barge-in decisions; rides on the heartbeat. */
+const TRACE_VERSION = "barge-v2";
+let traceQueue = [];
+function pushTrace(kind, detail = "") {
+  if (!callId) return;
+  traceQueue.push({ t: Date.now(), kind: String(kind).slice(0, 24), detail: String(detail).slice(0, 80) });
+  if (traceQueue.length > 60) traceQueue.shift();
+}
+function takeTrace() {
+  const out = traceQueue;
+  traceQueue = [];
+  return out;
+}
+
+function stopVoiceForAccount(failure) {
+  closeRealtime();
+  stopCallBudget();
+  modeBadge.textContent = "Voice off";
+  setPhase("idle", failure.kind === "openai" && /credits/.test(failure.message) ? "Out of OpenAI credits" : "Voice unavailable");
+  hintEl.textContent = voiceUnavailableHint(failure.message, agentLabel);
+}
+
+let callBudget = null;
+let budgetTimer = 0;
+let bargeTimer = 0;
+function startCallBudget() {
+  stopCallBudget();
+  callBudget = createCallBudget();
+  bargeTimer = setInterval(() => {
+    applyAgentVolume(bargeTick(responseGate), "timeout");
+    for (const follow of speakVadTick(responseGate)) sendEvent(follow);
+  }, 200);
+  budgetTimer = setInterval(() => {
+    if (!callActive || !callBudget) return stopCallBudget();
+    const busy = shouldHoldForSpeech(responseGate) || micHeldForGreeting;
+    const reason = callBudget.check(busy);
+    if (reason) {
+      stopCallBudget();
+      void endCall(budgetEndMessage(reason), reason);
+    }
+  }, 1000);
+}
+function stopCallBudget() {
+  if (budgetTimer) clearInterval(budgetTimer);
+  if (bargeTimer) clearInterval(bargeTimer);
+  budgetTimer = 0;
+  bargeTimer = 0;
+  if (remoteAudio) remoteAudio.volume = 1;
+  callBudget = null;
+}
+
+async function endCall(note = "", reason = "") {
+  const endNote = typeof note === "string" ? note : "";
+  const endReason = reason === "silence" || reason === "max" ? reason : "";
+  const endTrace = takeTrace();
+  stopCallBudget();
   callActive = false;
   micSuppressed = false;
   stopMic();
@@ -617,17 +812,22 @@ async function endCall() {
   if (!id) return;
   let saved = false;
   try {
-    const response = await fetch(`/api/calls/${id}/end`, { method: "POST", credentials: "same-origin" });
+    const response = await fetch(`/api/calls/${id}/end`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: endReason, trace: endTrace }),
+    });
     saved = response.ok;
   } catch {
     saved = false;
   }
   hintEl.replaceChildren();
   if (!saved) {
-    hintEl.textContent = "The call ended, but it could not be saved.";
+    hintEl.textContent = `${endNote ? `${endNote} ` : ""}The call ended, but it could not be saved.`;
     return;
   }
-  hintEl.append(document.createTextNode("Call saved on Agents. "));
+  hintEl.append(document.createTextNode(`${endNote ? `${endNote} ` : ""}Call saved on Agents. `));
   if (agentsHistoryBase) {
     const link = document.createElement("a");
     link.href = `${agentsHistoryBase}/history/${encodeURIComponent(id)}`;
@@ -743,7 +943,7 @@ function speakRefusal(reply) {
   let sent = false;
   for (const follow of queued) sent = sendEvent(follow) || sent;
   if (sent || responseGate.pendingCreates.length) setPhase("speaking", "Speaking");
-  else hintEl.textContent = "OpenAI Realtime voice Chloe is unavailable, so that refusal was not spoken.";
+  else hintEl.textContent = "Live voice is off, so that refusal was not spoken.";
 }
 
 async function submitFallback(text) {
@@ -767,9 +967,9 @@ async function submitFallback(text) {
     });
     if (realtime) setPhase("speaking", "Speaking");
     else {
-      modeBadge.textContent = "Marin unavailable";
+      modeBadge.textContent = "Voice off";
       setPhase("idle", "Voice unavailable");
-      hintEl.textContent = `OpenAI Realtime voice Chloe is unavailable. ${agentLabel} will not use a browser voice. You can still type and read the reply.`;
+      hintEl.textContent = voiceUnavailableHint("", agentLabel);
     }
   } catch (error) {
     addBubble("assistant", error.message || "Something went wrong.");
@@ -800,24 +1000,48 @@ async function handleRealtimeEvent(event) {
     sessionReady = true;
     maybeSendGreeting();
   }
+  const accountFailure = realtimeEventFailure(event);
+  if (accountFailure) {
+    // Out of credits / key revoked after the token minted: say so, stop the
+    // session (no retries that would bill or loop), keep typing available.
+    stopVoiceForAccount(accountFailure);
+    return;
+  }
   if (event.type === "error") {
     const message = event.error?.message || event.message || "Realtime error";
-    if (/active response/i.test(message)) {
-      // Follow-up response.create was early; ingestRealtimeEvent requeues it for response.done.
+    if (isBenignRealtimeError(message, event.error?.code)) {
+      // Our own cancel/clear/delete raced the server, or an early create that
+      // ingestRealtimeEvent requeues for response.done. Not a voice failure.
     } else if (!failGreeting("error")) {
-      hintEl.textContent = `Realtime error: ${message}. ${agentLabel} is not using a browser voice.`;
+      hintEl.textContent = /quota|credit/i.test(`${event.error?.code || ""} ${message}`)
+        ? voiceUnavailableHint(tokenFailure(503, { code: "openai_quota" }).message, agentLabel)
+        : voiceUnavailableHint(`OpenAI reported an error: ${message}.`, agentLabel);
       if (micHeldForGreeting) releaseGreetingMic();
     }
   }
-  if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting) {
-    noteBargeIn(responseGate);
+  if (event.type === "input_audio_buffer.speech_started" && !micHeldForGreeting && !agentSpeaking(responseGate)) {
+    // No barge-in here: noise also starts "speech". handleCallerTurn cancels
+    // the agent only for a real transcript of at least BARGE_IN_MIN_MS.
     interimEl.textContent = "";
     setPhase("listening", "Listening");
   }
   const turn = ingestRealtimeEvent(responseGate, event, { suppressFallback: micHeldForGreeting });
+  applyAgentVolume(turn.volume, event.type === "input_audio_buffer.speech_started" ? "sound" : "playback-end");
   for (const follow of turn.send) sendEvent(follow);
   if (event.type === "conversation.item.input_audio_transcription.delta" && event.delta) {
     interimEl.textContent = `${interimEl.textContent}${event.delta}`;
+    const soFar = `${partialTranscripts.get(event.item_id) || ""}${event.delta}`;
+    partialTranscripts.set(event.item_id, soFar);
+    const early = handleCallerPartial(responseGate, soFar, { itemId: event.item_id });
+    if (early?.kind === "speech") {
+      if (early.cancel) {
+        pushTrace("interrupt", `partial: ${soFar}`);
+        sendEvent({ type: "response.cancel" });
+        sendEvent({ type: "output_audio_buffer.clear" });
+      }
+      applyAgentVolume(early.volume, "interrupt");
+      for (const follow of early.send) sendEvent(follow);
+    }
   }
   if (
     event.type === "output_audio_buffer.started"
@@ -850,10 +1074,25 @@ async function handleRealtimeEvent(event) {
 
   const spoken = userTranscript(event);
   if (spoken) {
-    const langTurn = applyCallerTranscript(responseGate, spoken);
+    const callerTurn = handleCallerTurn(responseGate, spoken, { itemId: event.item_id });
     interimEl.textContent = "";
-    // Cancel a wrong-language auto-reply; response.done/cancelled drains the restarted create.
-    if (langTurn.restart && responseGate.active) sendEvent({ type: "response.cancel" });
+    partialTranscripts.delete(event.item_id);
+    if (callerTurn.kind === "noise" || callerTurn.kind === "short" || callerTurn.kind === "ignored") {
+      // Noise / filler / backchannel / own echo: no reply, no "please repeat",
+      // the agent keeps talking, and the item leaves the model's context.
+      pushTrace(`drop-${callerTurn.reason || callerTurn.kind}`, spoken);
+      applyAgentVolume(callerTurn.volume, callerTurn.reason || callerTurn.kind);
+      if (callerTurn.deleteItem && event.item_id) sendEvent({ type: "conversation.item.delete", item_id: event.item_id });
+      return;
+    }
+    applyAgentVolume(callerTurn.volume, "interrupt");
+    if (callerTurn.cancel) {
+      pushTrace("interrupt", spoken);
+      sendEvent({ type: "response.cancel" });
+      sendEvent({ type: "output_audio_buffer.clear" });
+    }
+    callBudget?.noteActivity();
+    for (const follow of callerTurn.send) sendEvent(follow);
     await onCallerAudio(spoken, event.item_id);
   }
 
@@ -890,7 +1129,7 @@ async function onCallerAudio(text, itemId) {
     speakRefusal(payload.reply);
     return;
   }
-  // Semantic VAD create_response=true already starts the reply; do not double-fire response.create.
+  // handleCallerTurn already sent the reply (create_response=false on the session).
 }
 
 async function onAssistantAudio(text) {

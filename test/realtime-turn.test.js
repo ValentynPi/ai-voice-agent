@@ -49,7 +49,8 @@ test("tool follow-up waits until the function-call response is done", () => {
   assert.equal(done.toolCalls.length, 0);
   assert.equal(done.send.length, 1);
   assert.equal(done.send[0].type, "response.create");
-  assert.equal(done.send[0].response.tool_choice, "none");
+  // auto: a place search may chain into the forecast lookup (capped).
+  assert.equal(done.send[0].response.tool_choice, "auto");
   assert.match(done.send[0].response.instructions, /Speak the tool result/);
   assert.equal(done.hold, true);
 });
@@ -267,8 +268,7 @@ test("dialer, voice test, and media bridge share the gated turn path", () => {
 test("a Ukrainian Castellón weather turn is not rewritten into English", () => {
   const uk = "Привіт, скажи мені, будь ласка, яка сьогодні погода в Кастельон-де-ла-Плана?";
   const follow = toolFollowUpEvent("get_weather", false, uk);
-  assert.match(follow.response.instructions, /Кастельон-де-ла-Плана/);
-  assert.match(follow.response.instructions, /Ukrainian/);
+  assert.match(follow.response.instructions, /^Reply ONLY in Ukrainian\./);
   assert.match(follow.response.instructions, /Speak the tool result/);
   assert.doesNotMatch(follow.response.instructions, /Reply in English/);
   assert.doesNotMatch(follow.response.instructions, /What is the weather in/);
@@ -282,7 +282,7 @@ test("a Ukrainian Castellón weather turn is not rewritten into English", () => 
   });
   const sent = completeTool(gate, "uk", gate.epoch, true);
   assert.equal(sent.length, 1);
-  assert.match(sent[0].response.instructions, /Кастельон-де-ла-Плана/);
+  assert.match(sent[0].response.instructions, /Reply ONLY in Ukrainian/);
 });
 
 test("session language update waits until the model is done speaking", () => {
@@ -362,7 +362,7 @@ test("late transcript rewrites a pending tool answer and can restart a wrong-lan
   assert.equal(early.restart, true);
   assert.equal(gate.pendingCreates.length, 1);
   assert.match(gate.pendingCreates[0].response.instructions, /Ukrainian/);
-  assert.match(gate.pendingCreates[0].response.instructions, /Кастельон-де-ла-Плана|Яка погода/);
+  assert.doesNotMatch(gate.pendingCreates[0].response.instructions, /English/);
 
   // Tool path: follow-up is queued behind an active response; late transcript rewrites it.
   const toolGate = createResponseGate();
@@ -375,4 +375,151 @@ test("late transcript rewrites a pending tool answer and can restart a wrong-lan
   assert.equal(toolGate.pendingCreates.length, 1);
   assert.match(toolGate.pendingCreates[0].response.instructions, /Ukrainian/);
   assert.match(toolGate.pendingCreates[0].response.instructions, /Speak the tool result/);
+});
+
+test("per-reply nudges keep the Bot task without replacing the session instructions", async () => {
+  const { toCachedResponse, toolFillerEvent } = await import("../public/js/realtime-turn.js");
+  const restart = {
+    type: "response.create",
+    response: { output_modalities: ["audio"], instructions: "Reply only in Ukrainian. Answer now in that language." },
+  };
+  const sent = toCachedResponse(restart, { botTask: "the weather" });
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].item.role, "system");
+  assert.equal(sent[0].item.content[0].text, "For this reply only: Reply only in Ukrainian. Answer now in that language. Stay on: the weather.");
+  assert.equal(sent[1].response.instructions, undefined, "session instructions (Bot task) apply");
+  assert.deepEqual(toCachedResponse(sent[1]), [sent[1]], "idempotent");
+  const filler = toCachedResponse(toolFillerEvent("Що ти вмієш?"), { botTask: "the weather" });
+  assert.match(filler[0].item.content[0].text, /^For this reply only: Say exactly this/);
+  const plain = { type: "response.create" };
+  assert.deepEqual(toCachedResponse(plain), [plain]);
+  const update = { type: "session.update", session: { instructions: "x" } };
+  assert.deepEqual(toCachedResponse(update), [update]);
+});
+
+test("English greeting does not anchor the reply language; correct replies are not restarted", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const note = RT.greetingLanguageNote();
+  assert.equal(note.type, "conversation.item.create");
+  assert.equal(note.item.role, "system");
+  assert.match(note.item.content[0].text, /not the caller's language/);
+
+  const voice = fs.readFileSync(new URL("../public/js/voice.js", import.meta.url), "utf8");
+  const dial = fs.readFileSync(new URL("../public/js/console-dial.js", import.meta.url), "utf8");
+  const bridge = fs.readFileSync(new URL("../src/twilio/media-bridge.js", import.meta.url), "utf8");
+  for (const source of [voice, dial, bridge]) assert.match(source, /greetingLanguageNote\(\)/);
+
+  assert.equal(RT.replyInLanguage("Я даю", "uk"), true);
+  assert.equal(RT.replyInLanguage("I give you", "uk"), false);
+  assert.equal(RT.replyInLanguage("Это погода", "uk"), false);
+  assert.equal(RT.replyInLanguage("", "uk"), false);
+
+  const gate = RT.createResponseGate();
+  RT.ingestRealtimeEvent(gate, { type: "response.created" });
+  RT.ingestRealtimeEvent(gate, { type: "response.output_audio_transcript.delta", delta: "Я даю поточну" });
+  assert.equal(RT.applyCallerTranscript(gate, "Що ти вмієш?").restart, false, "already Ukrainian: no cut");
+
+  const english = RT.createResponseGate();
+  RT.ingestRealtimeEvent(english, { type: "response.created" });
+  RT.ingestRealtimeEvent(english, { type: "response.output_audio_transcript.delta", delta: "I give you" });
+  assert.equal(RT.applyCallerTranscript(english, "Що ти вмієш?").restart, true, "English reply to Ukrainian is restarted");
+});
+
+test("noise, filler and hallucinated transcripts never get a reply", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const { classifyCallerTranscript } = await import("../public/js/caller-language.js");
+  for (const t of ["", " ", "...", "Thank you.", "you", "Продолжение следует...", "Субтитры сделал DimaTorzok", "Мм.", "Uh, um.", "a", "Это место."]) {
+    assert.equal(classifyCallerTranscript(t), "noise", JSON.stringify(t));
+    const gate = RT.createResponseGate();
+    const out = RT.handleCallerTurn(gate, t, { itemId: "item_n" });
+    assert.notEqual(out.kind, "speech");
+    assert.equal(out.send.length, 0);
+    assert.equal(gate.pendingCreates.length, 0);
+  }
+  for (const t of ["Що ти вмієш?", "Hola", "Так", "Valencia", "¿Qué tiempo hace en Valencia?"]) {
+    assert.equal(classifyCallerTranscript(t), "speech", t);
+  }
+});
+
+test("every caller turn is answered by one response.create with a hard language line", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const cases = [
+    ["Що ти вмієш?", /Reply ONLY in Ukrainian/],
+    ["Яка погода в Кастельйоні?", /Reply ONLY in Ukrainian/],
+    ["Что ты умеешь?", /Reply ONLY in Russian/],
+    ["¿Qué tiempo hace en Valencia?", /Reply ONLY in Spanish/],
+    ["Hello, what is the weather today?", /Reply ONLY in English/],
+  ];
+  for (const [text, line] of cases) {
+    const gate = RT.createResponseGate();
+    const out = RT.handleCallerTurn(gate, text, { itemId: "item_1" });
+    assert.equal(out.kind, "speech");
+    assert.equal(out.cancel, false);
+    assert.equal(out.send.length, 1);
+    assert.equal(out.send[0].type, "response.create");
+    assert.match(out.send[0].response.instructions, line, text);
+    assert.equal(out.send[0].response.tool_choice, "auto");
+  }
+});
+
+test("only real speech of at least 400 ms interrupts the agent", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const gate = RT.createResponseGate();
+  RT.ingestRealtimeEvent(gate, { type: "response.created" });
+  RT.ingestRealtimeEvent(gate, { type: "input_audio_buffer.speech_started", item_id: "short", audio_start_ms: 1000 });
+  RT.ingestRealtimeEvent(gate, { type: "input_audio_buffer.speech_stopped", item_id: "short", audio_end_ms: 1250 });
+  assert.equal(RT.handleCallerTurn(gate, "Ну так", { itemId: "short" }).cancel, false);
+  assert.equal(RT.handleCallerTurn(gate, "Thank you.", { itemId: "x" }).cancel, false);
+  RT.ingestRealtimeEvent(gate, { type: "input_audio_buffer.speech_started", item_id: "long", audio_start_ms: 2000 });
+  RT.ingestRealtimeEvent(gate, { type: "input_audio_buffer.speech_stopped", item_id: "long", audio_end_ms: 3200 });
+  const barge = RT.handleCallerTurn(gate, "Стоп, а яка погода в Валенсії?", { itemId: "long" });
+  assert.equal(barge.cancel, true);
+  assert.equal(barge.send.length, 0, "reply waits for the cancelled response to settle");
+  const done = RT.ingestRealtimeEvent(gate, { type: "response.done", response: { status: "cancelled", output: [] } });
+  assert.equal(done.send.length, 1);
+  assert.match(done.send[0].response.instructions, /Reply ONLY in Ukrainian/);
+});
+
+test("a streaming transcript starts the reply early and the final one is not answered twice", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const gate = RT.createResponseGate();
+  assert.equal(RT.handleCallerPartial(gate, "Що", { itemId: "i1" }), null);
+  const early = RT.handleCallerPartial(gate, "Що ти вмієш", { itemId: "i1" });
+  assert.equal(early.kind, "speech");
+  assert.equal(early.send.length, 1);
+  assert.match(early.send[0].response.instructions, /Reply ONLY in Ukrainian/);
+  assert.equal(RT.handleCallerPartial(gate, "Що ти вмієш?", { itemId: "i1" }), null);
+  const final = RT.handleCallerTurn(gate, "Що ти вмієш?", { itemId: "i1" });
+  assert.equal(final.kind, "answered");
+  assert.equal(final.send.length, 0);
+  assert.equal(gate.userText, "Що ти вмієш?");
+});
+
+test("a place search may chain into the forecast lookup, capped", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const gate = RT.createResponseGate();
+  RT.handleCallerTurn(gate, "Яка погода в Кастельйоні?", { itemId: "w" });
+  RT.ingestRealtimeEvent(gate, { type: "response.created" });
+  RT.ingestRealtimeEvent(gate, { type: "response.function_call_arguments.done", name: "openmeteo_search_locations", call_id: "c1", arguments: "{}" });
+  RT.ingestRealtimeEvent(gate, { type: "response.done", response: { status: "completed", output: [] } });
+  const follow = RT.completeTool(gate, "c1", gate.epoch, true);
+  assert.equal(follow[0].response.tool_choice, "auto");
+  assert.match(follow[0].response.instructions, /call the weather lookup first/);
+  assert.match(follow[0].response.instructions, /Reply ONLY in Ukrainian/);
+  const failed = RT.toolFollowUpEvent("weather", true, "Яка погода?", "uk", { allowMore: true });
+  assert.equal(failed.response.tool_choice, "none");
+});
+
+test("a silent reply is retried once, never answered with 'please repeat'", async () => {
+  const RT = await import("../public/js/realtime-turn.js");
+  const gate = RT.createResponseGate();
+  const first = RT.handleCallerTurn(gate, "Що ти вмієш?", { itemId: "s" });
+  RT.ingestRealtimeEvent(gate, { type: "response.created" });
+  const done = RT.ingestRealtimeEvent(gate, { type: "response.done", response: { status: "completed", output: [] } });
+  assert.equal(done.send.length, 1);
+  assert.equal(done.send[0], first.send[0]);
+  assert.doesNotMatch(done.send[0].response.instructions, /didn't catch|не розчув/);
+  RT.ingestRealtimeEvent(gate, { type: "response.created" });
+  const again = RT.ingestRealtimeEvent(gate, { type: "response.done", response: { status: "completed", output: [] } });
+  assert.equal(again.send.length, 0, "no endless retries");
 });

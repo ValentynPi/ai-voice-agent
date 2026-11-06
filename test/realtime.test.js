@@ -29,14 +29,22 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   const session = buildRealtimeSession("gpt-realtime-2.1", "en");
   assert.equal(session.model, "gpt-realtime-2.1");
   assert.equal(session.audio.output.voice, "marin");
-  assert.equal(session.audio.input.turn_detection.create_response, true);
-  assert.equal(session.audio.input.turn_detection.eagerness, "medium");
-  assert.equal(session.audio.input.turn_detection.type, "semantic_vad");
+  // Structural turn-taking: the client answers each filtered transcript.
+  assert.equal(session.audio.input.turn_detection.create_response, false);
+  assert.equal(session.audio.input.turn_detection.type, "server_vad");
+  assert.equal(session.audio.input.turn_detection.threshold, 0.8);
+  assert.equal(session.audio.input.turn_detection.silence_duration_ms, 700);
+  assert.equal(session.audio.input.noise_reduction.type, "near_field");
   assert.equal(session.reasoning.effort, "minimal");
   assert.match(session.instructions, /Ukrainian is not Russian/);
   assert.match(session.instructions, /Ignore background noise/i);
   assert.match(session.instructions, /Europe\/Madrid/);
-  assert.equal(session.audio.input.turn_detection.interrupt_response, true);
+  assert.equal(session.audio.input.turn_detection.interrupt_response, false);
+  const phone = buildRealtimeSession("gpt-realtime-2.1", "en", null, { telephony: true });
+  assert.equal(phone.audio.input.noise_reduction.type, "far_field");
+  const semantic = buildRealtimeSession("gpt-realtime-2.1", "en", null, { vad: "semantic" });
+  assert.equal(semantic.audio.input.turn_detection.eagerness, "low");
+  assert.equal(semantic.audio.input.turn_detection.create_response, false);
   assert.ok(Array.isArray(session.tools));
   assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
   assert.equal(session.tools.some((tool) => tool.name === "book_appointment"), false);
@@ -182,7 +190,8 @@ test("voice desk greets through realtime and does not use browser speech", () =>
   assert.match(source, /greetingTries/);
   assert.match(source, /canAttemptGreeting/);
   assert.match(source, /remoteAudio\.play/);
-  assert.match(source, /Chloe is unavailable/);
+  assert.match(source, /voiceUnavailableHint/);
+  assert.doesNotMatch(source, /Chloe is unavailable|Open Sign in/);
   assert.doesNotMatch(source, /speechSynthesis/);
   const applied = source.indexOf("answerApplied = true");
   assert.match(source.slice(applied, applied + 500), /maybeSendGreeting\(\)/);
@@ -390,7 +399,7 @@ test("reasoning rejection keeps multilingual transcription and drops effort", ()
   const session = buildRealtimeSession("gpt-realtime", "en", null, { reasoning: "off" });
   assert.equal(session.reasoning, undefined);
   assert.equal(session.audio.input.transcription.model, "gpt-transcribe");
-  assert.equal(session.audio.input.turn_detection.eagerness, "medium");
+  assert.equal(session.audio.input.turn_detection.create_response, false);
 });
 
 test("a place name or noisy fragment does not switch an established language", async () => {
@@ -441,4 +450,35 @@ test("short Ukrainian Castellón questions lock reply language", async () => {
   // Place name alone still must not lock or switch.
   assert.equal(resolveReplyLanguage("uk", "Castellón de la Plana"), "uk");
   assert.equal(isClearLanguageTurn("Castellón de la Plana"), false);
+});
+
+test("OpenAI key / credit failures are reported as such, never as a sign-in problem", async () => {
+  const { classifyOpenAiFailure, mintRealtimeClientSecret: mint } = await import("../src/realtime.js");
+  const { tokenFailure, voiceUnavailableHint } = await import("../public/js/voice-failure.js");
+  const revoked = JSON.stringify({ error: { message: "Your API key has been invalidated.", code: "token_invalidated" } });
+  assert.equal(classifyOpenAiFailure(401, revoked).code, "openai_key_invalid");
+  assert.equal(classifyOpenAiFailure(401, revoked).status, 503);
+  assert.equal(classifyOpenAiFailure(429, '{"error":{"code":"insufficient_quota"}}').code, "openai_quota");
+  assert.equal(classifyOpenAiFailure(429, '{"error":{"code":"rate_limit_exceeded"}}').code, "openai_busy");
+  assert.equal(classifyOpenAiFailure(400, '{"error":{"message":"The model x does not exist"}}'), null);
+
+  const saved = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  try {
+    await assert.rejects(
+      mint({ lang: "en", agent: null, fetchImpl: async () => new Response(revoked, { status: 401 }) }),
+      (error) => error.status === 503 && error.code === "openai_key_invalid",
+    );
+  } finally {
+    if (saved === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = saved;
+  }
+
+  assert.equal(tokenFailure(401, { error: "Sign in required", signin: "/signin" }).kind, "signin");
+  const key = tokenFailure(503, { error: "x", code: "openai_key_invalid" });
+  assert.equal(key.kind, "openai");
+  assert.doesNotMatch(key.message, /sign in/i);
+  assert.match(tokenFailure(503, { code: "openai_quota" }).message, /out of credits/);
+  const hint = voiceUnavailableHint(key.message, "Weather");
+  assert.doesNotMatch(hint, /Chloe|Marin|Sign in/i);
 });
