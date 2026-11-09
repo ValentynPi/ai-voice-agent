@@ -9,6 +9,7 @@ const PROXY_POST = new Set([
   "/api/calls",
   "/api/chat",
   "/api/realtime/token",
+  "/api/cascade/session",
   "/api/realtime/utterance",
   "/api/realtime/tool",
 ]);

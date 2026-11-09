@@ -12,6 +12,20 @@ const descriptionInput = document.querySelector("#description");
 const promptInput = document.querySelector("#systemPrompt");
 const greetingInput = document.querySelector("#greeting");
 const voiceSelect = document.querySelector("#voice");
+const engineSelect = document.querySelector("#voiceEngine");
+const engineStatus = document.querySelector("#engineStatus");
+let cascadeInfo = null;
+
+function paintEngineStatus() {
+  if (!engineSelect || !engineStatus) return;
+  const cascade = engineSelect.value === "cascade";
+  engineStatus.hidden = !cascade;
+  if (!cascade) return;
+  if (!cascadeInfo) { engineStatus.textContent = "Cascade status unknown."; return; }
+  engineStatus.textContent = cascadeInfo.ready
+    ? `${cascadeInfo.label}.`
+    : `${cascadeInfo.label} on the server (${(cascadeInfo.missing || []).map((m) => m.env).join(", ")}). Calls use OpenAI Realtime until then.`;
+}
 const languageSelect = document.querySelector("#language");
 const notesInput = document.querySelector("#modelNotes");
 const knowledgeChecks = document.querySelector("#knowledgeChecks");
@@ -76,6 +90,8 @@ function paint(next) {
   languageSelect.value = next?.language || "multi";
   notesInput.value = next?.modelNotes || "";
   fillVoices(next?.voices, next?.voice || "marin");
+  if (engineSelect) engineSelect.value = next?.voiceEngine === "cascade" ? "cascade" : "realtime";
+  paintEngineStatus();
   if (next?.id) {
     testLink.href = `/agents/${encodeURIComponent(next.id)}/test`;
     testLink.textContent = "Test call";
@@ -183,6 +199,7 @@ function payload() {
     systemPrompt: promptInput.value,
     greeting: greetingInput.value,
     voice: voiceSelect.value,
+    voiceEngine: engineSelect?.value || "realtime",
     language: languageSelect.value,
     modelNotes: notesInput.value,
     enabledTools: toolPayload(),
@@ -203,7 +220,9 @@ async function load() {
     knowledge = knowledgeBody.knowledge || [];
     knowledgeReady = true;
     discovered = stateBody.mcp?.tools || [];
-    const voices = agentBody?.voices || (await readJson(await fetch("/api/agents"))).voices;
+    const list = agentBody ? null : await readJson(await fetch("/api/agents"));
+    const voices = agentBody?.voices || list.voices;
+    cascadeInfo = agentBody?.cascade || list?.cascade || null;
     paint(agentBody ? { ...agentBody.agent, voices } : { voices });
     renderKnowledge();
     renderTools();
@@ -458,3 +477,5 @@ deleteBtn.addEventListener("click", async () => {
 });
 
 load();
+
+engineSelect?.addEventListener("change", paintEngineStatus);

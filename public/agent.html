@@ -72,6 +72,13 @@
                 </select>
               </label>
             </div>
+            <label>Voice engine
+              <select id="voiceEngine" name="voiceEngine">
+                <option value="realtime">OpenAI Realtime</option>
+                <option value="cascade">Cascade: native speech voices</option>
+              </select>
+              <small id="engineStatus" class="quiet" hidden></small>
+            </label>
             <label>Model notes
               <textarea id="modelNotes" name="modelNotes" maxlength="2000" placeholder="Durable lessons for this agent (language, tools, silence). Post-call review appends short lessons here."></textarea>
             </label>

@@ -246,6 +246,7 @@ function migrate(database) {
   migrateAgentGreeting(database);
   migrateTenantColumns(database);
   migrateCallReviewColumns(database);
+  migrateAgentVoiceEngine(database);
   ensureDemoAccount(database);
   ensureTwilioTables(database);
   seedProduct(database);
@@ -309,6 +310,14 @@ function migrateCallReviewColumns(database) {
   }
   if (!cols.has("reviewed_at")) {
     database.exec("ALTER TABLE call_records ADD COLUMN reviewed_at TEXT");
+  }
+}
+
+/** Per-agent voice engine: "realtime" (OpenAI speech-to-speech, default) or "cascade" (STT -> text model -> TTS). */
+function migrateAgentVoiceEngine(database) {
+  const cols = agentColumns(database);
+  if (!cols.has("voice_engine")) {
+    database.exec("ALTER TABLE agents ADD COLUMN voice_engine TEXT NOT NULL DEFAULT 'realtime'");
   }
 }
 

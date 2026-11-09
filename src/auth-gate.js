@@ -44,6 +44,7 @@ export function isTelephonyBrainPath(method, pathname) {
   if (m === "POST" && p === "/api/calls") return true;
   if (m === "POST" && /^\/api\/calls\/[^/]+\/(heartbeat|end)$/.test(p)) return true;
   if (m === "POST" && /^\/api\/realtime\/(token|utterance|tool)$/.test(p)) return true;
+  if (m === "POST" && p === "/api/cascade/session") return true;
   if (m === "POST" && p === "/api/chat") return true;
   if (m === "GET" && p === "/api/tools") return true;
   if (m === "GET" && /^\/api\/agents\/[^/]+$/.test(p)) return true;

@@ -31,6 +31,8 @@ import { initDatabase } from "./db.js";
 import { toolCatalogInfo } from "./tools/catalog.js";
 import { createCustomTool, listToolCatalog, removeCustomTool, updateTool } from "./tools/registry.js";
 import { attachMediaBridge } from "./twilio/media-bridge.js";
+import { cascadeStatus, resolveVoiceEngine } from "./cascade/config.js";
+import { CASCADE_WS_PATH, attachCascadeProxy, issueCascadeTicket } from "./cascade/transport.js";
 import { mountTwilio } from "./twilio/routes.js";
 import { createBrainProxy } from "./twilio/brain-proxy.js";
 import { agentsAuthEnabled, createAgentsAuthGate, createSameOriginGuard, isSignedIn } from "./auth-gate.js";
@@ -267,15 +269,22 @@ app.post("/api/calls", (req, res, next) => {
       error.expose = true;
       throw error;
     }
+    const voice = resolveVoiceEngine(agent);
     const call = startCall({
       source: "browser",
       agentId: agent?.id || null,
       agentName: agent?.name || null,
-      voice: agent?.voice || null,
+      voice: voice.engine === "cascade" ? `cascade:${voice.status.tts}` : (agent?.voice || null),
       toolAllow: agent ? agent.enabledTools : null,
       accountId: resolveCallAccountId(req, agent),
     });
-    res.status(201).json({ call });
+    // engine: what this call uses. A cascade agent without keys falls back to Realtime and says why.
+    res.status(201).json({
+      call,
+      engine: voice.engine,
+      wantedEngine: voice.wanted,
+      cascade: voice.status ? { ready: voice.status.ready, label: voice.status.label, missing: voice.status.missing.map((m) => m.env) } : null,
+    });
   } catch (error) {
     next(error);
   }
@@ -364,8 +373,14 @@ app.get("/api/analytics", (req, res) => {
   res.json(callAnalytics(req.accountId));
 });
 
+/** Provider names and missing env var names only, never key values. */
+function publicCascadeStatus() {
+  const status = cascadeStatus();
+  return { ready: status.ready, label: status.label, stt: status.sttLabel, tts: status.ttsLabel, llm: status.llm, missing: status.missing };
+}
+
 app.get("/api/agents", (req, res) => {
-  res.json({ agents: listAgents(req.accountId), voices: voiceChoices(), accountId: req.accountId, demoMode: req.isDemoMode });
+  res.json({ agents: listAgents(req.accountId), voices: voiceChoices(), cascade: publicCascadeStatus(), accountId: req.accountId, demoMode: req.isDemoMode });
 });
 
 app.post("/api/agents", (req, res, next) => {
@@ -378,7 +393,7 @@ app.post("/api/agents", (req, res, next) => {
 
 app.get("/api/agents/:id", (req, res, next) => {
   try {
-    res.json({ agent: requireAgent(req.params.id, req.accountId), voices: voiceChoices() });
+    res.json({ agent: requireAgent(req.params.id, req.accountId), voices: voiceChoices(), cascade: publicCascadeStatus() });
   } catch (error) {
     next(error);
   }
@@ -447,6 +462,32 @@ app.post("/api/realtime/token", async (req, res, next) => {
     const agent = call.agentId ? getAgent(call.agentId) : getDefaultAgent(req.accountId);
     const secret = await mintRealtimeClientSecret({ lang, agent });
     res.json({ ...secret, callId });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** One-time ticket for the cascade voice WebSocket (the browser never sees provider keys). */
+app.post("/api/cascade/session", async (req, res, next) => {
+  try {
+    const { callId } = req.body || {};
+    if (!callId) return res.status(400).json({ error: "callId is required" });
+    const call = getCall(callId);
+    if (!call || call.status !== "active") return res.status(409).json({ error: "Call is not active" });
+    if (!callBelongsToRequest(call, req)) return res.status(404).json({ error: "Call not found" });
+    const agent = call.agentId ? getAgent(call.agentId) : getDefaultAgent(req.accountId);
+    const voice = resolveVoiceEngine({ ...(agent || {}), voiceEngine: "cascade" });
+    if (!voice.status.ready) {
+      return res.status(503).json({ error: voice.status.label, code: "cascade_not_ready", missing: voice.status.missing.map((m) => m.env) });
+    }
+    res.json({
+      ticket: issueCascadeTicket(call.id),
+      wsPath: CASCADE_WS_PATH,
+      stt: voice.status.stt,
+      tts: voice.status.tts,
+      llm: voice.status.llm,
+      label: voice.status.label,
+    });
   } catch (error) {
     next(error);
   }
@@ -842,6 +883,7 @@ const _listen = app.listen.bind(app);
 app.listen = (...args) => {
   const server = _listen(...args);
   if (serveAgents) attachMediaBridge(server);
+  else if (SERVICE === "telephony") attachCascadeProxy(server, AGENTS_PUBLIC_URL);
   return server;
 };
 
