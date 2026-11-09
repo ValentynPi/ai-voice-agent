@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import { resetDatabase } from "../src/db.js";
 import { resetResolvedModels } from "../src/models.js";
-import { buildRealtimeSession, greetingEvent, nextSessionAttempt, selectSessionTools } from "../src/realtime.js";
+import { buildRealtimeSession, greetingEvent, nextSessionAttempt, selectSessionTools, voiceLabel } from "../src/realtime.js";
 import { app } from "../src/server.js";
 import { resetStore } from "../src/store.js";
 
@@ -424,12 +424,25 @@ test("a place name or noisy fragment does not switch an established language", a
   assert.equal(english, "en");
 });
 
+test("cedar agent sends cedar to OpenAI session and token label", () => {
+  const session = buildRealtimeSession("gpt-realtime-2.1", "en", { voice: "cedar" });
+  assert.equal(session.audio.output.voice, "cedar");
+  const phone = buildRealtimeSession("gpt-realtime-2.1", "en", { voice: "cedar" }, { telephony: true });
+  assert.equal(phone.audio.output.voice, "cedar");
+  assert.equal(voiceLabel({ voice: "cedar" }), "cedar");
+  assert.equal(voiceLabel({ voice: "marin" }), "marin");
+  assert.equal(voiceLabel({ voice: "chloe" }), "chloe");
+  assert.equal(voiceLabel(null), "chloe");
+});
+
 test("apiVoice never sends the nonexistent chloe voice to OpenAI", async () => {
   const { apiVoice } = await import("../public/js/caller-language.js");
   assert.equal(apiVoice("chloe"), "marin");
   assert.equal(apiVoice({ id: "chloe" }), "marin");
   assert.equal(apiVoice(""), "marin");
+  assert.equal(apiVoice("marin"), "marin");
   assert.equal(apiVoice("Cedar"), "cedar");
+  assert.equal(apiVoice("coral"), "coral");
   assert.equal(apiVoice("not-a-voice"), "marin");
   assert.deepEqual(apiVoice({ id: "voice_abc123" }), { id: "voice_abc123" });
 });

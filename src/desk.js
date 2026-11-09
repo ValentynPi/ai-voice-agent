@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { DEMO_ACCOUNT_ID } from "./accounts.js";
 import { getDb } from "./db.js";
-import { DEFAULT_AGENT_ID, VOICE_CHOICES } from "./defaults.js";
+import { DEFAULT_AGENT_ID, VOICE_OPTIONS, voiceDisplayName } from "./defaults.js";
 import { mirrorBrowserCall } from "./twilio/store.js";
 
 function httpError(status, message) {
@@ -162,8 +162,10 @@ export function getDefaultAgent(accountId = DEMO_ACCOUNT_ID) {
 }
 
 export function voiceChoices() {
-  return VOICE_CHOICES;
+  return VOICE_OPTIONS;
 }
+
+export { voiceDisplayName };
 
 function resolveGreeting(input, fallback = "") {
   if (Object.prototype.hasOwnProperty.call(input, "greeting")) {

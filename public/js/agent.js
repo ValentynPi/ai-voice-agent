@@ -34,16 +34,34 @@ function note(message, tone) {
   banner.textContent = message;
 }
 
+function voiceOption(entry) {
+  if (entry && typeof entry === "object") {
+    return { id: String(entry.id || "").trim().toLowerCase(), label: String(entry.label || entry.id || "").trim() };
+  }
+  const id = String(entry || "").trim().toLowerCase();
+  if (!id) return null;
+  if (id === "chloe") return { id, label: "Chloe (Marin)" };
+  return { id, label: id.charAt(0).toUpperCase() + id.slice(1) };
+}
+
 function fillVoices(voices, selected) {
-  const options = [...new Set([...(voices || []), selected].filter(Boolean))];
+  const selectedId = String(selected || "").trim().toLowerCase() || "marin";
+  const seen = new Set();
+  const options = [];
+  for (const entry of [...(voices || []), selectedId]) {
+    const option = voiceOption(entry);
+    if (!option?.id || seen.has(option.id)) continue;
+    seen.add(option.id);
+    options.push(option);
+  }
   voiceSelect.replaceChildren();
   for (const voice of options) {
     const option = document.createElement("option");
-    option.value = voice;
-    option.textContent = voice;
+    option.value = voice.id;
+    option.textContent = voice.label;
     voiceSelect.append(option);
   }
-  voiceSelect.value = selected || "chloe";
+  voiceSelect.value = seen.has(selectedId) ? selectedId : (options[0]?.id || "marin");
 }
 
 function paint(next) {
@@ -57,7 +75,7 @@ function paint(next) {
     || (isNew ? "Hello, thanks for calling. How can I help you today?" : "");
   languageSelect.value = next?.language || "multi";
   notesInput.value = next?.modelNotes || "";
-  fillVoices(next?.voices, next?.voice || "chloe");
+  fillVoices(next?.voices, next?.voice || "marin");
   if (next?.id) {
     testLink.href = `/agents/${encodeURIComponent(next.id)}/test`;
     testLink.textContent = "Test call";
@@ -407,7 +425,7 @@ saveBtn.addEventListener("click", async () => {
       location.assign(`/agents/${encodeURIComponent(body.agent.id)}`);
       return;
     }
-    paint({ ...body.agent, voices: [...voiceSelect.options].map((option) => option.value) });
+    paint({ ...body.agent, voices: [...voiceSelect.options].map((option) => ({ id: option.value, label: option.textContent })) });
     renderKnowledge();
     renderTools();
     subtitle.textContent = "Saved. The next test call uses this configuration.";
