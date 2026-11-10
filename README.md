@@ -38,6 +38,16 @@ The server listens on `PORT` (default `3000`).
 | `OPENAI_MODEL` | No | Text brain for `POST /api/chat`. Defaults to `gpt-5.1`. If that id is rejected, the server tries `gpt-5`, then `gpt-4.1`, then `gpt-4o-mini`. |
 | `OPENAI_REALTIME_MODEL` | No | Speech model for the voice desk. Defaults to `gpt-realtime-2.1`. |
 | `OPENAI_VOICE` | No | Realtime output voice. Defaults to `marin`.  The desk label "Chloe" is an alias: it is sent to OpenAI as `marin` (one of the two voices OpenAI recommends as most natural for gpt-realtime; `cedar` is the other). |
+| `CASCADE_STT` | No | Cascade listener: `elevenlabs` (default), `deepgram`, or `azure`. Defaults to `azure` when `AZURE_SPEECH_KEY` is set and `ELEVENLABS_API_KEY` is not. |
+| `CASCADE_TTS` | No | Cascade speaker: `elevenlabs` (default) or `azure`. Same Azure auto-default as `CASCADE_STT`. |
+| `CASCADE_LLM_MODEL` | No | OpenAI text brain for Cascade. Defaults to `gpt-6-luna`. |
+| `CASCADE_STT_SILENCE_SECS` | No | Cascade end-of-turn silence, in seconds. Defaults to `0.6`. |
+| `CASCADE_STT_ENDPOINT_MS` | No | Optional silence timeout in milliseconds (overrides `CASCADE_STT_SILENCE_SECS` when set). |
+| `ELEVENLABS_API_KEY` | No | ElevenLabs Scribe STT and Eleven TTS for Cascade. |
+| `DEEPGRAM_API_KEY` | No | Deepgram Nova-3 STT when `CASCADE_STT=deepgram`. |
+| `AZURE_SPEECH_KEY` | No | Azure Speech key for Cascade STT and/or neural TTS. |
+| `AZURE_SPEECH_REGION` | No | Azure Speech region, for example `westeurope`. |
+| `AZURE_TTS_GENDER` | No | `female` (default, Polina/Hila) or `male` (Ostap/Avri). |
 | `DATABASE_PATH` | No | SQLite file. Defaults to `data/maison-sol.sqlite`. Use `:memory:` for a throwaway database. |
 | `PORT` | No | HTTP port. Fly.io sets this for you. |
 | `TWILIO_ACCOUNT_SID` | No | With the auth token, switches `/console` from Demo to Connected and lists numbers and calls from the Twilio REST API. |
@@ -50,6 +60,9 @@ The server listens on `PORT` (default `3000`).
 Copy `.env.example` to `.env` if you want a key locally. `npm start` reads `.env` without overriding variables already in the environment. With no key, or if Realtime cannot connect, the desk shows that marin is unavailable and does not speak with the browser's `speechSynthesis` voice. Typing still returns a text reply from the keyword planner.
 
 Set the key on Fly with `fly secrets set OPENAI_API_KEY=...`. Do not put it in `fly.toml`. Model and voice ids are already in `fly.toml`.
+
+Each agent has a **Voice engine** setting. The default is OpenAI Realtime. **Cascade** is the optional alternative: a non-OpenAI listener (ElevenLabs Scribe, Deepgram, or Azure Speech), an OpenAI text model as the brain, and a non-OpenAI speaker (ElevenLabs or Azure neural voices). Realtime stays in use until you switch that agent to Cascade *and* the required keys are set on the Agents app. Azure Speech-to-Text uses continuous language identification across Ukrainian, Hebrew, English, Spanish, and Russian (under the 10-language continuous LID limit). Language identification adds a little latency at the start of a turn.
+
 
 
 ## Accounts (multi-tenant)

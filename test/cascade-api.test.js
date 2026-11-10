@@ -9,7 +9,7 @@ import { app } from "../src/server.js";
 import { getCall, resetStore } from "../src/store.js";
 import { handleBrowserCascade, issueCascadeTicket, redeemCascadeTicket } from "../src/cascade/transport.js";
 
-const ENV_KEYS = ["ELEVENLABS_API_KEY", "OPENAI_API_KEY", "CASCADE_STT", "CASCADE_TTS"];
+const ENV_KEYS = ["ELEVENLABS_API_KEY", "OPENAI_API_KEY", "CASCADE_STT", "CASCADE_TTS", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "DEEPGRAM_API_KEY"];
 let saved = {};
 test.beforeEach(() => {
   resetDatabase();

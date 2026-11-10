@@ -22,7 +22,7 @@ import {
 import { getCall, touchCall } from "../store.js";
 import { normalizeAgentsBaseUrl } from "../twilio/public-url.js";
 import { telephonySharedSecret } from "../twilio/public-list.js";
-import { openAzureTts } from "./azure.js";
+import { openAzureStt, openAzureTts } from "./azure.js";
 import { cascadeStatus } from "./config.js";
 import { openDeepgramStt } from "./deepgram.js";
 import { openElevenTts, openScribeStt } from "./elevenlabs.js";
@@ -50,7 +50,7 @@ export function redeemCascadeTicket(ticket) {
 
 export function cascadeProvidersFor(status = cascadeStatus()) {
   return {
-    openStt: status.stt === "deepgram" ? openDeepgramStt : openScribeStt,
+    openStt: status.stt === "azure" ? openAzureStt : status.stt === "deepgram" ? openDeepgramStt : openScribeStt,
     openTts: status.tts === "azure" ? openAzureTts : openElevenTts,
   };
 }

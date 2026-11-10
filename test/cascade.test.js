@@ -5,7 +5,8 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import { cascadeStatus, normalizeLanguageCode, resolveVoiceEngine } from "../src/cascade/config.js";
 import { openElevenTts, openScribeStt } from "../src/cascade/elevenlabs.js";
-import { azureSsml, azureVoiceFor, openAzureTts } from "../src/cascade/azure.js";
+import { AZURE_STT_LANGUAGES, azureSpeechContext, azureSsml, azureSttSilenceMs, azureVoiceFor, frameAzureAudio, openAzureStt, openAzureTts, parseAzureMessage, pcmWavHeader } from "../src/cascade/azure.js";
+import { mulawToPcm16 } from "../src/twilio/mulaw.js";
 import { openDeepgramStt } from "../src/cascade/deepgram.js";
 import { chatBody, chatTool, resetCascadeModel, streamChat, takeSentences } from "../src/cascade/llm.js";
 import { CASCADE_VOICE_RULES, createCascadeSession, pickReplyLanguage } from "../src/cascade/session.js";
@@ -38,6 +39,25 @@ test("cascade status names the missing provider key, never a key value", () => {
   assert.equal(ready.ready, true);
   assert.equal(ready.llm, "gpt-6-luna");
   assert.doesNotMatch(JSON.stringify(ready), /el-test|sk-test/);
+
+  const autoAzure = cascadeStatus({ OPENAI_API_KEY: "sk", AZURE_SPEECH_KEY: "az", AZURE_SPEECH_REGION: "westeurope" });
+  assert.equal(autoAzure.ready, true);
+  assert.equal(autoAzure.stt, "azure");
+  assert.equal(autoAzure.tts, "azure");
+  assert.equal(autoAzure.label, "Ready: Azure Speech listening, gpt-6-luna thinking, Azure Speech speaking");
+
+  const elWins = cascadeStatus({ OPENAI_API_KEY: "sk", ELEVENLABS_API_KEY: "el", AZURE_SPEECH_KEY: "az", AZURE_SPEECH_REGION: "westeurope" });
+  assert.equal(elWins.stt, "elevenlabs");
+  assert.equal(elWins.tts, "elevenlabs");
+
+  const explicit = cascadeStatus({ OPENAI_API_KEY: "sk", AZURE_SPEECH_KEY: "az", AZURE_SPEECH_REGION: "westeurope", CASCADE_STT: "deepgram", DEEPGRAM_API_KEY: "dg" });
+  assert.equal(explicit.stt, "deepgram");
+  assert.equal(explicit.tts, "azure");
+
+  const needsAzure = cascadeStatus({ OPENAI_API_KEY: "sk", CASCADE_STT: "azure", CASCADE_TTS: "azure" });
+  assert.equal(needsAzure.ready, false);
+  assert.equal(needsAzure.label, "Needs Azure Speech key");
+  assert.deepEqual(needsAzure.missing.map((m) => m.env), ["AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"]);
 });
 
 test("Realtime stays the engine unless the agent picks cascade and keys exist", () => {
@@ -249,6 +269,118 @@ test("Deepgram STT: nova-3 multilingual with uk/he hints; speech_final commits",
   ws.serverSends({ type: "Results", is_final: true, speech_final: false, channel: { alternatives: [{ transcript: "מה מזג", languages: ["he"] }] } });
   ws.serverSends({ type: "Results", is_final: true, speech_final: true, channel: { alternatives: [{ transcript: "האוויר?", languages: ["he"] }] } });
   assert.deepEqual(commits, [["מה מזג האוויר?", "he"]]);
+});
+
+class FakeAzureWs extends EventEmitter {
+  static instances = [];
+  constructor(url, options) {
+    super();
+    this.url = url;
+    this.options = options;
+    this.sent = [];
+    this.readyState = 1;
+    FakeAzureWs.instances.push(this);
+  }
+  send(data) { this.sent.push(data); }
+  close() { this.readyState = 3; this.emit("close"); }
+  serverSends(path, body) {
+    this.emit("message", Buffer.from(`Path: ${path}\r\nContent-Type: application/json; charset=utf-8\r\n\r\n${JSON.stringify(body)}`));
+  }
+}
+
+function unframeAudio(buf) {
+  const len = buf.readUInt16BE(0);
+  return { headers: buf.subarray(2, 2 + len).toString("utf8"), body: buf.subarray(2 + len) };
+}
+
+test("Azure STT silence follows CASCADE_STT_ENDPOINT_MS / CASCADE_STT_SILENCE_SECS", () => {
+  assert.equal(azureSttSilenceMs({}), 600);
+  assert.equal(azureSttSilenceMs({ CASCADE_STT_SILENCE_SECS: "0.8" }), 800);
+  assert.equal(azureSttSilenceMs({ CASCADE_STT_ENDPOINT_MS: "450", CASCADE_STT_SILENCE_SECS: "0.8" }), 450);
+  assert.deepEqual(azureSpeechContext(600).languageId.languages, AZURE_STT_LANGUAGES);
+  assert.equal(azureSpeechContext(600).languageId.mode, "DetectContinuous");
+  assert.equal(azureSpeechContext(450).phraseDetection.conversation.segmentation.segmentationSilenceTimeoutMs, 450);
+});
+
+test("Azure STT: v2 websocket, key in a header, continuous LID, hypothesis partials, phrase commits language", async () => {
+  FakeAzureWs.instances = [];
+  const partials = [];
+  const commits = [];
+  const stt = openAzureStt({
+    format: "pcm16k",
+    apiKey: "az-secret",
+    region: "westeurope",
+    silenceMs: 600,
+    WebSocketImpl: FakeAzureWs,
+    onPartial: (t) => partials.push(t),
+    onCommitted: (t, l) => commits.push([t, l]),
+  });
+  const ws = FakeAzureWs.instances[0];
+  assert.match(ws.url, /westeurope\.stt\.speech\.microsoft\.com\/stt\/speech\/universal\/v2/);
+  assert.match(ws.url, /lidEnabled=true/);
+  assert.match(ws.url, /segmentationSilenceTimeoutMs=600/);
+  assert.match(ws.url, /format=detailed/);
+  assert.doesNotMatch(ws.url, /az-secret/);
+  assert.equal(ws.options.headers["Ocp-Apim-Subscription-Key"], "az-secret");
+  ws.emit("open");
+  await stt.ready;
+  const configMsg = String(ws.sent[0]);
+  assert.match(configMsg, /Path: speech\.config/);
+  const contextMsg = String(ws.sent[1]);
+  assert.match(contextMsg, /Path: speech\.context/);
+  assert.match(contextMsg, /DetectContinuous/);
+  assert.match(contextMsg, /uk-UA/);
+  assert.match(contextMsg, /he-IL/);
+  assert.match(contextMsg, /en-US/);
+  assert.match(contextMsg, /es-ES/);
+  assert.match(contextMsg, /ru-RU/);
+  assert.match(contextMsg, /"segmentationSilenceTimeoutMs":600/);
+  const headerFrame = unframeAudio(ws.sent[2]);
+  assert.match(headerFrame.headers, /Path: audio/);
+  assert.equal(headerFrame.body.subarray(0, 4).toString(), "RIFF");
+  assert.equal(headerFrame.body.readUInt32LE(24), 16000);
+  stt.send(Buffer.from([1, 0, 2, 0]));
+  const audio = unframeAudio(ws.sent[3]);
+  assert.deepEqual([...audio.body], [1, 0, 2, 0]);
+  ws.serverSends("speech.hypothesis", { Text: "Яка пого" });
+  ws.serverSends("speech.phrase", { RecognitionStatus: "Success", DisplayText: "Яка погода?", PrimaryLanguage: { Language: "uk-UA" } });
+  assert.deepEqual(partials, ["Яка пого"]);
+  assert.deepEqual(commits, [["Яка погода?", "uk"]]);
+  const before = ws.sent.length;
+  ws.serverSends("turn.end", {});
+  assert.equal(ws.sent.length, before + 2);
+  assert.match(String(ws.sent[before]), /Path: speech\.context/);
+  assert.equal(unframeAudio(ws.sent[before + 1]).body.subarray(0, 4).toString(), "RIFF");
+  ws.serverSends("speech.phrase", { RecognitionStatus: "Success", NBest: [{ Display: "מה מזג האוויר?", Locale: "he-IL" }] });
+  assert.deepEqual(commits[1], ["מה מזג האוויר?", "he"]);
+  stt.close();
+});
+
+test("Azure STT: Twilio mulaw is converted to PCM16 8 kHz; a rejected key fails with a plain code", async () => {
+  FakeAzureWs.instances = [];
+  const stt = openAzureStt({ format: "mulaw8k", apiKey: "az", region: "westeurope", WebSocketImpl: FakeAzureWs });
+  const ws = FakeAzureWs.instances[0];
+  ws.emit("open");
+  await stt.ready;
+  assert.equal(unframeAudio(ws.sent[2]).body.readUInt32LE(24), 8000);
+  const mulaw = Buffer.from([0xff, 0x7f]);
+  stt.send(mulaw);
+  assert.deepEqual([...unframeAudio(ws.sent[3]).body], [...mulawToPcm16(mulaw)]);
+  stt.close();
+
+  FakeAzureWs.instances = [];
+  const bad = openAzureStt({ WebSocketImpl: FakeAzureWs, apiKey: "bad", region: "westeurope" });
+  FakeAzureWs.instances[0].emit("unexpected-response", {}, { statusCode: 401 });
+  await assert.rejects(bad.ready, (error) => error.code === "azure_key_invalid" && error.provider === "azure");
+});
+
+test("Azure message framing and wav headers stay parseable", () => {
+  const framed = frameAzureAudio("abc", Buffer.from("hi"));
+  const parsed = parseAzureMessage(framed);
+  assert.equal(parsed.path, "audio");
+  const wav = pcmWavHeader(16000);
+  assert.equal(wav.length, 44);
+  assert.equal(wav.readUInt16LE(20), 1);
 });
 
 /* ----------------------------- session ----------------------------- */

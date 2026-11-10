@@ -5,24 +5,29 @@
  * Providers and keys come only from the server environment. Nothing here is
  * ever sent to the browser except provider names and missing env var names.
  *
- *   CASCADE_STT = elevenlabs (default) | deepgram
- *   CASCADE_TTS = elevenlabs (default) | azure
+ *   CASCADE_STT = elevenlabs | deepgram | azure
+ *   CASCADE_TTS = elevenlabs | azure
+ *   Defaults: ElevenLabs for both, unless AZURE_SPEECH_KEY is set and ELEVENLABS_API_KEY is not,
+ *   in which case both default to azure.
  *   CASCADE_LLM_MODEL = gpt-6-luna (default)
  *   ELEVENLABS_API_KEY            (Scribe v2 Realtime STT, Eleven v4 Turbo TTS)
  *   ELEVENLABS_VOICE_ID           optional default voice; ELEVENLABS_VOICE_ID_UK / _HE / _RU / _ES / _EN per language
  *   DEEPGRAM_API_KEY              (Nova-3 multilingual STT)
- *   AZURE_SPEECH_KEY + AZURE_SPEECH_REGION (Azure neural TTS, native uk-UA / he-IL voices)
+ *   AZURE_SPEECH_KEY + AZURE_SPEECH_REGION (Azure STT + neural TTS, native uk-UA / he-IL voices)
  *   OPENAI_API_KEY                (the brain)
  */
+
+const AZURE_SPEECH = { label: "Azure Speech", env: ["AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"], keyUrl: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices" };
 
 export const STT_PROVIDERS = {
   elevenlabs: { label: "ElevenLabs", env: ["ELEVENLABS_API_KEY"], keyUrl: "https://elevenlabs.io/app/settings/api-keys" },
   deepgram: { label: "Deepgram", env: ["DEEPGRAM_API_KEY"], keyUrl: "https://console.deepgram.com/" },
+  azure: AZURE_SPEECH,
 };
 
 export const TTS_PROVIDERS = {
   elevenlabs: { label: "ElevenLabs", env: ["ELEVENLABS_API_KEY"], keyUrl: "https://elevenlabs.io/app/settings/api-keys" },
-  azure: { label: "Azure Speech", env: ["AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"], keyUrl: "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices" },
+  azure: AZURE_SPEECH,
 };
 
 export const DEFAULT_CASCADE_LLM = "gpt-6-luna";
@@ -34,17 +39,27 @@ function pick(table, raw, fallback) {
   return table[key] ? key : fallback;
 }
 
+function hasEnv(env, name) {
+  return Boolean(String(env[name] || "").trim());
+}
+
+/** Prefer Azure for both sides when its key is set and ElevenLabs is not. */
+function autoDefault(env) {
+  return hasEnv(env, "AZURE_SPEECH_KEY") && !hasEnv(env, "ELEVENLABS_API_KEY") ? "azure" : "elevenlabs";
+}
+
 export function cascadeProviders(env = process.env) {
+  const fallback = autoDefault(env);
   return {
-    stt: pick(STT_PROVIDERS, env.CASCADE_STT, "elevenlabs"),
-    tts: pick(TTS_PROVIDERS, env.CASCADE_TTS, "elevenlabs"),
+    stt: pick(STT_PROVIDERS, env.CASCADE_STT, fallback),
+    tts: pick(TTS_PROVIDERS, env.CASCADE_TTS, fallback),
     llm: String(env.CASCADE_LLM_MODEL || DEFAULT_CASCADE_LLM).trim() || DEFAULT_CASCADE_LLM,
   };
 }
 
 /**
  * Readiness for the UI and call start. `missing` lists env var names only.
- * `label` is plain text for the agent page: "Needs ElevenLabs API key".
+ * `label` is plain text for the agent page: "Needs ElevenLabs key" or "Needs Azure Speech key".
  */
 export function cascadeStatus(env = process.env) {
   const providers = cascadeProviders(env);
