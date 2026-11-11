@@ -65,8 +65,13 @@ export function bytesToMs(format, bytes) {
  * and words win (they separate Ukrainian from Russian best); otherwise the
  * STT language for a turn of 2+ words; otherwise keep the call's language.
  */
-export function pickReplyLanguage(established, text, sttLanguage = "") {
+export function pickReplyLanguage(established, text, sttLanguage = "", info = null) {
   const fromText = detectCallerLanguage(text);
+  // A language-locked recognizer (or a re-check that compared languages) already knows.
+  if (sttLanguage && (info?.locked || info?.rechecked)) {
+    if (sttLanguage === "ru" && fromText === "uk") return "uk";
+    return sttLanguage;
+  }
   if (fromText && isClearLanguageTurn(text)) return fromText;
   const words = transcriptTokens(text).filter((w) => /\p{L}{2,}/u.test(w)).length;
   if (sttLanguage && words >= 2) {
@@ -380,7 +385,7 @@ export function createCascadeSession({
     }
   }
 
-  function onCommitted(text, sttLanguage = "") {
+  function onCommitted(text, sttLanguage = "", info = null) {
     if (state.closed) return;
     const t = now();
     const clean = String(text || "").replace(/\s+/g, " ").trim();
@@ -402,7 +407,7 @@ export function createCascadeSession({
       return;
     }
     if (!state.greetingDone) state.greetingDone = true;
-    const language = pickReplyLanguage(state.callerLanguage, clean, sttLanguage);
+    const language = pickReplyLanguage(state.callerLanguage, clean, sttLanguage, info);
     if (language) state.callerLanguage = language;
     budget.noteActivity();
     out.event({ type: "transcript", role: "user", text: clean, language });
@@ -415,7 +420,7 @@ export function createCascadeSession({
   }
 
   async function start() {
-    const stt = openStt({ format, onPartial, onCommitted, onError: fail });
+    const stt = openStt({ format, onPartial, onCommitted, onError: fail, log: (kind, detail) => trace(kind, detail), agentLanguage: agent?.language || "" });
     state.stt = stt;
     try {
       await stt.ready;

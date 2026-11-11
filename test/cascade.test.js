@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import { cascadeStatus, normalizeLanguageCode, resolveVoiceEngine } from "../src/cascade/config.js";
 import { openElevenTts, openScribeStt } from "../src/cascade/elevenlabs.js";
-import { AZURE_STT_LANGUAGES, azureSpeechContext, azureSsml, azureSttSilenceMs, azureVoiceFor, frameAzureAudio, openAzureStt, openAzureTts, parseAzureMessage, pcmWavHeader } from "../src/cascade/azure.js";
+import { AZURE_STT_LANGUAGES, azureCallLanguages, azureSpeechContext, azureSsml, azureSttSilenceMs, azureVoiceFor, createSpeechSpans, frameAzureAudio, languageScore, lockedTrust, openAzureRecognizer, openAzureStt, openAzureTts, parseAzureMessage, pcmWavHeader } from "../src/cascade/azure.js";
 import { mulawToPcm16 } from "../src/twilio/mulaw.js";
 import { openDeepgramStt } from "../src/cascade/deepgram.js";
 import { chatBody, chatTool, resetCascadeModel, streamChat, takeSentences } from "../src/cascade/llm.js";
@@ -97,6 +97,9 @@ test("reply language: Ukrainian, Hebrew, Russian from the words; STT language fo
   assert.equal(pickReplyLanguage("", "Weather in Madrid?", "en"), "en");
   // A place name alone keeps the call's language.
   assert.equal(pickReplyLanguage("uk", "Castellón", "es"), "uk");
+  // A language-locked recognizer is trusted even for one word ("תודה", "Дякую").
+  assert.equal(pickReplyLanguage("uk", "תודה", "he", { locked: true }), "he");
+  assert.equal(pickReplyLanguage("he", "Дякую", "uk", { locked: true, rechecked: true }), "uk");
 });
 
 test("voice rules ask for spoken numbers and the native script", () => {
@@ -306,7 +309,7 @@ test("Azure STT: v2 websocket, key in a header, continuous LID, hypothesis parti
   FakeAzureWs.instances = [];
   const partials = [];
   const commits = [];
-  const stt = openAzureStt({
+  const stt = openAzureRecognizer({
     format: "pcm16k",
     apiKey: "az-secret",
     region: "westeurope",
@@ -332,8 +335,8 @@ test("Azure STT: v2 websocket, key in a header, continuous LID, hypothesis parti
   assert.match(contextMsg, /uk-UA/);
   assert.match(contextMsg, /he-IL/);
   assert.match(contextMsg, /en-US/);
-  assert.match(contextMsg, /es-ES/);
-  assert.match(contextMsg, /ru-RU/);
+  assert.doesNotMatch(contextMsg, /ru-RU/); // fewer candidates: Ukrainian was heard as Russian
+  assert.match(contextMsg, /PrioritizeAccuracy/);
   assert.match(contextMsg, /"segmentationSilenceTimeoutMs":600/);
   const headerFrame = unframeAudio(ws.sent[2]);
   assert.match(headerFrame.headers, /Path: audio/);
@@ -358,7 +361,7 @@ test("Azure STT: v2 websocket, key in a header, continuous LID, hypothesis parti
 
 test("Azure STT: Twilio mulaw is converted to PCM16 8 kHz; a rejected key fails with a plain code", async () => {
   FakeAzureWs.instances = [];
-  const stt = openAzureStt({ format: "mulaw8k", apiKey: "az", region: "westeurope", WebSocketImpl: FakeAzureWs });
+  const stt = openAzureRecognizer({ format: "mulaw8k", apiKey: "az", region: "westeurope", WebSocketImpl: FakeAzureWs });
   const ws = FakeAzureWs.instances[0];
   ws.emit("open");
   await stt.ready;
@@ -369,9 +372,142 @@ test("Azure STT: Twilio mulaw is converted to PCM16 8 kHz; a rejected key fails 
   stt.close();
 
   FakeAzureWs.instances = [];
-  const bad = openAzureStt({ WebSocketImpl: FakeAzureWs, apiKey: "bad", region: "westeurope" });
+  const bad = openAzureStt({ WebSocketImpl: FakeAzureWs, apiKey: "bad", region: "westeurope", languages: ["uk-UA"] });
   FakeAzureWs.instances[0].emit("unexpected-response", {}, { statusCode: 401 });
   await assert.rejects(bad.ready, (error) => error.code === "azure_key_invalid" && error.provider === "azure");
+});
+
+test("Azure locked recognizer: language in the URL, no LID block, no-match and audio window for re-checks", async () => {
+  FakeAzureWs.instances = [];
+  const nomatch = [];
+  const commits = [];
+  const rec = openAzureRecognizer({ locale: "uk-UA", apiKey: "az", region: "westeurope", WebSocketImpl: FakeAzureWs, onNoMatch: (s, i) => nomatch.push([s, i.duration]), onCommitted: (t, l, i) => commits.push([t, l, i.confidence]) });
+  const ws = FakeAzureWs.instances[0];
+  assert.match(ws.url, /language=uk-UA/);
+  assert.doesNotMatch(ws.url, /lidEnabled/);
+  ws.emit("open");
+  await rec.ready;
+  assert.doesNotMatch(String(ws.sent[1]), /languageId/);
+  // 1 s of audio: 32 bytes per ms at 16 kHz PCM16, sample value = ms index
+  for (let ms = 0; ms < 1000; ms += 100) rec.send(Buffer.alloc(3200, ms / 100));
+  const window = rec.audioFor({ offset: 300 * 10000, duration: 200 * 10000 }, 0, 0);
+  assert.equal(window.length, 200 * 32);
+  assert.equal(window[0], 3);
+  assert.equal(window[window.length - 1], 4);
+  ws.serverSends("speech.phrase", { RecognitionStatus: "NoMatch", Offset: 0, Duration: 5_000_000 });
+  ws.serverSends("speech.phrase", { RecognitionStatus: "Success", DisplayText: "Дякую.", NBest: [{ Confidence: 0.96, Display: "Дякую." }], Offset: 0, Duration: 1 });
+  assert.deepEqual(nomatch, [["NoMatch", 5_000_000]]);
+  assert.deepEqual(commits, [["Дякую.", "uk", 0.96]]);
+  rec.close();
+});
+
+test("Azure call languages: uk/he/en by default, agent language added, env override", () => {
+  assert.deepEqual(azureCallLanguages({}), ["uk-UA", "he-IL", "en-US"]);
+  assert.deepEqual(azureCallLanguages({}, "es"), ["uk-UA", "he-IL", "en-US", "es-ES"]);
+  assert.deepEqual(azureCallLanguages({}, "multi"), ["uk-UA", "he-IL", "en-US"]);
+  assert.deepEqual(azureCallLanguages({ CASCADE_STT_LANGUAGES: "he-IL, uk, ru-RU" }), ["he-IL", "uk-UA", "ru-RU"]);
+  assert.equal(lockedTrust("he-IL") > lockedTrust("uk-UA"), true);
+  assert.equal(languageScore("he-IL", 0.85) < languageScore("uk-UA", 0.85), true);
+});
+
+function fakeRecognizers() {
+  const made = [];
+  const open = (opts) => {
+    const rec = { opts, sent: [], closed: false, finished: false, ready: Promise.resolve(), audioFor: () => Buffer.from("clip"), send(b) { this.sent.push(b); }, finish() { this.finished = true; }, close() { this.closed = true; } };
+    made.push(rec);
+    return rec;
+  };
+  return { made, open };
+}
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+test("Azure call STT: LID until a confident phrase, then a recognizer locked to that language", async () => {
+  const { made, open } = fakeRecognizers();
+  const commits = [];
+  const stt = openAzureStt({ languages: ["uk-UA", "he-IL", "en-US"], openRecognizer: open, recheck: async () => assert.fail("no re-check"), onCommitted: (t, l, i) => commits.push([t, l, i.locked]) });
+  await stt.ready;
+  assert.equal(made[0].opts.locale, "");
+  made[0].opts.onCommitted("Привіт, що ти вмієш?", "uk", { confidence: 0.98 });
+  await flush(); await flush();
+  assert.deepEqual(commits, [["Привіт, що ти вмієш?", "uk", false]]);
+  assert.equal(made[1].opts.locale, "uk-UA");
+  await flush();
+  assert.equal(made[0].finished, true, "old recognizer finishes its phrase in progress");
+  stt.send(Buffer.from([1, 2]));
+  assert.equal(made[1].sent.length, 1);
+  assert.equal(stt.locale, "uk-UA");
+  stt.close();
+});
+
+test("Azure call STT: an unsure LID phrase is re-checked per language; the clear winner is used and locked", async () => {
+  const { made, open } = fakeRecognizers();
+  const commits = [];
+  const asked = [];
+  const recheck = async (_audio, locale) => { asked.push(locale); return { locale, text: locale === "uk-UA" ? "Дякую." : locale === "he-IL" ? "דיקו." : "Jaquir.", confidence: { "uk-UA": 0.92, "he-IL": 0.85, "en-US": 0.04 }[locale] }; };
+  const stt = openAzureStt({ languages: ["uk-UA", "he-IL", "en-US"], openRecognizer: open, recheck, onCommitted: (t, l, i) => commits.push([t, l, i.rechecked]) });
+  await stt.ready;
+  made[0].opts.onCommitted("דיקו.", "he", { confidence: 0.7 });
+  for (let i = 0; i < 5; i += 1) await flush();
+  assert.deepEqual(asked.sort(), ["en-US", "he-IL", "uk-UA"]);
+  assert.deepEqual(commits, [["Дякую.", "uk", true]]);
+  assert.equal(stt.locale, "uk-UA");
+  stt.close();
+});
+
+test("Azure call STT: locked language stays unless another one is clearly better", async () => {
+  const { made, open } = fakeRecognizers();
+  const commits = [];
+  let scores = {};
+  const recheck = async (_audio, locale) => ({ locale, text: `text-${locale}`, confidence: scores[locale] ?? 0 });
+  const stt = openAzureStt({ languages: ["uk-UA", "he-IL", "en-US"], locale: "uk-UA", openRecognizer: open, recheck, onCommitted: (t, l, i) => commits.push([t, l, Boolean(i.switched)]) });
+  await stt.ready;
+  // Unsure Ukrainian, nothing better: keep the Ukrainian text and the lock.
+  scores = { "he-IL": 0.4, "en-US": 0.1 };
+  made[0].opts.onCommitted("Яка погода", "uk", { confidence: 0.45 });
+  for (let i = 0; i < 5; i += 1) await flush();
+  assert.deepEqual(commits.at(-1), ["Яка погода", "uk", false]);
+  assert.equal(stt.locale, "uk-UA");
+  // Caller really switched to Hebrew: low uk score, high he score.
+  scores = { "he-IL": 0.82, "en-US": 0.18 };
+  made[0].opts.onCommitted("Мати Одеса сот.", "uk", { confidence: 0.31 });
+  for (let i = 0; i < 5; i += 1) await flush();
+  assert.deepEqual(commits.at(-1), ["text-he-IL", "he", true]);
+  assert.equal(stt.locale, "he-IL");
+  // he-IL needs 0.8 to skip the re-check (it scores foreign speech high).
+  scores = { "uk-UA": 0.94, "en-US": 0.05 };
+  made.at(-1).opts.onCommitted("יאקפו הודף.", "he", { confidence: 0.72 });
+  for (let i = 0; i < 5; i += 1) await flush();
+  assert.deepEqual(commits.at(-1), ["text-uk-UA", "uk", true]);
+  assert.equal(stt.locale, "uk-UA");
+  stt.close();
+});
+
+test("Azure call STT: a long no-match is re-checked so the caller is not ignored", async () => {
+  const { made, open } = fakeRecognizers();
+  const commits = [];
+  const recheck = async (_audio, locale) => ({ locale, text: locale === "en-US" ? "What is the weather in Madrid?" : "", confidence: locale === "en-US" ? 0.9 : 0 });
+  const stt = openAzureStt({ languages: ["uk-UA", "he-IL", "en-US"], locale: "he-IL", openRecognizer: open, recheck, onCommitted: (t, l) => commits.push([t, l]) });
+  await stt.ready;
+  made[0].opts.onNoMatch("NoMatch", { duration: 200 * 10000 }); // too short: ignored
+  made[0].opts.onNoMatch("NoMatch", { duration: 1500 * 10000 });
+  for (let i = 0; i < 5; i += 1) await flush();
+  assert.deepEqual(commits, [["What is the weather in Madrid?", "en"]]);
+  assert.equal(stt.locale, "en-US");
+  stt.close();
+});
+
+test("speech spans: energy detector reports a finished utterance and ignores quiet audio", () => {
+  const spans = [];
+  const det = createSpeechSpans({ format: "pcm16k", onSpan: (s) => spans.push(s) });
+  const tone = (ms, amp) => { const b = Buffer.alloc(ms * 32); for (let i = 0; i < ms * 16; i += 1) b.writeInt16LE(Math.round(amp * Math.sin(i / 3)), i * 2); return b; };
+  det.push(tone(500, 20)); // room noise
+  det.push(tone(800, 6000)); // speech
+  det.push(tone(1000, 20));
+  assert.equal(spans.length, 1);
+  assert.ok(Math.abs(spans[0].from / 32 - 500) <= 40);
+  assert.ok(spans[0].speechMs >= 700);
+  det.push(tone(200, 6000)); det.push(tone(1000, 20)); // a click: too short
+  assert.equal(spans.length, 1);
 });
 
 test("Azure message framing and wav headers stay parseable", () => {
