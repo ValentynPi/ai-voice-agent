@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { DEMO_ACCOUNT_ID } from "./accounts.js";
 import { getDb } from "./db.js";
-import { DEFAULT_AGENT_ID, VOICE_CHOICES } from "./defaults.js";
+import { DEFAULT_AGENT_ID, VOICE_OPTIONS, voiceDisplayName } from "./defaults.js";
 import { mirrorBrowserCall } from "./twilio/store.js";
 
 function httpError(status, message) {
@@ -31,6 +31,13 @@ function cleanLanguage(value) {
     throw httpError(400, "Language must be en, es, or multi");
   }
   return language;
+}
+
+export const VOICE_ENGINES = ["realtime", "cascade"];
+function cleanVoiceEngine(value) {
+  const engine = cleanBlock(value, 16).toLowerCase() || "realtime";
+  if (!VOICE_ENGINES.includes(engine)) throw httpError(400, "Voice engine must be realtime or cascade");
+  return engine;
 }
 
 function cleanTools(value) {
@@ -111,6 +118,7 @@ function mapAgent(row, knowledge) {
     systemPrompt: row.system_prompt,
     greeting: row.greeting || "",
     voice: row.voice || "chloe",
+    voiceEngine: row.voice_engine === "cascade" ? "cascade" : "realtime",
     language: row.language || "multi",
     modelNotes: row.model_notes || "",
     enabledTools: parseTools(row.enabled_tools_json),
@@ -122,7 +130,7 @@ function mapAgent(row, knowledge) {
 }
 
 const AGENT_COLUMNS = `
-  id, account_id, name, description, system_prompt, greeting, voice, language,
+  id, account_id, name, description, system_prompt, greeting, voice, voice_engine, language,
   model_notes, enabled_tools_json, created_at, updated_at
 `;
 
@@ -162,8 +170,10 @@ export function getDefaultAgent(accountId = DEMO_ACCOUNT_ID) {
 }
 
 export function voiceChoices() {
-  return VOICE_CHOICES;
+  return VOICE_OPTIONS;
 }
+
+export { voiceDisplayName };
 
 function resolveGreeting(input, fallback = "") {
   if (Object.prototype.hasOwnProperty.call(input, "greeting")) {
@@ -185,6 +195,7 @@ function agentInput(input, { requirePrompt = true } = {}) {
     systemPrompt,
     greeting: resolveGreeting(input),
     voice: cleanVoice(input.voice || "chloe"),
+    voiceEngine: cleanVoiceEngine(input.voiceEngine || "realtime"),
     language: cleanLanguage(input.language || "multi"),
     modelNotes: cleanBlock(input.modelNotes, 2000),
   };
@@ -214,8 +225,8 @@ export function createAgent(input = {}, accountId = DEMO_ACCOUNT_ID) {
     database.prepare(`
       INSERT INTO agents (
         id, account_id, name, description, system_prompt, greeting,
-        voice, language, model_notes, enabled_tools_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        voice, voice_engine, language, model_notes, enabled_tools_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tid,
@@ -224,6 +235,7 @@ export function createAgent(input = {}, accountId = DEMO_ACCOUNT_ID) {
       fields.systemPrompt,
       fields.greeting,
       fields.voice,
+      fields.voiceEngine,
       fields.language,
       fields.modelNotes,
       tools == null ? null : JSON.stringify(tools),
@@ -251,6 +263,7 @@ export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
       ? resolveGreeting(input, current.greeting)
       : current.greeting,
     voice: has("voice") ? cleanVoice(input.voice) : current.voice,
+    voiceEngine: has("voiceEngine") ? cleanVoiceEngine(input.voiceEngine) : current.voiceEngine,
     language: has("language") ? cleanLanguage(input.language) : current.language,
     modelNotes: has("modelNotes") ? cleanBlock(input.modelNotes, 2000) : current.modelNotes,
     enabledTools: has("enabledTools") ? cleanTools(input.enabledTools) : current.enabledTools,
@@ -264,7 +277,7 @@ export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
     database.prepare(`
       UPDATE agents SET
         name = ?, description = ?, system_prompt = ?, greeting = ?,
-        voice = ?, language = ?, model_notes = ?, enabled_tools_json = ?, updated_at = ?
+        voice = ?, voice_engine = ?, language = ?, model_notes = ?, enabled_tools_json = ?, updated_at = ?
       WHERE id = ?
     `).run(
       next.name,
@@ -272,6 +285,7 @@ export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
       next.systemPrompt,
       next.greeting,
       next.voice,
+      next.voiceEngine,
       next.language,
       next.modelNotes,
       next.enabledTools == null ? null : JSON.stringify(next.enabledTools),
@@ -297,6 +311,7 @@ export function duplicateAgent(id, accountId = DEMO_ACCOUNT_ID) {
     systemPrompt: current.systemPrompt,
     greeting: current.greeting,
     voice: current.voice,
+    voiceEngine: current.voiceEngine,
     language: current.language,
     modelNotes: current.modelNotes,
     enabledTools: current.enabledTools,

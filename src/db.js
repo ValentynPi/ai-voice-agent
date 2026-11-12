@@ -246,6 +246,7 @@ function migrate(database) {
   migrateAgentGreeting(database);
   migrateTenantColumns(database);
   migrateCallReviewColumns(database);
+  migrateAgentVoiceEngine(database);
   ensureDemoAccount(database);
   ensureTwilioTables(database);
   seedProduct(database);
@@ -312,6 +313,14 @@ function migrateCallReviewColumns(database) {
   }
 }
 
+/** Per-agent voice engine: "realtime" (OpenAI speech-to-speech, default) or "cascade" (STT -> text model -> TTS). */
+function migrateAgentVoiceEngine(database) {
+  const cols = agentColumns(database);
+  if (!cols.has("voice_engine")) {
+    database.exec("ALTER TABLE agents ADD COLUMN voice_engine TEXT NOT NULL DEFAULT 'realtime'");
+  }
+}
+
 function migrateAgentGreeting(database) {
   const cols = agentColumns(database);
   if (!cols.has("greeting")) {
@@ -351,7 +360,9 @@ function seedProduct(database) {
   if (seeded) {
     // Existing installs: keep Maison Sol on the demo tenant only.
     database.prepare("UPDATE agents SET account_id = ? WHERE id = ? AND (account_id IS NULL OR account_id = '')").run(DEMO_ACCOUNT_ID, DEFAULT_AGENT_ID);
-    database.prepare("UPDATE agents SET voice = 'chloe' WHERE lower(voice) = 'marin' OR voice IS NULL OR voice = ''").run();
+    // Empty voice only. Do not rewrite "marin" — the picker offers Marin as a
+    // real choice, and Chloe remains a separate back-compat alias for marin.
+    database.prepare("UPDATE agents SET voice = 'chloe' WHERE voice IS NULL OR voice = ''").run();
     database.prepare("UPDATE knowledge_bases SET account_id = ? WHERE id = ? AND (account_id IS NULL OR account_id = '')").run(DEMO_ACCOUNT_ID, DEFAULT_KB_ID);
     return;
   }

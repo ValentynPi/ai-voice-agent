@@ -28,6 +28,7 @@ import {
   speakVadTick,
 } from "./realtime-turn.js";
 import { startMicVad } from "./mic-vad.js";
+import { startCascadeCall } from "./cascade-client.js";
 
 const CHIPS = [
   { label: "Help", text: "What can you help me with?" },
@@ -62,6 +63,9 @@ let busy = false;
 let lastUtterance = "";
 let heartbeat = null;
 let realtime = null;
+/** Cascade engine (server-side STT -> text model -> TTS), when the agent uses it. */
+let cascade = null;
+let callEngine = "realtime";
 let responseGate = createResponseGate();
 let channelOpen = false;
 let sessionReady = false;
@@ -593,6 +597,11 @@ function waitForIce(pc) {
 }
 
 function closeRealtime() {
+  if (cascade) {
+    const leg = cascade;
+    cascade = null;
+    try { leg.stop(); } catch { /* already stopped */ }
+  }
   connectGeneration += 1;
   resetGreetingState();
   const current = realtime;
@@ -661,7 +670,8 @@ async function startCall() {
     let failure = voiceUnavailableHint("", agentLabel);
     let failureKind = "";
     try {
-      connected = await connectRealtime(callId);
+      callEngine = payload.engine === "cascade" ? "cascade" : "realtime";
+      connected = callEngine === "cascade" ? await connectCascade(callId) : await connectRealtime(callId);
     } catch (error) {
       closeRealtime();
       // Hangup / pagehide already ended the call — don't overwrite "Call saved".
@@ -670,7 +680,11 @@ async function startCall() {
       failure = mapped.message;
       failureKind = mapped.kind || "";
     }
-    if (connected) startCallBudget();
+    // Cascade calls are timed by the server (30 s silence / 10 min); it says "ended".
+    if (connected && callEngine !== "cascade") startCallBudget();
+    if (connected && payload.wantedEngine === "cascade" && callEngine !== "cascade" && payload.cascade?.label) {
+      hintEl.textContent = `Cascade voice: ${payload.cascade.label}. Using OpenAI Realtime for this call.`;
+    }
     if (!connected) {
       closeRealtime();
       if (!callActive) return;
@@ -821,6 +835,49 @@ window.addEventListener("pagehide", () => {
   if (callId) navigator.sendBeacon?.(`/api/calls/${callId}/end`);
   closeRealtime();
 });
+
+async function connectCascade(activeCallId = callId) {
+  const generation = ++connectGeneration;
+  const leg = await startCascadeCall({
+    callId: activeCallId,
+    remoteAudio,
+    onPhase: (state) => {
+      if (!callActive) return;
+      if (state === "speaking") setPhase("speaking", "Speaking");
+      else if (state === "thinking") setPhase("thinking", "Thinking");
+      else setPhase("listening", "Listening");
+    },
+    onInterim: (text) => { interimEl.textContent = text; },
+    onTranscript: (role, text) => {
+      if (!text) return;
+      interimEl.textContent = "";
+      addBubble(role === "user" ? "user" : "assistant", text);
+    },
+    onError: (message, code) => {
+      pushTrace("error", code);
+      modeBadge.textContent = "Voice off";
+      setPhase("idle", /credits|quota/i.test(message) ? "Out of credits" : "Voice unavailable");
+      hintEl.textContent = voiceUnavailableHint(message, agentLabel);
+    },
+    onEnded: (reason) => {
+      if (!callActive || callId !== activeCallId) return;
+      if (reason === "silence" || reason === "max") void endCall(budgetEndMessage(reason), reason);
+      else if (reason === "closed") { modeBadge.textContent = "Voice off"; setPhase("idle", "Voice disconnected"); }
+    },
+    onTrace: (kind, detail) => pushTrace(kind, detail),
+  });
+  if (generation !== connectGeneration || !callActive) {
+    leg.stop();
+    const err = new Error("Voice connection was cancelled before it finished.");
+    err.kind = "cancelled";
+    throw err;
+  }
+  cascade = leg;
+  modeBadge.textContent = `Cascade · ${leg.tts || "tts"}`;
+  hintEl.textContent = `${leg.label || "Cascade voice"}. ${agentLabel} will speak first.`;
+  setPhase("speaking", "Speaking");
+  return true;
+}
 
 function addBubble(role, text, extras = {}) {
   const item = document.createElement("li");

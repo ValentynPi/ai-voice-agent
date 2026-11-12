@@ -37,6 +37,8 @@ import {
   runRealtimeTool,
 } from "../realtime.js";
 import { endCall, startCall, touchCall } from "../store.js";
+import { resolveVoiceEngine } from "../cascade/config.js";
+import { CASCADE_WS_PATH, cascadeUpgrade, startTwilioCascade } from "../cascade/transport.js";
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime";
 
@@ -50,6 +52,7 @@ export function attachMediaBridge(server) {
   if (!server || attachedServers.has(server)) return;
   attachedServers.add(server);
   const wss = new WebSocketServer({ noServer: true });
+  const cascade = cascadeUpgrade(server);
 
   server.on("upgrade", (req, socket, head) => {
     let pathname = "/";
@@ -57,6 +60,10 @@ export function attachMediaBridge(server) {
       pathname = new URL(req.url || "/", "http://localhost").pathname;
     } catch {
       socket.destroy();
+      return;
+    }
+    if (pathname === CASCADE_WS_PATH) {
+      cascade(req, socket, head);
       return;
     }
     if (pathname !== "/twilio/media") {
@@ -220,6 +227,7 @@ function waitForEvent(ws, type, timeoutMs) {
 async function handleTwilioMedia(twilioWs, url) {
   let streamSid = null;
   let openai = null;
+  let cascadeLeg = null;
   let deskCall = null;
   let closed = false;
   let greetingSent = false;
@@ -248,6 +256,11 @@ async function handleTwilioMedia(twilioWs, url) {
       } catch {
         /* ignore */
       }
+    }
+    try {
+      cascadeLeg?.close();
+    } catch {
+      /* ignore */
     }
     try {
       openai?.ws?.close();
@@ -310,6 +323,34 @@ async function handleTwilioMedia(twilioWs, url) {
       const custom = msg.start?.customParameters || {};
       const agentId = String(custom.agentId || agentHint || "").trim();
       const agent = pickAgent(agentId);
+      const engine = resolveVoiceEngine(agent);
+      if (engine.wanted === "cascade" && engine.engine !== "cascade") {
+        console.info(`Twilio bridge: cascade wanted but ${engine.status?.label || "not ready"}; using Realtime`);
+      }
+      if (engine.engine === "cascade") {
+        try {
+          deskCall = startCall({
+            source: "twilio-media",
+            agentId: agent?.id || null,
+            agentName: agent?.name || null,
+            voice: `cascade:${engine.status.tts}`,
+            toolAllow: agent ? agent.enabledTools : null,
+            accountId: agent?.accountId || null,
+          });
+          cascadeLeg = await startTwilioCascade({
+            callId: deskCall.id,
+            agent,
+            streamSid,
+            status: engine.status,
+            send: sendTwilio,
+            closeAll,
+          });
+        } catch (error) {
+          console.error("Failed to start cascade for Media Stream:", error?.message || error);
+          closeAll("failed");
+        }
+        return;
+      }
       try {
         openai = await openOpenAiRealtime({ lang, agent });
         deskCall = startCall({
@@ -349,6 +390,10 @@ async function handleTwilioMedia(twilioWs, url) {
 
     if (event === "media" && msg.media?.payload) {
       if (deskCall?.id) touchCall(deskCall.id);
+      if (cascadeLeg) {
+        cascadeLeg.pushMulaw(msg.media.payload);
+        return;
+      }
       sendOpenAi({ type: "input_audio_buffer.append", audio: msg.media.payload });
       return;
     }

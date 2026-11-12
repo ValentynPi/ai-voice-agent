@@ -12,6 +12,20 @@ const descriptionInput = document.querySelector("#description");
 const promptInput = document.querySelector("#systemPrompt");
 const greetingInput = document.querySelector("#greeting");
 const voiceSelect = document.querySelector("#voice");
+const engineSelect = document.querySelector("#voiceEngine");
+const engineStatus = document.querySelector("#engineStatus");
+let cascadeInfo = null;
+
+function paintEngineStatus() {
+  if (!engineSelect || !engineStatus) return;
+  const cascade = engineSelect.value === "cascade";
+  engineStatus.hidden = !cascade;
+  if (!cascade) return;
+  if (!cascadeInfo) { engineStatus.textContent = "Cascade status unknown."; return; }
+  engineStatus.textContent = cascadeInfo.ready
+    ? `${cascadeInfo.label}.`
+    : `${cascadeInfo.label} on the server (${(cascadeInfo.missing || []).map((m) => m.env).join(", ")}). Calls use OpenAI Realtime until then.`;
+}
 const languageSelect = document.querySelector("#language");
 const notesInput = document.querySelector("#modelNotes");
 const knowledgeChecks = document.querySelector("#knowledgeChecks");
@@ -34,16 +48,34 @@ function note(message, tone) {
   banner.textContent = message;
 }
 
+function voiceOption(entry) {
+  if (entry && typeof entry === "object") {
+    return { id: String(entry.id || "").trim().toLowerCase(), label: String(entry.label || entry.id || "").trim() };
+  }
+  const id = String(entry || "").trim().toLowerCase();
+  if (!id) return null;
+  if (id === "chloe") return { id, label: "Chloe (Marin)" };
+  return { id, label: id.charAt(0).toUpperCase() + id.slice(1) };
+}
+
 function fillVoices(voices, selected) {
-  const options = [...new Set([...(voices || []), selected].filter(Boolean))];
+  const selectedId = String(selected || "").trim().toLowerCase() || "marin";
+  const seen = new Set();
+  const options = [];
+  for (const entry of [...(voices || []), selectedId]) {
+    const option = voiceOption(entry);
+    if (!option?.id || seen.has(option.id)) continue;
+    seen.add(option.id);
+    options.push(option);
+  }
   voiceSelect.replaceChildren();
   for (const voice of options) {
     const option = document.createElement("option");
-    option.value = voice;
-    option.textContent = voice;
+    option.value = voice.id;
+    option.textContent = voice.label;
     voiceSelect.append(option);
   }
-  voiceSelect.value = selected || "chloe";
+  voiceSelect.value = seen.has(selectedId) ? selectedId : (options[0]?.id || "marin");
 }
 
 function paint(next) {
@@ -57,7 +89,9 @@ function paint(next) {
     || (isNew ? "Hello, thanks for calling. How can I help you today?" : "");
   languageSelect.value = next?.language || "multi";
   notesInput.value = next?.modelNotes || "";
-  fillVoices(next?.voices, next?.voice || "chloe");
+  fillVoices(next?.voices, next?.voice || "marin");
+  if (engineSelect) engineSelect.value = next?.voiceEngine === "cascade" ? "cascade" : "realtime";
+  paintEngineStatus();
   if (next?.id) {
     testLink.href = `/agents/${encodeURIComponent(next.id)}/test`;
     testLink.textContent = "Test call";
@@ -165,6 +199,7 @@ function payload() {
     systemPrompt: promptInput.value,
     greeting: greetingInput.value,
     voice: voiceSelect.value,
+    voiceEngine: engineSelect?.value || "realtime",
     language: languageSelect.value,
     modelNotes: notesInput.value,
     enabledTools: toolPayload(),
@@ -185,7 +220,9 @@ async function load() {
     knowledge = knowledgeBody.knowledge || [];
     knowledgeReady = true;
     discovered = stateBody.mcp?.tools || [];
-    const voices = agentBody?.voices || (await readJson(await fetch("/api/agents"))).voices;
+    const list = agentBody ? null : await readJson(await fetch("/api/agents"));
+    const voices = agentBody?.voices || list.voices;
+    cascadeInfo = agentBody?.cascade || list?.cascade || null;
     paint(agentBody ? { ...agentBody.agent, voices } : { voices });
     renderKnowledge();
     renderTools();
@@ -407,7 +444,7 @@ saveBtn.addEventListener("click", async () => {
       location.assign(`/agents/${encodeURIComponent(body.agent.id)}`);
       return;
     }
-    paint({ ...body.agent, voices: [...voiceSelect.options].map((option) => option.value) });
+    paint({ ...body.agent, voices: [...voiceSelect.options].map((option) => ({ id: option.value, label: option.textContent })) });
     renderKnowledge();
     renderTools();
     subtitle.textContent = "Saved. The next test call uses this configuration.";
@@ -440,3 +477,5 @@ deleteBtn.addEventListener("click", async () => {
 });
 
 load();
+
+engineSelect?.addEventListener("change", paintEngineStatus);

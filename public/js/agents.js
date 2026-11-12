@@ -3,6 +3,13 @@ import { emptyState, formatWhen, readJson } from "./ui.js";
 const list = document.querySelector("#agentList");
 const errorEl = document.querySelector("#error");
 
+function voiceLabel(id) {
+  const key = String(id || "").trim().toLowerCase();
+  if (!key || key === "chloe") return key === "chloe" ? "Chloe (Marin)" : "Marin";
+  if (key === "marin") return "Marin";
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
 function languageLabel(language) {
   if (language === "es") return "Spanish";
   if (language === "en") return "English";
@@ -62,7 +69,7 @@ function row(agent) {
   name.append(block);
 
   const voice = document.createElement("td");
-  voice.textContent = agent.voice || "chloe";
+  voice.textContent = voiceLabel(agent.voice);
   const language = document.createElement("td");
   language.textContent = languageLabel(agent.language);
   const knowledge = document.createElement("td");

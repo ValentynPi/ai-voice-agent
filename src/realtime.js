@@ -222,8 +222,10 @@ function sessionVoice(agent) {
 
 export function voiceLabel(agent) {
   const picked = String(agent?.voice || "").trim().toLowerCase();
-  if (!picked || picked === "marin" || picked === "chloe") return "chloe";
-  return picked || voiceName();
+  if (picked) return picked;
+  const fallback = String(voiceName() || "").trim().toLowerCase();
+  // Env / default "marin" is shown as the desk alias Chloe.
+  return !fallback || fallback === "marin" ? "chloe" : fallback;
 }
 
 /**

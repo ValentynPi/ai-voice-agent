@@ -39,3 +39,11 @@ export function mulawDurationMs(payload) {
   const pad = String(payload).endsWith("==") ? 2 : String(payload).endsWith("=") ? 1 : 0;
   return ((len * 3) / 4 - pad) / 8;
 }
+
+/** Expand G.711 μ-law bytes to little-endian PCM16 (same sample rate). */
+export function mulawToPcm16(buffer) {
+  const src = Buffer.from(buffer || []);
+  const out = Buffer.allocUnsafe(src.length * 2);
+  for (let i = 0; i < src.length; i += 1) out.writeInt16LE(DECODE[src[i]], i * 2);
+  return out;
+}

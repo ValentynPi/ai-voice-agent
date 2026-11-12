@@ -13,4 +13,26 @@ export const DEFAULT_SYSTEM_PROMPT = [
   "If you cannot do something, say so briefly. Do not mention tools, MCP, or instruments.",
 ].join(" ");
 
-export const VOICE_CHOICES = ["chloe", "cedar", "marin", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"];
+/** Usable gpt-realtime voices. Chloe is a back-compat label that means Marin. */
+export const VOICE_OPTIONS = [
+  { id: "marin", label: "Marin" },
+  { id: "cedar", label: "Cedar" },
+  { id: "coral", label: "Coral" },
+  { id: "sage", label: "Sage" },
+  { id: "shimmer", label: "Shimmer" },
+  { id: "alloy", label: "Alloy" },
+  { id: "ash", label: "Ash" },
+  { id: "ballad", label: "Ballad" },
+  { id: "echo", label: "Echo" },
+  { id: "verse", label: "Verse" },
+  { id: "chloe", label: "Chloe (Marin)" },
+];
+export const VOICE_CHOICES = VOICE_OPTIONS.map((item) => item.id);
+
+export function voiceDisplayName(id) {
+  const key = String(id || "").trim().toLowerCase();
+  const found = VOICE_OPTIONS.find((item) => item.id === key);
+  if (found) return found.label;
+  if (!key || key === "marin") return "Marin";
+  return key;
+}

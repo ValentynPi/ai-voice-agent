@@ -93,7 +93,7 @@ export function connectFailure(error, agentLabel = "The agent") {
   if (error.kind === "cancelled") {
     return { kind: "cancelled", message: "The voice connection was cancelled before it finished. Press Start call to try again." };
   }
-  if (error.kind === "signin" || error.kind === "openai" || error.kind === "call" || error.kind === "server") {
+  if (error.kind === "signin" || error.kind === "openai" || error.kind === "call" || error.kind === "server" || error.kind === "cascade") {
     return { kind: error.kind, message: voiceUnavailableHint(error.message, agentLabel) };
   }
   const name = String(error.name || "");
