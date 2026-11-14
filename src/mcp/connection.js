@@ -9,6 +9,7 @@ import {
 } from "../db.js";
 import { authorizeTool } from "../security.js";
 import { recordSecurity, recordToolCall } from "../store.js";
+import { withTimeout } from "../../public/js/realtime-turn.js";
 import { aliasFor, openMcpSession } from "./client.js";
 import {
   canonicalPlaceQuery,
@@ -256,6 +257,17 @@ function withOfficialPlace(args, official) {
   return next;
 }
 
+/** Forecasts by place: reused for 10 min; a failed lookup is not retried for 45 s (each retry is a long wait). */
+const forecastCache = new Map();
+const FORECAST_OK_MS = 10 * 60 * 1000;
+const FORECAST_FAIL_MS = 45 * 1000;
+export const FORECAST_TIMEOUT_MS = 7000;
+export function clearForecastCache() { forecastCache.clear(); }
+
+function forecastKey(place) {
+  return `${Number(place.latitude).toFixed(2)},${Number(place.longitude).toFixed(2)}`;
+}
+
 async function attachCurrentWeather(session, toolName, args, presented, spokenQuery = "") {
   const query = String(spokenQuery || placeQueryOf(args)).trim();
   const decision = choosePlace(query, placesFromPresented(presented));
@@ -263,24 +275,39 @@ async function attachCurrentWeather(session, toolName, args, presented, spokenQu
   const forecastName = forecastToolFor(toolName);
   let weather = null;
   if (forecastName) {
-    try {
-      const raw = await session.callTool(forecastName, {
-        latitude: Number(decision.place.latitude),
-        longitude: Number(decision.place.longitude),
-        current_variables: [
-          "temperature_2m",
-          "weather_code",
-          "wind_speed_10m",
-          "relative_humidity_2m",
-          "precipitation",
-        ],
-        forecast_days: 1,
-        timezone: decision.place.timezone || "auto",
-      });
-      const forecast = presentResult(raw);
-      if (!forecast.isError && currentFacts(forecast)) weather = forecast;
-    } catch {
-      weather = null;
+    const key = forecastKey(decision.place);
+    const hit = forecastCache.get(key);
+    if (hit && Date.now() < hit.until) {
+      weather = hit.weather;
+    } else {
+      try {
+        const raw = await withTimeout(session.callTool(forecastName, {
+          latitude: Number(decision.place.latitude),
+          longitude: Number(decision.place.longitude),
+          current_variables: [
+            "temperature_2m",
+            "weather_code",
+            "wind_speed_10m",
+            "relative_humidity_2m",
+            "precipitation",
+          ],
+          daily_variables: [
+            "weather_code",
+            "temperature_2m_max",
+            "temperature_2m_min",
+            "precipitation_probability_max",
+            "wind_speed_10m_max",
+          ],
+          forecast_days: 3,
+          timezone: decision.place.timezone || "auto",
+        }), FORECAST_TIMEOUT_MS, () => null);
+        const forecast = raw ? presentResult(raw) : null;
+        if (forecast && !forecast.isError && currentFacts(forecast)) weather = forecast;
+      } catch {
+        weather = null;
+      }
+      forecastCache.set(key, { weather, until: Date.now() + (weather ? FORECAST_OK_MS : FORECAST_FAIL_MS) });
+      if (forecastCache.size > 200) forecastCache.delete(forecastCache.keys().next().value);
     }
   }
   return shapePlaceSearch({ query, presented, weather });

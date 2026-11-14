@@ -162,6 +162,41 @@ export function currentFacts(presented) {
   };
 }
 
+/** Per-day records ({ time, temperature_2m_max, ... }) from openmeteo_get_forecast daily_variables. */
+export function dailyFacts(presented) {
+  const daily = presented?.structured?.daily || presented?.structuredContent?.daily;
+  const units = presented?.structured?.daily_units || presented?.structuredContent?.daily_units || {};
+  if (!Array.isArray(daily)) return [];
+  return daily.slice(0, 4).map((day) => {
+    if (!day || typeof day !== "object" || !day.time) return null;
+    const num = (key) => (typeof day[key] === "number" ? day[key] : null);
+    return {
+      date: String(day.time),
+      high: num("temperature_2m_max"),
+      low: num("temperature_2m_min"),
+      temperatureUnit: units.temperature_2m_max || "°C",
+      rainChance: num("precipitation_probability_max"),
+      precipitation: num("precipitation_sum"),
+      precipitationUnit: units.precipitation_sum || "mm",
+      wind: num("wind_speed_10m_max"),
+      windUnit: units.wind_speed_10m_max || "km/h",
+      weatherCode: num("weather_code"),
+      condition: day.weather_code == null ? null : conditionFromCode(day.weather_code).en,
+    };
+  }).filter((day) => day && (day.high != null || day.low != null || day.condition));
+}
+
+function formatDay(day) {
+  const parts = [];
+  if (day.condition) parts.push(day.condition);
+  if (day.high != null) parts.push(`high ${day.high} ${day.temperatureUnit}`);
+  if (day.low != null) parts.push(`low ${day.low} ${day.temperatureUnit}`);
+  if (day.rainChance != null) parts.push(`rain chance ${day.rainChance}%`);
+  if (day.precipitation != null) parts.push(`precipitation ${day.precipitation} ${day.precipitationUnit}`);
+  if (day.wind != null) parts.push(`max wind ${day.wind} ${day.windUnit}`);
+  return `${day.date}: ${parts.join(", ")}`;
+}
+
 function formatFacts(facts) {
   const parts = [
     `temperature ${facts.temperature} ${facts.temperatureUnit}`.trim(),
@@ -186,16 +221,18 @@ export function shapePlaceSearch({ query, presented, weather = null }) {
     };
   }
   const facts = currentFacts(weather);
+  const place = decision.place;
+  const where = [place.name, place.admin2, place.admin1, place.country].filter(Boolean).join(", ");
   if (!facts) {
-    const text = "I can't get the weather right now.";
+    // The place is right; the forecast service did not answer. Say so once instead of retrying.
+    const text = `I can't get the weather right now. The place was found (${where}), but the weather service is not answering. Tell the caller in one short sentence that the weather service isn't answering right now and to try again in a minute. Do not call the weather tools again in this reply and never invent the weather.`;
     return {
       text,
       isError: true,
       content: [{ type: "text", text }],
+      structured: { accepted: true, weatherUnavailable: true },
     };
   }
-  const place = decision.place;
-  const where = [place.name, place.admin2, place.admin1, place.country].filter(Boolean).join(", ");
   const lines = [
     `Place: ${where}.`,
     `Coordinates: ${place.latitude}, ${place.longitude}.`,
@@ -206,6 +243,8 @@ export function shapePlaceSearch({ query, presented, weather = null }) {
     lines.push(`This is the city the caller named ("${query}"). Speak the weather. Do not ask for clarification.`);
   }
   lines.push(`Current conditions from the weather tool: ${formatFacts(facts)}.`);
+  const days = dailyFacts(weather);
+  if (days.length) lines.push(`Daily forecast from the weather tool (local dates): ${days.map(formatDay).join("; ")}.`);
   const text = lines.join(" ");
   return {
     text,
@@ -224,6 +263,7 @@ export function shapePlaceSearch({ query, presented, weather = null }) {
         feature_code: place.feature_code || null,
       },
       current: facts,
+      ...(days.length ? { daily: days } : {}),
     },
   };
 }

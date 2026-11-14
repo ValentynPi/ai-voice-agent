@@ -5,7 +5,7 @@
  *    (uk/he/en), then locks to the caller's language; unsure or unheard
  *    speech is re-checked per language (see openAzureStt).
  *  - TTS: neural voices recorded by native speakers (uk-UA Polina/Ostap,
- *    he-IL Hila/Avri). One REST request per sentence; audio is emitted in order.
+ *    he-IL Hila/Avri). Few, pipelined REST requests per reply (see openAzureTts).
  */
 import crypto from "node:crypto";
 import WebSocket from "ws";
@@ -37,9 +37,18 @@ function xmlEscape(text) {
   return String(text).replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c]));
 }
 
-export function azureSsml(text, language) {
+/** Pause kept after each synthesized chunk; chunks are joined back to back, so this is the gap between them. */
+export const AZURE_TTS_TAIL_MS = 100;
+
+/**
+ * SSML for one chunk. Azure pads every synthesis with silence at the start
+ * and end; with several chunks per reply that became long pauses between
+ * sentences, so the leading pad is removed and the trailing one set to a
+ * natural sentence break.
+ */
+export function azureSsml(text, language, { tailMs = AZURE_TTS_TAIL_MS } = {}) {
   const { locale, voice } = azureVoiceFor(language);
-  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${locale}"><voice name="${voice}">${xmlEscape(text)}</voice></speak>`;
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${locale}"><voice name="${voice}"><mstts:silence type="Leading-exact" value="0ms"/><mstts:silence type="Tailing-exact" value="${Math.max(0, Math.round(tailMs))}ms"/>${xmlEscape(text)}</voice></speak>`;
 }
 
 function providerError(code, message) {
@@ -49,25 +58,72 @@ function providerError(code, message) {
   return error;
 }
 
+export const AZURE_TTS_FORMATS = {
+  mulaw8k: "raw-8khz-8bit-mono-mulaw", // Twilio: native mu-law, no conversion on our side
+  pcm16k: "raw-16khz-16bit-mono-pcm",
+  pcm24k: "raw-24khz-16bit-mono-pcm", // browser: the neural voices' native rate
+};
+/** Waits before retrying a throttled (429) or failed (5xx / network) synthesis. */
+export const AZURE_TTS_RETRY_MS = [600, 1500, 3000];
+const RETRY_AFTER_CAP_MS = 4000;
+
+/** Short fixed lines (greeting, "still looking", "didn't catch that") are synthesized once per voice. */
+const ttsCache = new Map();
+const TTS_CACHE_MAX = 64;
+const TTS_CACHE_TEXT_MAX = 120;
+export function clearAzureTtsCache() { ttsCache.clear(); }
+
+function retryAfterMs(res, fallback) {
+  const raw = res?.headers?.get?.("retry-after");
+  const secs = Number(raw);
+  if (Number.isFinite(secs) && secs >= 0) return Math.min(RETRY_AFTER_CAP_MS, Math.max(fallback, secs * 1000));
+  return fallback;
+}
+
+/**
+ * Text-to-speech for one reply.
+ *  - Few requests: the first sentence goes out at once (fast first audio);
+ *    everything the model writes while it is being synthesized is joined
+ *    into the next request. A reply is usually 1-2 requests, which keeps the
+ *    free tier (F0, about 20 requests a minute) from throttling, and whole
+ *    sentences in one request sound more natural than one per sentence.
+ *  - Pipelined: the next request starts as soon as the previous audio has
+ *    downloaded (faster than real time), so it is ready before playback ends.
+ *  - A throttled or failed request is retried with backoff. If it still
+ *    fails, `done` rejects with that error; only a rejected key is fatal for
+ *    the call (the session decides).
+ */
 export function openAzureTts({
   language = "",
   format = "pcm16k",
   apiKey = process.env.AZURE_SPEECH_KEY,
   region = process.env.AZURE_SPEECH_REGION,
   onAudio = () => {},
+  onRetry = () => {},
   fetchImpl = fetch,
+  retryMs = AZURE_TTS_RETRY_MS,
+  sleep = (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.(); }),
 } = {}) {
   const controller = new AbortController();
   const url = `https://${String(region || "").trim()}.tts.speech.microsoft.com/cognitiveservices/v1`;
-  const outputFormat = format === "mulaw8k" ? "raw-8khz-8bit-mono-mulaw" : "raw-16khz-16bit-mono-pcm";
-  let chain = Promise.resolve();
+  const outputFormat = AZURE_TTS_FORMATS[format] || AZURE_TTS_FORMATS.pcm16k;
+  const { voice } = azureVoiceFor(language);
+  let pendingText = "";
+  let inflight = false;
   let aborted = false;
   let ended = false;
+  let settled = false;
   let failure = null;
   let resolveDone;
   let rejectDone;
   const done = new Promise((resolve, reject) => { resolveDone = resolve; rejectDone = reject; });
   done.catch(() => {});
+
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    if (failure && !aborted) rejectDone(failure); else resolveDone();
+  };
 
   const request = (text) => fetchImpl(url, {
     method: "POST",
@@ -81,47 +137,98 @@ export function openAzureTts({
     signal: controller.signal,
   });
 
-  return {
-    done,
-    send(text) {
-      const clean = String(text || "").trim();
-      if (!clean || aborted || ended) return;
-      const pending = request(clean); // starts now, overlaps the previous sentence
-      pending.catch(() => {});
-      chain = chain.then(async () => {
-        if (aborted || failure) return;
-        const res = await pending;
-        if (!res.ok) {
-          const code = res.status === 401 || res.status === 403 ? "azure_key_invalid" : res.status === 429 ? "azure_busy" : "azure_tts_error";
-          throw providerError(code, code === "azure_key_invalid" ? "The Azure Speech key or region was rejected" : `Azure text-to-speech failed (HTTP ${res.status})`);
-        }
+  async function synthesize(text) {
+    const key = text.length <= TTS_CACHE_TEXT_MAX ? `${voice}|${outputFormat}|${text}` : "";
+    if (key && ttsCache.has(key)) {
+      const cached = ttsCache.get(key);
+      ttsCache.delete(key);
+      ttsCache.set(key, cached); // most recently used
+      onAudio(cached);
+      return;
+    }
+    for (let attempt = 0; ; attempt += 1) {
+      if (aborted) return;
+      let res = null;
+      let error = null;
+      try {
+        res = await request(text);
+      } catch (e) {
+        if (aborted || e?.name === "AbortError") return;
+        error = providerError("azure_tts_error", e?.message || "Azure text-to-speech failed");
+      }
+      if (res && !res.ok) {
+        const code = res.status === 401 || res.status === 403 ? "azure_key_invalid" : res.status === 429 ? "azure_busy" : "azure_tts_error";
+        error = providerError(code, code === "azure_key_invalid" ? "The Azure Speech key or region was rejected" : `Azure text-to-speech failed (HTTP ${res.status})`);
+        error.status = res.status;
+        try { await res.arrayBuffer(); } catch { /* drain */ }
+        if (code === "azure_key_invalid" || (res.status >= 400 && res.status < 500 && res.status !== 429 && res.status !== 408)) throw error;
+      }
+      if (!error) {
+        const parts = [];
         if (res.body?.getReader) {
           const reader = res.body.getReader();
           for (;;) {
             const { value, done: finished } = await reader.read();
             if (finished || aborted) break;
-            if (value?.length) onAudio(Buffer.from(value));
+            if (value?.length) {
+              const buf = Buffer.from(value);
+              if (key) parts.push(buf);
+              onAudio(buf);
+            }
           }
         } else {
           const buf = Buffer.from(await res.arrayBuffer());
-          if (!aborted && buf.length) onAudio(buf);
+          if (!aborted && buf.length) { if (key) parts.push(buf); onAudio(buf); }
         }
-      }).catch((error) => {
-        if (aborted) return;
-        failure = error?.code ? error : providerError("azure_tts_error", error?.message || "Azure text-to-speech failed");
-        rejectDone(failure);
-      });
+        if (key && !aborted && parts.length) {
+          ttsCache.set(key, Buffer.concat(parts));
+          while (ttsCache.size > TTS_CACHE_MAX) ttsCache.delete(ttsCache.keys().next().value);
+        }
+        return;
+      }
+      if (attempt >= retryMs.length) throw error;
+      const wait = retryAfterMs(res, retryMs[attempt]);
+      onRetry({ code: error.code, status: error.status || 0, attempt: attempt + 1, waitMs: wait });
+      await sleep(wait);
+    }
+  }
+
+  function flush() {
+    if (inflight || aborted) return;
+    const text = pendingText.trim();
+    pendingText = "";
+    if (!text) { if (ended) settle(); return; }
+    inflight = true;
+    synthesize(text).catch((error) => {
+      if (aborted) return;
+      // Keep the first failure; later chunks still try (the caller hears the rest).
+      failure ||= error?.code ? error : providerError("azure_tts_error", error?.message || "Azure text-to-speech failed");
+      if (failure.code === "azure_key_invalid") { pendingText = ""; ended = true; }
+    }).finally(() => {
+      inflight = false;
+      flush();
+    });
+  }
+
+  return {
+    done,
+    send(text) {
+      const clean = String(text || "").trim();
+      if (!clean || aborted || ended) return;
+      pendingText = pendingText ? `${pendingText} ${clean}` : clean;
+      flush();
     },
     end() {
       if (aborted || ended) return;
       ended = true;
-      chain.then(() => (failure ? null : resolveDone()));
+      if (!inflight) flush();
     },
     abort() {
       if (aborted) return;
       aborted = true;
+      pendingText = "";
       try { controller.abort(); } catch { /* ignore */ }
-      resolveDone();
+      if (!settled) { settled = true; resolveDone(); }
     },
   };
 }

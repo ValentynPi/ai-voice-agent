@@ -5,6 +5,7 @@ import { toolFollowUpEvent } from "../public/js/realtime-turn.js";
 import {
   canonicalPlaceQuery,
   choosePlace,
+  dailyFacts,
   shapePlaceSearch,
 } from "../src/mcp/place-weather.js";
 
@@ -153,4 +154,28 @@ test("a Ukrainian Castellón question matches the city airport, not a refusal", 
   assert.match(shaped.text, /Кастельон-де-ла-Плана/);
   assert.match(shaped.text, /23\.1/);
   assert.doesNotMatch(shaped.text, /different place/i);
+});
+
+
+test("a found place with a dead forecast says so once and tells the model not to retry", () => {
+  const shaped = shapePlaceSearch({ query: "Castellón de la Plana", presented: airportSearch(), weather: null });
+  assert.equal(shaped.isError, true);
+  assert.match(shaped.text, /weather service is not answering/);
+  assert.match(shaped.text, /Do not call the weather tools again/);
+});
+
+test("the daily forecast rides along with current conditions (tomorrow questions)", () => {
+  const days = dailyFacts({
+    structured: {
+      daily: [
+        { time: "2026-11-15", weather_code: 1, temperature_2m_max: 21.4, temperature_2m_min: 11.2, precipitation_probability_max: 5, wind_speed_10m_max: 14 },
+        { time: "2026-11-16", weather_code: 61, temperature_2m_max: 18, temperature_2m_min: 10 },
+      ],
+      daily_units: { temperature_2m_max: "°C", wind_speed_10m_max: "km/h" },
+    },
+  });
+  assert.equal(days.length, 2);
+  assert.equal(days[0].high, 21.4);
+  assert.equal(days[1].condition, "light rain");
+  assert.deepEqual(dailyFacts({ structured: {} }), []);
 });

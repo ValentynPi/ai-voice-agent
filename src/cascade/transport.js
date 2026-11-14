@@ -64,6 +64,14 @@ export async function cascadeAgentSetup(agent) {
   return { tools, instructions, botTask: botTaskLine(agent) };
 }
 
+/**
+ * Agent audio for the browser: Azure voices at their native 24 kHz when the
+ * page can play it (it asks with ?rate=24000); otherwise 16 kHz.
+ */
+export function browserTtsFormat(status, url) {
+  return status?.tts === "azure" && Number(url?.searchParams?.get("rate")) === 24000 ? "pcm24k" : "pcm16k";
+}
+
 function agentForCall(call) {
   return (call.agentId && getAgent(call.agentId)) || getDefaultAgent(call.accountId);
 }
@@ -89,6 +97,7 @@ export async function handleBrowserCascade(ws, url, { status = cascadeStatus(), 
     callId,
     agent,
     format: "pcm16k",
+    ttsFormat: browserTtsFormat(status, url),
     ...setup,
     ...providers,
     llm,
@@ -189,7 +198,7 @@ export function attachCascadeProxy(server, agentsPublicUrl) {
     try { url = new URL(req.url || "/", "http://localhost"); } catch { socket.destroy(); return; }
     if (url.pathname !== CASCADE_WS_PATH) { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (client) => {
-      const target = `${base.replace(/^http/, "ws")}${CASCADE_WS_PATH}?ticket=${encodeURIComponent(url.searchParams.get("ticket") || "")}`;
+      const target = `${base.replace(/^http/, "ws")}${CASCADE_WS_PATH}?ticket=${encodeURIComponent(url.searchParams.get("ticket") || "")}${url.searchParams.get("rate") ? `&rate=${encodeURIComponent(url.searchParams.get("rate"))}` : ""}`;
       const headers = {};
       const secret = telephonySharedSecret();
       if (secret) headers["X-Telephony-Secret"] = secret;

@@ -47,6 +47,15 @@ export const CASCADE_VOICE_RULES = [
   "Write numbers, temperatures, units, times and dates as words of that language (\"двадцять градусів\", \"עשרים מעלות\", \"twenty degrees\"); never digits, symbols such as ° % km/h, abbreviations, markdown, lists, or emojis. One or two short sentences.",
 ].join("\n");
 
+/** Sent after a round where every lookup failed, so the model answers instead of retrying. */
+export const TOOL_FAILED_NOTE = "The lookup failed (the service is not answering right now). Do not call tools again in this reply. In one short sentence in the caller's language, say you can't get that information right now and suggest trying again in a minute. Never invent numbers.";
+
+export function isToolFailure(result) {
+  if (!result || typeof result !== "object") return true;
+  if (result.error) return true;
+  return result.isError === true;
+}
+
 const MISSED = {
   uk: "Вибачте, я не розчув. Повторіть, будь ласка.",
   es: "Perdona, no te he oído. ¿Puedes repetirlo?",
@@ -57,7 +66,14 @@ const MISSED = {
 };
 
 export function bytesToMs(format, bytes) {
-  return format === "mulaw8k" ? bytes / 8 : bytes / 32;
+  if (format === "mulaw8k") return bytes / 8;
+  if (format === "pcm24k") return bytes / 48;
+  return bytes / 32;
+}
+
+/** Only these stop the call; a busy or failed TTS chunk is skipped and the call goes on. */
+export function isFatalVoiceError(error) {
+  return /(^|_)key(_|$)|quota/.test(String(error?.code || ""));
 }
 
 /**
@@ -98,6 +114,7 @@ export function createCascadeSession({
   callId,
   agent = null,
   format = "pcm16k",
+  ttsFormat = "",
   instructions = "",
   botTask = "",
   tools = [],
@@ -134,6 +151,7 @@ export function createCascadeSession({
     lastAgentText: "",
     stt: null,
   };
+  const outFormat = ttsFormat || format;
   const trace = (kind, detail = "") => log(`call-trace ${callId || "cascade"} cascade ${kind}${detail ? ` ${String(detail).slice(0, 80)}` : ""}`);
 
   const playing = (t = now()) => state.queue.length > 0 || t < state.playEndsAt;
@@ -157,13 +175,14 @@ export function createCascadeSession({
   }
 
   function chunkSize() {
-    return format === "mulaw8k" ? 800 : 3200; // 100 ms
+    if (outFormat === "mulaw8k") return 800; // 100 ms
+    return outFormat === "pcm24k" ? 4800 : 3200;
   }
 
   function enqueue(buffer, replyId) {
     if (state.closed || !state.reply || state.reply.id !== replyId || !buffer?.length) return;
     let buf = Buffer.from(buffer);
-    if (format !== "mulaw8k") {
+    if (outFormat !== "mulaw8k") {
       // PCM16: keep sample alignment across provider chunks.
       if (state.carry) { buf = Buffer.concat([state.carry, buf]); state.carry = null; }
       if (buf.length % 2) { state.carry = buf.subarray(buf.length - 1); buf = buf.subarray(0, buf.length - 1); }
@@ -178,13 +197,13 @@ export function createCascadeSession({
     while (state.queue.length && state.playEndsAt - t < CASCADE_AUDIO_LEAD_MS) {
       const chunk = state.queue.shift();
       let data = chunk.data;
-      if (state.duck && format === "mulaw8k") data = Buffer.from(scaleMulawBase64(data.toString("base64"), DUCK_VOLUME), "base64");
+      if (state.duck && outFormat === "mulaw8k") data = Buffer.from(scaleMulawBase64(data.toString("base64"), DUCK_VOLUME), "base64");
       if (!state.replyAudioAt) {
         state.replyAudioAt = t;
         out.event({ type: "phase", state: "speaking" });
       }
       out.audio(data);
-      state.playEndsAt = Math.max(t, state.playEndsAt) + bytesToMs(format, chunk.data.length);
+      state.playEndsAt = Math.max(t, state.playEndsAt) + bytesToMs(outFormat, chunk.data.length);
     }
     if (!state.queue.length && state.playEndsAt && t >= state.playEndsAt && !state.reply?.generating && state.replyAudioAt) {
       state.playEndedAt = state.playEndsAt;
@@ -241,7 +260,12 @@ export function createCascadeSession({
     stopReply();
     const id = ++state.replySeq;
     const reply = { id, language, text: "", generating: true, abort: new AbortController(), tts: null, fillerUsed: false };
-    reply.tts = openTts({ language, format, onAudio: (buf) => enqueue(buf, id) });
+    reply.tts = openTts({
+      language,
+      format: outFormat,
+      onAudio: (buf) => enqueue(buf, id),
+      onRetry: ({ code, status, attempt, waitMs }) => trace("tts-retry", `${code || status} #${attempt} ${waitMs}ms`),
+    });
     state.reply = reply;
     state.replyAudioAt = 0;
     return reply;
@@ -259,8 +283,11 @@ export function createCascadeSession({
     try {
       await reply.tts.done;
     } catch (error) {
-      if (!reply.cancelled) fail(error);
-      return;
+      if (reply.cancelled) return;
+      if (isFatalVoiceError(error)) { fail(error); return; }
+      // Busy / failed speech: never end the call. The reply still shows as text.
+      trace("tts-error", error?.code || error?.message || "");
+      out.event({ type: "notice", code: String(error?.code || "tts_error"), message: "The voice service is busy; part of the reply was not spoken." });
     }
     if (reply.cancelled || state.reply !== reply) return;
     reply.generating = false;
@@ -316,9 +343,11 @@ export function createCascadeSession({
     ];
     pushHistory("user", userText);
     let buffer = "";
+    let toolsFailed = false;
     try {
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-        const allowTools = tools.length > 0 && round < MAX_TOOL_ROUNDS;
+        // After a round where every lookup failed, answer now instead of retrying (each retry is another long wait).
+        const allowTools = tools.length > 0 && round < MAX_TOOL_ROUNDS && !toolsFailed;
         let calls = null;
         let roundText = "";
         for await (const event of llm({ messages, tools: allowTools ? tools : [], toolChoice: allowTools ? "auto" : "none", signal: reply.abort.signal, maxTokens: CASCADE_MAX_TOKENS, cacheKey: agent?.id || "" })) {
@@ -355,6 +384,11 @@ export function createCascadeSession({
         if (reply.fillerTimer) { clearTimer(reply.fillerTimer); reply.fillerTimer = null; }
         if (reply.cancelled) return;
         calls.forEach((c, i) => messages.push({ role: "tool", tool_call_id: c.id || `call_${round}_${i}`, content: JSON.stringify(results[i]) }));
+        if (results.every(isToolFailure)) {
+          toolsFailed = true;
+          trace("tools-failed", calls.map((c) => c.name).join(","));
+          messages.push({ role: "system", content: TOOL_FAILED_NOTE });
+        }
       }
       if (buffer.trim()) speak(reply, buffer);
     } catch (error) {
@@ -429,7 +463,7 @@ export function createCascadeSession({
       return false;
     }
     if (state.closed) return false;
-    out.event({ type: "ready" });
+    out.event({ type: "ready", playbackRate: outFormat === "pcm24k" ? 24000 : outFormat === "mulaw8k" ? 8000 : 16000 });
     const line = greetingText(agent);
     const language = greetingLanguage(agent, line);
     await speakFixed(line, language);
