@@ -11,7 +11,7 @@ import { openDeepgramStt } from "../src/cascade/deepgram.js";
 import { chatBody, chatTool, resetCascadeModel, streamChat, takeSentences } from "../src/cascade/llm.js";
 import { CASCADE_VOICE_RULES, TOOL_FAILED_NOTE, bytesToMs, createCascadeSession, isFatalVoiceError, pickReplyLanguage } from "../src/cascade/session.js";
 import { browserTtsFormat } from "../src/cascade/transport.js";
-import { DUCK_CONFIRM_MS, DUCK_VOLUME, SILENCE_HANGUP_MS, TOOL_FILLER_AFTER_MS, createCallBudget } from "../public/js/realtime-turn.js";
+import { FILLERS, fillerLine, DUCK_CONFIRM_MS, DUCK_VOLUME, SILENCE_HANGUP_MS, TOOL_FILLER_AFTER_MS, createCallBudget } from "../public/js/realtime-turn.js";
 import { cascadeSessionFailure, cascadeWsUrl, pcm16ToFloat32 } from "../public/js/cascade-client.js";
 
 const KEYS = { OPENAI_API_KEY: "sk-test", ELEVENLABS_API_KEY: "el-test" };
@@ -724,7 +724,9 @@ test("MCP tool round: lookup runs, 'still looking' plays when slow, then the ans
   await h.settle();
   assert.deepEqual(h.toolCalls, [{ name: "openmeteo_get_forecast", args: { city: "Kyiv" } }]);
   const tts = h.ttsStreams.at(-1);
-  assert.deepEqual(tts.sent, ["Ще дивлюся.", "У Києві дев'ятнадцять градусів."]);
+  assert.equal(tts.sent.length, 2);
+  assert.ok(FILLERS.uk.includes(tts.sent[0]));
+  assert.equal(tts.sent[1], "У Києві дев'ятнадцять градусів.");
   const second = h.llmCalls[1].messages;
   assert.equal(second.at(-2).role, "assistant");
   assert.equal(second.at(-2).tool_calls[0].function.name, "openmeteo_get_forecast");
@@ -908,4 +910,19 @@ test("browser playback: Azure at 24 kHz only when the page asks for it", () => {
   assert.equal(bytesToMs("pcm16k", 3200), 100);
   assert.equal(bytesToMs("mulaw8k", 800), 100);
   assert.match(cascadeWsUrl("/api/cascade/ws", "abc", { protocol: "https:", host: "h" }, { rate: 24000 }), /^wss:\/\/h\/api\/cascade\/ws\?ticket=abc&rate=24000$/);
+});
+
+test("fillers vary and never repeat the previous one; failures are plain 'I don't have that'", async () => {
+  for (const code of ["uk", "he", "en"]) {
+    let prev = "";
+    for (let i = 0; i < 20; i += 1) {
+      const line = fillerLine(code, prev);
+      assert.notEqual(line, prev);
+      assert.ok(FILLERS[code].includes(line));
+      prev = line;
+    }
+  }
+  assert.doesNotMatch(TOOL_FAILED_NOTE, /in a minute/);
+  assert.match(TOOL_FAILED_NOTE, /don't have that information/);
+  assert.match(CASCADE_VOICE_RULES, /friendly native speaker/);
 });

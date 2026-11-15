@@ -67,7 +67,7 @@ test("a slow tool speaks only after both the response and the tool finish", () =
   assert.equal(done.hold, true);
   const follow = completeTool(gate, "slow", gate.epoch, false);
   assert.equal(follow.length, 1);
-  assert.match(follow[0].response.instructions, /I can't get the weather right now/);
+  assert.match(follow[0].response.instructions, /I don't have that information/);
 });
 
 test("several tool calls in one turn produce one spoken follow-up", () => {
@@ -93,7 +93,7 @@ test("a silent weather turn speaks a failure instead of staying quiet", () => {
     response: { status: "completed", output: [] },
   });
   assert.equal(done.send.length, 1);
-  assert.match(done.send[0].response.instructions, /I can't get the weather right now/);
+  assert.match(done.send[0].response.instructions, /I don't have that information/);
   assert.equal(done.hold, true);
 });
 
@@ -235,17 +235,17 @@ test("after a completed spoken turn the gate is idle for the next caller questio
 });
 
 test("tool output event and weather failure line are speakable", () => {
-  assert.equal(failureLine("get_weather"), "I can't get the weather right now.");
-  assert.equal(failureLine("lookup", "will it rain today?"), "I can't get the weather right now.");
-  assert.equal(failureLine("lookup"), "I can't do that right now.");
+  assert.equal(failureLine("get_weather"), "I don't have that information.");
+  assert.equal(failureLine("lookup", "will it rain today?"), "I don't have that information.");
+  assert.equal(failureLine("lookup"), "I can't help with that.");
   const event = functionOutputEvent("call_1", { error: failureLine("get_weather") });
   assert.equal(event.item.type, "function_call_output");
-  assert.match(event.item.output, /can't get the weather/);
+  assert.match(event.item.output, /don't have that information/);
 });
 
 test("withTimeout returns the spoken fallback when a tool hangs", async () => {
   const result = await withTimeout(new Promise(() => {}), 15, () => ({ error: failureLine("get_forecast") }));
-  assert.equal(result.error, "I can't get the weather right now.");
+  assert.equal(result.error, "I don't have that information.");
 });
 
 test("dialer, voice test, and media bridge share the gated turn path", () => {

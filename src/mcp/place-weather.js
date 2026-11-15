@@ -167,7 +167,7 @@ export function dailyFacts(presented) {
   const daily = presented?.structured?.daily || presented?.structuredContent?.daily;
   const units = presented?.structured?.daily_units || presented?.structuredContent?.daily_units || {};
   if (!Array.isArray(daily)) return [];
-  return daily.slice(0, 4).map((day) => {
+  return daily.slice(0, 7).map((day) => {
     if (!day || typeof day !== "object" || !day.time) return null;
     const num = (key) => (typeof day[key] === "number" ? day[key] : null);
     return {
@@ -224,8 +224,8 @@ export function shapePlaceSearch({ query, presented, weather = null }) {
   const place = decision.place;
   const where = [place.name, place.admin2, place.admin1, place.country].filter(Boolean).join(", ");
   if (!facts) {
-    // The place is right; the forecast service did not answer. Say so once instead of retrying.
-    const text = `I can't get the weather right now. The place was found (${where}), but the weather service is not answering. Tell the caller in one short sentence that the weather service isn't answering right now and to try again in a minute. Do not call the weather tools again in this reply and never invent the weather.`;
+    // The place is right; the forecast did not come back. Plain words, no technical talk, no "try later".
+    const text = `I don't have the weather for ${where} at the moment. Tell the caller simply, in their language, that you don't have that information, without technical details and without asking them to try again later. Do not call the weather tools again in this reply and never invent the weather.`;
     return {
       text,
       isError: true,
@@ -249,6 +249,7 @@ export function shapePlaceSearch({ query, presented, weather = null }) {
   return {
     text,
     isError: false,
+    long: true,
     content: [{ type: "text", text }],
     structured: {
       accepted: true,
@@ -266,4 +267,72 @@ export function shapePlaceSearch({ query, presented, weather = null }) {
       ...(days.length ? { daily: days } : {}),
     },
   };
+}
+
+/* ---------------------- forecast output for the model ---------------------- */
+
+export function isForecastName(name) {
+  return /get_forecast$/i.test(String(name || ""));
+}
+
+/** Extra argument we add to the forecast tool: only these local dates come back (stripped before the MCP call). */
+export const FORECAST_DAYS_PARAM = {
+  type: "array",
+  items: { type: "string" },
+  description: "Only return these local dates (YYYY-MM-DD), e.g. the day the caller asked about. Use it for hourly questions.",
+};
+export const FORECAST_TEXT_MAX = 3500;
+
+function cell(value) {
+  if (value == null) return "-";
+  if (typeof value === "number") return String(Math.round(value * 10) / 10);
+  return String(value);
+}
+
+function table(label, rows, units, days, timeFormat) {
+  if (!Array.isArray(rows) || !rows.length) return { text: "", omitted: 0 };
+  const wanted = days?.length ? rows.filter((row) => days.some((d) => String(row?.time || "").startsWith(d))) : rows;
+  const keys = [...new Set(wanted.flatMap((row) => Object.keys(row || {})))].filter((k) => k !== "time");
+  const head = `${label} (${["time", ...keys.map((k) => (units?.[k] ? `${k} ${units[k]}` : k))].join(" | ")}):`;
+  const lines = wanted.map((row) => [timeFormat(String(row.time || "")), ...keys.map((k) => cell(row[k]))].join(" "));
+  return { text: [head, ...lines].join("\n"), omitted: rows.length - wanted.length, count: wanted.length };
+}
+
+/**
+ * Dense forecast text: every requested row fits (the raw markdown was cut at
+ * 1200 characters, so later days were never seen and the agent said it
+ * couldn't find them). Weather codes are spelled out once.
+ */
+export function shapeForecast(presented, { days = [] } = {}) {
+  const data = presented?.structured || presented?.structuredContent;
+  if (!data || presented?.isError || (!data.hourly && !data.daily && !data.current)) return presented;
+  const parts = [`Forecast (${data.timezone || "local time"}).`];
+  if (data.current && typeof data.current === "object") {
+    const units = data.current_units || {};
+    parts.push(`Now: ${Object.entries(data.current).filter(([k]) => k !== "interval").map(([k, v]) => `${k} ${cell(v)}${units[k] && k !== "time" ? ` ${units[k]}` : ""}`).join(", ")}.`);
+  }
+  const daily = table("Daily", data.daily, data.daily_units, days, (t) => t);
+  if (daily.text) parts.push(daily.text);
+  const codes = new Set();
+  for (const row of [...(data.daily || []), ...(data.hourly || [])]) if (row && typeof row.weather_code === "number") codes.add(row.weather_code);
+  if (data.current && typeof data.current.weather_code === "number") codes.add(data.current.weather_code);
+  if (codes.size) parts.push(`weather_code: ${[...codes].sort((a, b) => a - b).map((c) => `${c}=${conditionFromCode(c).en}`).join(", ")}.`);
+  // Too many hours for one answer: keep every 3rd (then 6th) hour so every day stays visible.
+  const hourFmt = (t) => t.replace(/^\d{4}-/, "").replace("T", " ");
+  let hourly = table("Hourly", data.hourly, data.hourly_units, days, hourFmt);
+  const room = FORECAST_TEXT_MAX - parts.join("\n").length - 80;
+  for (const step of [3, 6, 12]) {
+    if (hourly.text.length <= room) break;
+    const thinned = (data.hourly || []).filter((row) => Number(String(row?.time || "").slice(11, 13)) % step === 0);
+    hourly = table(`Hourly, every ${step} hours`, thinned, data.hourly_units, days, hourFmt);
+  }
+  if (hourly.text) parts.push(hourly.text);
+  if (days.length && !daily.count && !hourly.count) {
+    parts.push(`No rows for ${days.join(", ")} in this forecast window. If the date is within 16 days, call again with forecast_days large enough; otherwise you don't have that information.`);
+  }
+  let text = parts.join("\n");
+  if (text.length > FORECAST_TEXT_MAX) {
+    text = `${text.slice(0, FORECAST_TEXT_MAX).replace(/\n[^\n]*$/, "")}\n(More rows were cut. For a specific day, call again with days=["YYYY-MM-DD"].)`;
+  }
+  return { ...presented, text, content: [{ type: "text", text }], long: true };
 }

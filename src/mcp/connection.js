@@ -16,8 +16,11 @@ import {
   choosePlace,
   currentFacts,
   forecastToolFor,
+  FORECAST_DAYS_PARAM,
+  isForecastName,
   isPlaceSearchName,
   placesFromPresented,
+  shapeForecast,
   shapePlaceSearch,
 } from "./place-weather.js";
 
@@ -207,13 +210,19 @@ export function listEnabledMcpRealtimeTools() {
   const saved = readMcpConnection();
   if (!saved?.connected) return [];
   return listMcpToolRows()
-    .filter((tool) => tool.enabled)
+    // DataCanvas tools need a canvas this server does not stage; they only ever failed.
+    .filter((tool) => tool.enabled && !/dataframe_(query|describe)$/i.test(tool.name))
     .map((tool) => ({
       type: "function",
       name: tool.alias,
       description: tool.description,
-      parameters: tool.parameters,
+      parameters: isForecastName(tool.name) ? withDaysParam(tool.parameters) : tool.parameters,
     }));
+}
+
+function withDaysParam(parameters) {
+  const base = parameters && typeof parameters === "object" ? parameters : { type: "object", properties: {} };
+  return { ...base, properties: { ...(base.properties || {}), days: FORECAST_DAYS_PARAM } };
 }
 
 function findTool(name) {
@@ -298,7 +307,7 @@ async function attachCurrentWeather(session, toolName, args, presented, spokenQu
             "precipitation_probability_max",
             "wind_speed_10m_max",
           ],
-          forecast_days: 3,
+          forecast_days: 7,
           timezone: decision.place.timezone || "auto",
         }), FORECAST_TIMEOUT_MS, () => null);
         const forecast = raw ? presentResult(raw) : null;
@@ -353,8 +362,15 @@ export async function invokeMcpTool({ callId, name, args }) {
     }
     const spokenQuery = placeQueryOf(safeArgs);
     let callArgs = safeArgs;
+    let days = [];
+    if (isForecastName(tool.name) && "days" in safeArgs) {
+      const { days: wanted, ...rest } = safeArgs;
+      days = (Array.isArray(wanted) ? wanted : [wanted]).map((d) => String(d || "").trim().slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+      callArgs = rest;
+    }
     let raw = await session.callTool(tool.name, callArgs);
     let result = presentResult(raw);
+    if (isForecastName(tool.name)) result = shapeForecast(result, { days });
     if (isPlaceSearchName(tool.name)) {
       const official = canonicalPlaceQuery(spokenQuery);
       const accepted = !result.isError && choosePlace(spokenQuery, placesFromPresented(result)).action === "use";

@@ -29,7 +29,7 @@ import {
   interruptionVerdict,
   isEchoOf,
   shortLanguageLine,
-  stillLookingLine,
+  fillerLine,
   withTimeout,
 } from "../../public/js/realtime-turn.js";
 import { spokenFailure } from "../../public/js/caller-language.js";
@@ -43,12 +43,13 @@ export const CASCADE_HISTORY_MESSAGES = 12;
 export const CASCADE_MAX_TOKENS = 300;
 
 export const CASCADE_VOICE_RULES = [
+  "SPOKEN, NOT WRITTEN: you are heard, not read. Sound like a friendly native speaker on the phone: natural spoken word order, contractions and everyday words of that language, and fresh wording every turn (never the same opener or sentence frame twice in a row). Lead with the answer.",
   "VOICE OUTPUT: your text is read aloud by a native text-to-speech voice of the reply language. Write plain spoken sentences only in that language and its own script (Ukrainian in Ukrainian Cyrillic, Hebrew in Hebrew letters).",
   "Write numbers, temperatures, units, times and dates as words of that language (\"двадцять градусів\", \"עשרים מעלות\", \"twenty degrees\"); never digits, symbols such as ° % km/h, abbreviations, markdown, lists, or emojis. One or two short sentences.",
 ].join("\n");
 
 /** Sent after a round where every lookup failed, so the model answers instead of retrying. */
-export const TOOL_FAILED_NOTE = "The lookup failed (the service is not answering right now). Do not call tools again in this reply. In one short sentence in the caller's language, say you can't get that information right now and suggest trying again in a minute. Never invent numbers.";
+export const TOOL_FAILED_NOTE = "The lookup did not give the answer. Do not call tools again in this reply. In the caller's language, say simply and warmly that you don't have that information (no technical details, never \"try again later\"), and offer what you do have from earlier real results, if anything. Never invent numbers.";
 
 export function isToolFailure(result) {
   if (!result || typeof result !== "object") return true;
@@ -376,7 +377,8 @@ export function createCascadeSession({
             if (reply.cancelled || reply.fillerUsed || reply.text) return;
             reply.fillerUsed = true;
             trace("filler");
-            speak(reply, stillLookingLine(language));
+            state.lastFiller = fillerLine(language, state.lastFiller);
+            speak(reply, state.lastFiller);
           }, TOOL_FILLER_AFTER_MS);
         }
         trace("tools", calls.map((c) => c.name).join(","));

@@ -57,6 +57,7 @@ export function compactRealtimeTool(tool) {
 
 /** What the model hears back from a tool: the spoken-ready text, not 3 copies of it. */
 export const TOOL_OUTPUT_MAX_CHARS = 1200;
+export const TOOL_OUTPUT_LONG_MAX_CHARS = 4000;
 export function compactToolOutput(result) {
   if (result == null) return {};
   if (typeof result === "string") return { text: result.slice(0, TOOL_OUTPUT_MAX_CHARS) };
@@ -64,7 +65,9 @@ export function compactToolOutput(result) {
   if (result.error && !result.text) return { error: String(result.error).slice(0, 400) };
   const text = String(result.text || "").trim();
   if (text) {
-    const clipped = text.length > TOOL_OUTPUT_MAX_CHARS ? `${text.slice(0, TOOL_OUTPUT_MAX_CHARS)}…` : text;
+    // Forecast tables are already dense and sized (FORECAST_TEXT_MAX); cutting them hid the days asked for.
+    const max = result.long ? TOOL_OUTPUT_LONG_MAX_CHARS : TOOL_OUTPUT_MAX_CHARS;
+    const clipped = text.length > max ? `${text.slice(0, max)}…` : text;
     return result.isError ? { error: clipped } : { text: clipped };
   }
   const raw = JSON.stringify(result.structured ?? result);
