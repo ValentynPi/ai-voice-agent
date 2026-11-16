@@ -247,6 +247,7 @@ function migrate(database) {
   migrateTenantColumns(database);
   migrateCallReviewColumns(database);
   migrateAgentVoiceEngine(database);
+  migrateAgentEndCall(database);
   ensureDemoAccount(database);
   ensureTwilioTables(database);
   seedProduct(database);
@@ -318,6 +319,14 @@ function migrateAgentVoiceEngine(database) {
   const cols = agentColumns(database);
   if (!cols.has("voice_engine")) {
     database.exec("ALTER TABLE agents ADD COLUMN voice_engine TEXT NOT NULL DEFAULT 'realtime'");
+  }
+}
+
+/** Per-agent: the agent may end calls that stay off-topic, trolling, or abusive (default on). */
+function migrateAgentEndCall(database) {
+  const cols = agentColumns(database);
+  if (!cols.has("end_off_topic")) {
+    database.exec("ALTER TABLE agents ADD COLUMN end_off_topic INTEGER NOT NULL DEFAULT 1");
   }
 }
 

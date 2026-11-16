@@ -839,6 +839,7 @@ export function createCallBudget({ now = () => Date.now(), silenceMs = SILENCE_H
 export function budgetEndMessage(reason) {
   if (reason === "max") return "Call ended: the 10-minute limit for a voice call was reached.";
   if (reason === "silence") return "Call ended after 30 seconds of silence.";
+  if (String(reason || "").startsWith("agent-hangup")) return "The agent ended the call: the caller stayed off-topic.";
   return "";
 }
 

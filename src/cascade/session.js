@@ -57,11 +57,62 @@ export function isToolFailure(result) {
   return result.isError === true;
 }
 
+/* ------------------------------ call guard ------------------------------ */
+
+export const CALL_GUARD_TOOL = "call_guard";
+/** Consecutive off-topic / trolling turns before the agent ends the call (the first gets a redirect). */
+export const CALL_GUARD_END_AFTER = 2;
+/** The goodbye must finish within this, then the call ends regardless. */
+export const CALL_GUARD_HANGUP_MAX_MS = 9000;
+
+export const CALL_GUARD_SPEC = {
+  type: "function",
+  function: {
+    name: CALL_GUARD_TOOL,
+    description: "Call this (before replying) when the caller's turn is NOT about your Bot task: an off-topic request, deliberate trolling or nonsense, or abuse. Never for real Bot-task questions, greetings, thanks, small talk, a place you could not find, or unclear/misheard audio.",
+    parameters: {
+      type: "object",
+      properties: {
+        reason: { type: "string", enum: ["off_topic", "trolling", "abuse"], description: "abuse = insults, threats, harassment." },
+      },
+      required: ["reason"],
+    },
+  },
+};
+
+export const CALL_GUARD_RULES = "CALL GUARD: when a caller turn is off-topic for the Bot task, deliberate trolling, or abusive, call call_guard with the reason before you reply, then do exactly what its result says (a warm one-sentence redirect to the Bot task, or a short polite goodbye). Never call it for real Bot-task questions, greetings, thanks, short pleasantries, a place you could not find, or audio you did not understand (ask them to repeat instead).";
+
+const GOODBYE = {
+  uk: "Гаразд, тоді на все добре! До побачення.",
+  es: "Bueno, ¡que vaya bien! Adiós.",
+  en: "Alright, take care. Goodbye!",
+  ru: "Хорошо, тогда всего доброго! До свидания.",
+  fr: "D'accord, bonne journée. Au revoir !",
+  ar: "حسنًا، مع السلامة.",
+  he: "בסדר, שיהיה המשך יום טוב. להתראות!",
+};
+
+/** Server-side decision for a guarded turn: the model only reports the reason. */
+export function guardDecision(strikes, reason) {
+  if (reason === "abuse") return "end";
+  return strikes >= CALL_GUARD_END_AFTER ? "end" : "redirect";
+}
+
+/* ------------------------- voice-gender agreement ------------------------- */
+
+/** One voice per call speaks of itself in one grammatical gender. */
+export function voiceGenderRule(gender = "female") {
+  return gender === "male"
+    ? "YOUR VOICE IS A MAN'S: whenever the language marks gender, always speak of yourself in the masculine (Ukrainian: я знайшов, зміг, перевірив, сказав; Hebrew: אני בודק; Russian: я нашёл). Never switch."
+    : "YOUR VOICE IS A WOMAN'S: whenever the language marks gender, always speak of yourself in the feminine (Ukrainian: я знайшла, змогла, перевірила, сказала; Hebrew: אני בודקת; Russian: я нашла). Never switch.";
+}
+
 const MISSED = {
-  uk: "Вибачте, я не розчув. Повторіть, будь ласка.",
+  // Ungendered, so they fit the call's voice.
+  uk: "Вибачте, погано чути. Повторіть, будь ласка.",
   es: "Perdona, no te he oído. ¿Puedes repetirlo?",
   en: "Sorry, I didn't catch that. Could you say it again?",
-  ru: "Извините, я не расслышал. Повторите, пожалуйста.",
+  ru: "Извините, плохо слышно. Повторите, пожалуйста.",
   fr: "Pardon, je n'ai pas compris. Pouvez-vous répéter ?",
   he: "סליחה, לא שמעתי. אפשר לחזור על זה?",
 };
@@ -116,6 +167,9 @@ export function createCascadeSession({
   agent = null,
   format = "pcm16k",
   ttsFormat = "",
+  pickVoice = null,
+  greetingVoiceLanguage = "",
+  endOffTopic = false,
   instructions = "",
   botTask = "",
   tools = [],
@@ -151,6 +205,9 @@ export function createCascadeSession({
     heardOverSpeech: false,
     lastAgentText: "",
     stt: null,
+    voices: {},
+    guardStrikes: 0,
+    hangup: null,
   };
   const outFormat = ttsFormat || format;
   const trace = (kind, detail = "") => log(`call-trace ${callId || "cascade"} cascade ${kind}${detail ? ` ${String(detail).slice(0, 80)}` : ""}`);
@@ -257,15 +314,41 @@ export function createCascadeSession({
     close("failed");
   }
 
-  function newReply(language) {
+  /**
+   * One voice per language for the whole call, chosen at first use. If the
+   * HD voice fails once, the plain voice takes over for the rest of the call
+   * (never back and forth between replies).
+   */
+  function callVoice(language) {
+    if (!pickVoice) return null;
+    const key = language || "_";
+    if (!state.voices[key]) {
+      const chosen = pickVoice(language) || {};
+      state.voices[key] = { voice: chosen.voice || "", fallback: chosen.fallback || "" };
+      trace("voice", `${key} ${state.voices[key].voice}`);
+    }
+    return state.voices[key];
+  }
+
+  function newReply(language, { voiceLanguage = language } = {}) {
     stopReply();
     const id = ++state.replySeq;
     const reply = { id, language, text: "", generating: true, abort: new AbortController(), tts: null, fillerUsed: false };
+    const v = callVoice(voiceLanguage);
     reply.tts = openTts({
-      language,
+      language: voiceLanguage,
       format: outFormat,
+      ...(v?.voice ? { voice: v.voice, fallbackVoice: v.fallback } : {}),
       onAudio: (buf) => enqueue(buf, id),
-      onRetry: ({ code, status, attempt, waitMs }) => trace("tts-retry", `${code || status} #${attempt} ${waitMs}ms`),
+      onRetry: ({ code, status, attempt, waitMs, to }) => {
+        if (code === "voice_fallback" && v && to) {
+          v.voice = to;
+          v.fallback = "";
+          trace("voice", `${voiceLanguage || "_"} ${to} (fallback, rest of call)`);
+          return;
+        }
+        trace("tts-retry", `${code || status} #${attempt} ${waitMs}ms`);
+      },
     });
     state.reply = reply;
     state.replyAudioAt = 0;
@@ -301,8 +384,8 @@ export function createCascadeSession({
   }
 
   /** A fixed line (greeting, refusal): no model call. */
-  async function speakFixed(line, language, { recordText = true, history = false } = {}) {
-    const reply = newReply(language);
+  async function speakFixed(line, language, { recordText = true, history = false, voiceLanguage = language } = {}) {
+    const reply = newReply(language, { voiceLanguage });
     speak(reply, line);
     await finishReply(reply, { recordText });
     if (history && reply.text && !reply.cancelled) pushHistory("assistant", reply.text);
@@ -345,10 +428,11 @@ export function createCascadeSession({
     pushHistory("user", userText);
     let buffer = "";
     let toolsFailed = false;
+    let guarded = false;
     try {
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
         // After a round where every lookup failed, answer now instead of retrying (each retry is another long wait).
-        const allowTools = tools.length > 0 && round < MAX_TOOL_ROUNDS && !toolsFailed;
+        const allowTools = tools.length > 0 && round < MAX_TOOL_ROUNDS && !toolsFailed && !state.hangup;
         let calls = null;
         let roundText = "";
         for await (const event of llm({ messages, tools: allowTools ? tools : [], toolChoice: allowTools ? "auto" : "none", signal: reply.abort.signal, maxTokens: CASCADE_MAX_TOKENS, cacheKey: agent?.id || "" })) {
@@ -371,7 +455,8 @@ export function createCascadeSession({
           content: roundText || null,
           tool_calls: calls.map((c, i) => ({ id: c.id || `call_${round}_${i}`, type: "function", function: { name: c.name, arguments: c.arguments || "{}" } })),
         });
-        if (!reply.fillerUsed && !reply.text) {
+        const lookups = calls.filter((c) => c.name !== CALL_GUARD_TOOL);
+        if (lookups.length && !reply.fillerUsed && !reply.text) {
           reply.fillerTimer = setTimer(() => {
             reply.fillerTimer = null;
             if (reply.cancelled || reply.fillerUsed || reply.text) return;
@@ -382,11 +467,16 @@ export function createCascadeSession({
           }, TOOL_FILLER_AFTER_MS);
         }
         trace("tools", calls.map((c) => c.name).join(","));
-        const results = await Promise.all(calls.map(runOneTool));
+        const results = await Promise.all(calls.map((c) => {
+          if (c.name !== CALL_GUARD_TOOL) return runOneTool(c);
+          if (guarded) return { status: "noted" };
+          guarded = true;
+          return guardTurn(c, language);
+        }));
         if (reply.fillerTimer) { clearTimer(reply.fillerTimer); reply.fillerTimer = null; }
         if (reply.cancelled) return;
         calls.forEach((c, i) => messages.push({ role: "tool", tool_call_id: c.id || `call_${round}_${i}`, content: JSON.stringify(results[i]) }));
-        if (results.every(isToolFailure)) {
+        if (lookups.length && results.every(isToolFailure)) {
           toolsFailed = true;
           trace("tools-failed", calls.map((c) => c.name).join(","));
           messages.push({ role: "system", content: TOOL_FAILED_NOTE });
@@ -399,10 +489,27 @@ export function createCascadeSession({
       trace("llm-error", error?.code || error?.message || "");
       speak(reply, spokenFailure("", userText, language));
     }
-    // Never dead air: an empty answer becomes one short "didn't catch that".
-    if (!reply.text.trim()) speak(reply, MISSED[language] || MISSED.en);
+    if (!guarded) state.guardStrikes = 0; // only consecutive off-topic turns count
+    // Never dead air: an empty answer becomes one short "didn't catch that" (or the goodbye).
+    if (!reply.text.trim()) speak(reply, state.hangup ? (GOODBYE[language] || GOODBYE.en) : (MISSED[language] || MISSED.en));
     await finishReply(reply);
     if (!reply.cancelled && reply.text) pushHistory("assistant", reply.text);
+  }
+
+  /** call_guard: count the strike, decide redirect vs. end on the server, and tell the model what to say. */
+  function guardTurn(call, language) {
+    let args = {};
+    try { args = call.arguments ? JSON.parse(call.arguments) : {}; } catch { args = {}; }
+    const reason = ["off_topic", "trolling", "abuse"].includes(args.reason) ? args.reason : "off_topic";
+    if (!endOffTopic) return { status: "redirect", say: "Reply with one short warm sentence bringing the caller back to your Bot task." };
+    state.guardStrikes += 1;
+    const decision = guardDecision(state.guardStrikes, reason);
+    trace("guard", `${reason} strike=${state.guardStrikes} ${decision}`);
+    if (decision === "redirect") {
+      return { status: "redirect", say: "Reply with one short, warm sentence in the caller's language: you only help with your Bot task, and ask what they would like to know about it. No lecture." };
+    }
+    state.hangup = { reason, at: now(), language };
+    return { status: "ending_call", say: "Say only one short, polite goodbye in the caller's language (no explanation, no question). The call ends after it." };
   }
 
   function onPartial(text) {
@@ -442,6 +549,7 @@ export function createCascadeSession({
       trace("drop-backchannel", "tail");
       return;
     }
+    if (state.hangup) { trace("drop-after-hangup"); return; }
     if (!state.greetingDone) state.greetingDone = true;
     const language = pickReplyLanguage(state.callerLanguage, clean, sttLanguage, info);
     if (language) state.callerLanguage = language;
@@ -468,7 +576,11 @@ export function createCascadeSession({
     out.event({ type: "ready", playbackRate: outFormat === "pcm24k" ? 24000 : outFormat === "mulaw8k" ? 8000 : 16000 });
     const line = greetingText(agent);
     const language = greetingLanguage(agent, line);
-    await speakFixed(line, language);
+    // A one-word English "Hello" on a multi-language line is said by the call's main voice, so the voice never changes after it.
+    const multi = !agent?.language || agent.language === "multi";
+    const shortEnglish = language === "en" && transcriptTokens(line).length <= 3;
+    const voiceLanguage = multi && shortEnglish && greetingVoiceLanguage ? greetingVoiceLanguage : language;
+    await speakFixed(line, language, { voiceLanguage });
     state.greetingDone = true;
     return true;
   }
@@ -483,6 +595,13 @@ export function createCascadeSession({
     if (state.closed) return;
     pump(t);
     if (state.duck && (t - state.duck.at >= DUCK_CONFIRM_MS || !speaking(t))) restoreVolume("timeout");
+    if (state.hangup && ((!speaking(t) && !state.reply?.generating) || t - state.hangup.at >= CALL_GUARD_HANGUP_MAX_MS)) {
+      const why = `agent-hangup:${state.hangup.reason}`;
+      trace("hangup", why);
+      out.event({ type: "ended", reason: why });
+      close(why);
+      return;
+    }
     const busy = speaking(t) || !state.greetingDone;
     const reason = budget.check(busy);
     if (reason) {

@@ -9,7 +9,7 @@ import { AZURE_STT_LANGUAGES, clearAzureTtsCache, resetHdVoices, azureCallLangua
 import { mulawToPcm16 } from "../src/twilio/mulaw.js";
 import { openDeepgramStt } from "../src/cascade/deepgram.js";
 import { chatBody, chatTool, resetCascadeModel, streamChat, takeSentences } from "../src/cascade/llm.js";
-import { CASCADE_VOICE_RULES, TOOL_FAILED_NOTE, bytesToMs, createCascadeSession, isFatalVoiceError, pickReplyLanguage } from "../src/cascade/session.js";
+import { CALL_GUARD_SPEC, CALL_GUARD_TOOL, CASCADE_VOICE_RULES, TOOL_FAILED_NOTE, guardDecision, voiceGenderRule, bytesToMs, createCascadeSession, isFatalVoiceError, pickReplyLanguage } from "../src/cascade/session.js";
 import { browserTtsFormat } from "../src/cascade/transport.js";
 import { FILLERS, fillerLine, DUCK_CONFIRM_MS, DUCK_VOLUME, SILENCE_HANGUP_MS, TOOL_FILLER_AFTER_MS, createCallBudget } from "../public/js/realtime-turn.js";
 import { cascadeSessionFailure, cascadeWsUrl, pcm16ToFloat32 } from "../public/js/cascade-client.js";
@@ -525,7 +525,7 @@ test("Azure message framing and wav headers stay parseable", () => {
 
 /* ----------------------------- session ----------------------------- */
 
-function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19 } }, toolDelayMs = 0, record, ttsFail = null } = {}) {
+function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19 } }, toolDelayMs = 0, record, ttsFail = null, extra = {} } = {}) {
   let clock = 1_000_000;
   const now = () => clock;
   const timers = [];
@@ -538,8 +538,8 @@ function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19
   const toolCalls = [];
   let stt = null;
   const openStt = (opts) => { stt = opts; return { ready: Promise.resolve(), send() {}, close() {} }; };
-  const openTts = ({ language, onAudio }) => {
-    const stream = { language, sent: [], aborted: false, ended: false };
+  const openTts = ({ language, onAudio, voice, fallbackVoice, onRetry }) => {
+    const stream = { language, voice, fallbackVoice, onRetry, sent: [], aborted: false, ended: false };
     let resolve;
     let reject;
     stream.done = new Promise((r, j) => { resolve = r; reject = j; });
@@ -584,6 +584,7 @@ function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19
     clearTimer,
     log: (line) => logs.push(line),
     budget: createCallBudget({ now }),
+    ...extra,
   });
   const advance = (ms) => { clock += ms; runTimers(); session.tick(clock); };
   const settle = () => new Promise((r) => setImmediate(r));
@@ -774,7 +775,7 @@ test("an empty model answer is never dead air", async () => {
   h.stt().onCommitted("Яка зараз погода в Києві?", "uk");
   await h.settle();
   await h.settle();
-  assert.deepEqual(h.ttsStreams.at(-1).sent, ["Вибачте, я не розчув. Повторіть, будь ласка."]);
+  assert.deepEqual(h.ttsStreams.at(-1).sent, ["Вибачте, погано чути. Повторіть, будь ласка."]);
 });
 
 /* ----------------------------- browser helpers ----------------------------- */
@@ -965,4 +966,106 @@ test("Hebrew HD voice: a throttle (429) falls back for that reply but does not m
   tts.end();
   await tts.done;
   assert.equal(azureVoiceFor("he", {}).voice, "he-IL-Hila:DragonLatestNeural");
+});
+
+
+/* ------------------------- one voice per call ------------------------- */
+
+test("cascade: one voice per language for the whole call; after an HD fallback the plain voice stays", async () => {
+  const picks = [];
+  const h = harness({ extra: { pickVoice: (lang) => { picks.push(lang); return lang === "he" ? { voice: "he-IL-Hila:DragonLatestNeural", fallback: "he-IL-HilaNeural" } : { voice: "uk-UA-PolinaNeural", fallback: "" }; }, greetingVoiceLanguage: "uk" } });
+  await h.session.start();
+  h.session.onCommitted("מה מזג האוויר בתל אביב?", "he", { locked: true });
+  await h.settle(); await h.settle();
+  const first = h.ttsStreams.at(-1);
+  assert.equal(first.voice, "he-IL-Hila:DragonLatestNeural");
+  first.onRetry({ code: "voice_fallback", to: "he-IL-HilaNeural" });
+  h.advance(5000);
+  h.session.onCommitted("ומחר?", "he", { locked: true });
+  await h.settle(); await h.settle();
+  const second = h.ttsStreams.at(-1);
+  assert.equal(second.voice, "he-IL-HilaNeural");
+  assert.equal(second.fallbackVoice, "");
+  assert.deepEqual(picks, ["en", "he"]); // chosen once per language
+  assert.match(voiceGenderRule("female"), /знайшла/);
+  assert.match(voiceGenderRule("male"), /знайшов/);
+});
+
+/* ------------------------------ call guard ------------------------------ */
+
+function guardScript(reasonByTurn) {
+  // Odd LLM calls: decide (tool call or plain answer); even: the spoken text after a tool round.
+  let turn = 0;
+  return (n, request) => {
+    const last = request.messages.at(-1);
+    if (last.role === "tool" || (last.role === "system" && request.messages.at(-2)?.role === "tool")) {
+      const result = JSON.parse(request.messages.filter((m) => m.role === "tool").at(-1).content);
+      return [{ type: "text", delta: result.status === "ending_call" ? "Добре, до побачення!" : "Я допомагаю лише з погодою. Яке місто вас цікавить?" }];
+    }
+    const reason = reasonByTurn[turn++];
+    if (!reason) return [{ type: "text", delta: "У Києві дев'ятнадцять градусів." }];
+    return [{ type: "tool_calls", calls: [{ id: `g${n}`, name: CALL_GUARD_TOOL, arguments: JSON.stringify({ reason }) }] }];
+  };
+}
+
+async function say(h, text) {
+  h.session.onCommitted(text, "uk", { locked: true });
+  for (let i = 0; i < 6; i += 1) await h.settle();
+  h.advance(5000);
+}
+
+test("call guard: decision is the server's (redirect once, end on the 2nd in a row, abuse at once)", () => {
+  assert.equal(guardDecision(1, "off_topic"), "redirect");
+  assert.equal(guardDecision(2, "trolling"), "end");
+  assert.equal(guardDecision(1, "abuse"), "end");
+  assert.equal(CALL_GUARD_SPEC.function.name, "call_guard");
+});
+
+test("call guard: off-topic twice in a row -> redirect, then goodbye and the agent hangs up", async () => {
+  const h = harness({ llmScript: guardScript(["off_topic", "trolling"]), extra: { endOffTopic: true } });
+  await h.session.start();
+  h.advance(3000);
+  await say(h, "Де мені підстригти кота?");
+  assert.equal(h.out.ended, null);
+  assert.match(h.ttsStreams.at(-1).sent.join(" "), /лише з погодою/);
+  await say(h, "Але мені треба постригти кота!");
+  h.advance(100);
+  assert.equal(h.out.ended, "agent-hangup:trolling");
+  assert.match(h.ttsStreams.at(-1).sent.join(" "), /до побачення/);
+  assert.ok(h.out.events.some((e) => e.type === "ended" && e.reason === "agent-hangup:trolling"));
+});
+
+test("call guard: a real weather question in between resets the count; nothing ends when the setting is off", async () => {
+  const h = harness({ llmScript: guardScript(["off_topic", null, "off_topic"]), extra: { endOffTopic: true } });
+  await h.session.start();
+  h.advance(3000);
+  await say(h, "Розкажи анекдот");
+  await say(h, "Яка погода в Києві?");
+  await say(h, "А анекдот?");
+  h.advance(100);
+  assert.equal(h.out.ended, null);
+
+  const off = harness({ llmScript: guardScript(["abuse", "abuse"]), extra: { endOffTopic: false } });
+  await off.session.start();
+  off.advance(3000);
+  await say(off, "ти дурна");
+  await say(off, "ти дурна");
+  off.advance(100);
+  assert.equal(off.out.ended, null);
+});
+
+test("call guard: clear abuse ends the call at once, after a goodbye", async () => {
+  const h = harness({ llmScript: guardScript(["abuse"]), extra: { endOffTopic: true } });
+  await h.session.start();
+  h.advance(3000);
+  await say(h, "образа");
+  h.advance(100);
+  assert.equal(h.out.ended, "agent-hangup:abuse");
+});
+
+test("cascade: a one-word English greeting is said by the call's main voice", async () => {
+  const h = harness({ extra: { agent: { id: "agt_w", greeting: "Hello" }, pickVoice: (lang) => ({ voice: `${lang}-voice`, fallback: "" }), greetingVoiceLanguage: "uk" } });
+  await h.session.start();
+  assert.equal(h.ttsStreams[0].voice, "uk-voice");
+  assert.deepEqual(h.ttsStreams[0].sent, ["Hello"]);
 });

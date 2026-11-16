@@ -122,12 +122,15 @@ export function openAzureTts({
   onRetry = () => {},
   fetchImpl = fetch,
   retryMs = AZURE_TTS_RETRY_MS,
+  voice: pinnedVoice = "",
+  fallbackVoice: pinnedFallback,
   sleep = (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.(); }),
 } = {}) {
   const controller = new AbortController();
   const url = `https://${String(region || "").trim()}.tts.speech.microsoft.com/cognitiveservices/v1`;
   const outputFormat = AZURE_TTS_FORMATS[format] || AZURE_TTS_FORMATS.pcm16k;
-  const chosen = azureVoiceFor(language);
+  // The session pins one voice per call; without a pin, choose here.
+  const chosen = pinnedVoice ? { voice: pinnedVoice, fallback: pinnedFallback || "" } : azureVoiceFor(language);
   let voice = chosen.voice;
   let fallbackVoice = chosen.fallback;
   let pendingText = "";
@@ -162,7 +165,7 @@ export function openAzureTts({
   /** HD voice first; any failure switches this reply (and, unless just throttled, the next 10 min) to the plain voice. */
   async function synthesize(text) {
     try {
-      await synthesizeWith(text, fallbackVoice ? [] : retryMs);
+      await synthesizeWith(text, retryMs, { quickFail: Boolean(fallbackVoice) });
     } catch (error) {
       if (aborted || !fallbackVoice || error?.code === "azure_key_invalid" || error?.emitted) throw error;
       if (error?.status !== 429) markHdVoiceDown(voice);
@@ -173,7 +176,8 @@ export function openAzureTts({
     }
   }
 
-  async function synthesizeWith(text, retryMs) {
+  /** quickFail: anything but a throttle (429) fails at once, so the fallback voice takes over without waiting. */
+  async function synthesizeWith(text, retryMs, { quickFail = false } = {}) {
     const key = text.length <= TTS_CACHE_TEXT_MAX ? `${voice}|${outputFormat}|${text}` : "";
     if (key && ttsCache.has(key)) {
       const cached = ttsCache.get(key);
@@ -232,7 +236,7 @@ export function openAzureTts({
         }
         return;
       }
-      if (attempt >= retryMs.length) throw error;
+      if (attempt >= retryMs.length || (quickFail && error.status !== 429)) throw error;
       const wait = retryAfterMs(res, retryMs[attempt]);
       onRetry({ code: error.code, status: error.status || 0, attempt: attempt + 1, waitMs: wait });
       await sleep(wait);

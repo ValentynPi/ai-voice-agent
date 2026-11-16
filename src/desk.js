@@ -119,6 +119,7 @@ function mapAgent(row, knowledge) {
     greeting: row.greeting || "",
     voice: row.voice || "chloe",
     voiceEngine: row.voice_engine === "cascade" ? "cascade" : "realtime",
+    endOffTopic: row.end_off_topic == null ? true : Number(row.end_off_topic) !== 0,
     language: row.language || "multi",
     modelNotes: row.model_notes || "",
     enabledTools: parseTools(row.enabled_tools_json),
@@ -130,7 +131,7 @@ function mapAgent(row, knowledge) {
 }
 
 const AGENT_COLUMNS = `
-  id, account_id, name, description, system_prompt, greeting, voice, voice_engine, language,
+  id, account_id, name, description, system_prompt, greeting, voice, voice_engine, end_off_topic, language,
   model_notes, enabled_tools_json, created_at, updated_at
 `;
 
@@ -196,6 +197,7 @@ function agentInput(input, { requirePrompt = true } = {}) {
     greeting: resolveGreeting(input),
     voice: cleanVoice(input.voice || "chloe"),
     voiceEngine: cleanVoiceEngine(input.voiceEngine || "realtime"),
+    endOffTopic: input.endOffTopic === undefined ? true : Boolean(input.endOffTopic),
     language: cleanLanguage(input.language || "multi"),
     modelNotes: cleanBlock(input.modelNotes, 2000),
   };
@@ -225,8 +227,8 @@ export function createAgent(input = {}, accountId = DEMO_ACCOUNT_ID) {
     database.prepare(`
       INSERT INTO agents (
         id, account_id, name, description, system_prompt, greeting,
-        voice, voice_engine, language, model_notes, enabled_tools_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        voice, voice_engine, end_off_topic, language, model_notes, enabled_tools_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tid,
@@ -236,6 +238,7 @@ export function createAgent(input = {}, accountId = DEMO_ACCOUNT_ID) {
       fields.greeting,
       fields.voice,
       fields.voiceEngine,
+      fields.endOffTopic ? 1 : 0,
       fields.language,
       fields.modelNotes,
       tools == null ? null : JSON.stringify(tools),
@@ -264,6 +267,7 @@ export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
       : current.greeting,
     voice: has("voice") ? cleanVoice(input.voice) : current.voice,
     voiceEngine: has("voiceEngine") ? cleanVoiceEngine(input.voiceEngine) : current.voiceEngine,
+    endOffTopic: has("endOffTopic") ? Boolean(input.endOffTopic) : current.endOffTopic,
     language: has("language") ? cleanLanguage(input.language) : current.language,
     modelNotes: has("modelNotes") ? cleanBlock(input.modelNotes, 2000) : current.modelNotes,
     enabledTools: has("enabledTools") ? cleanTools(input.enabledTools) : current.enabledTools,
@@ -277,7 +281,7 @@ export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
     database.prepare(`
       UPDATE agents SET
         name = ?, description = ?, system_prompt = ?, greeting = ?,
-        voice = ?, voice_engine = ?, language = ?, model_notes = ?, enabled_tools_json = ?, updated_at = ?
+        voice = ?, voice_engine = ?, end_off_topic = ?, language = ?, model_notes = ?, enabled_tools_json = ?, updated_at = ?
       WHERE id = ?
     `).run(
       next.name,
@@ -286,6 +290,7 @@ export function updateAgent(id, input = {}, accountId = DEMO_ACCOUNT_ID) {
       next.greeting,
       next.voice,
       next.voiceEngine,
+      next.endOffTopic ? 1 : 0,
       next.language,
       next.modelNotes,
       next.enabledTools == null ? null : JSON.stringify(next.enabledTools),
@@ -312,6 +317,7 @@ export function duplicateAgent(id, accountId = DEMO_ACCOUNT_ID) {
     greeting: current.greeting,
     voice: current.voice,
     voiceEngine: current.voiceEngine,
+    endOffTopic: current.endOffTopic,
     language: current.language,
     modelNotes: current.modelNotes,
     enabledTools: current.enabledTools,

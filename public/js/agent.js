@@ -13,6 +13,7 @@ const promptInput = document.querySelector("#systemPrompt");
 const greetingInput = document.querySelector("#greeting");
 const voiceSelect = document.querySelector("#voice");
 const engineSelect = document.querySelector("#voiceEngine");
+const endOffTopicInput = document.querySelector("#endOffTopic");
 const engineStatus = document.querySelector("#engineStatus");
 let cascadeInfo = null;
 
@@ -91,6 +92,7 @@ function paint(next) {
   notesInput.value = next?.modelNotes || "";
   fillVoices(next?.voices, next?.voice || "marin");
   if (engineSelect) engineSelect.value = next?.voiceEngine === "cascade" ? "cascade" : "realtime";
+  if (endOffTopicInput) endOffTopicInput.checked = next?.endOffTopic !== false;
   paintEngineStatus();
   if (next?.id) {
     testLink.href = `/agents/${encodeURIComponent(next.id)}/test`;
@@ -200,6 +202,7 @@ function payload() {
     greeting: greetingInput.value,
     voice: voiceSelect.value,
     voiceEngine: engineSelect?.value || "realtime",
+    endOffTopic: endOffTopicInput ? endOffTopicInput.checked : true,
     language: languageSelect.value,
     modelNotes: notesInput.value,
     enabledTools: toolPayload(),

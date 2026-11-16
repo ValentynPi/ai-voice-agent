@@ -885,6 +885,7 @@ async function connectCascade(activeCallId = callId) {
     onEnded: (reason) => {
       if (!callActive || callId !== activeCallId) return;
       if (reason === "silence" || reason === "max") void endCall(budgetEndMessage(reason), reason);
+      else if (String(reason).startsWith("agent-hangup")) void endCall(budgetEndMessage(reason), reason);
       else if (reason === "closed") { modeBadge.textContent = "Voice off"; setPhase("idle", "Voice disconnected"); }
     },
     onTrace: (kind, detail) => pushTrace(kind, detail),
