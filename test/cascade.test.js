@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import { cascadeStatus, normalizeLanguageCode, resolveVoiceEngine } from "../src/cascade/config.js";
 import { openElevenTts, openScribeStt } from "../src/cascade/elevenlabs.js";
-import { AZURE_STT_LANGUAGES, clearAzureTtsCache, azureCallLanguages, azureSpeechContext, azureSsml, azureSttSilenceMs, azureVoiceFor, createSpeechSpans, frameAzureAudio, languageScore, lockedTrust, openAzureRecognizer, openAzureStt, openAzureTts, parseAzureMessage, pcmWavHeader } from "../src/cascade/azure.js";
+import { AZURE_STT_LANGUAGES, clearAzureTtsCache, resetHdVoices, azureCallLanguages, azureSpeechContext, azureSsml, azureSttSilenceMs, azureVoiceFor, createSpeechSpans, frameAzureAudio, languageScore, lockedTrust, openAzureRecognizer, openAzureStt, openAzureTts, parseAzureMessage, pcmWavHeader } from "../src/cascade/azure.js";
 import { mulawToPcm16 } from "../src/twilio/mulaw.js";
 import { openDeepgramStt } from "../src/cascade/deepgram.js";
 import { chatBody, chatTool, resetCascadeModel, streamChat, takeSentences } from "../src/cascade/llm.js";
@@ -236,7 +236,10 @@ test("Eleven v4 Turbo TTS: one voice, language pinned per reply, sentences flush
 });
 
 test("Azure TTS: native he-IL / uk-UA voices, audio emitted in sentence order", async () => {
-  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-HilaNeural");
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-Hila:DragonLatestNeural");
+  assert.equal(azureVoiceFor("he", {}).fallback, "he-IL-HilaNeural");
+  assert.equal(azureVoiceFor("he", { AZURE_TTS_HD: "off" }).voice, "he-IL-HilaNeural");
+  assert.equal(azureVoiceFor("he", { AZURE_TTS_GENDER: "male" }).voice, "he-IL-AvriNeural");
   assert.equal(azureVoiceFor("uk", {}).voice, "uk-UA-PolinaNeural");
   assert.equal(azureVoiceFor("uk", { AZURE_TTS_GENDER: "male" }).voice, "uk-UA-OstapNeural");
   assert.match(azureSsml("A & B", "uk"), /xml:lang="uk-UA".*A &amp; B/);
@@ -830,7 +833,7 @@ test("Azure TTS: a 429 is retried with backoff (Retry-After honoured) and the au
     return new Response(new Uint8Array([7, 7]), { status: 200 });
   };
   const audio = [];
-  const tts = openAzureTts({ language: "he", apiKey: "az", region: "westeurope", fetchImpl, sleep: async (ms) => { waits.push(ms); }, onRetry: (r) => retries.push(r), onAudio: (b) => audio.push([...b]) });
+  const tts = openAzureTts({ language: "en", apiKey: "az", region: "westeurope", fetchImpl, sleep: async (ms) => { waits.push(ms); }, onRetry: (r) => retries.push(r), onAudio: (b) => audio.push([...b]) });
   tts.send("שלום.");
   tts.end();
   await tts.done;
@@ -925,4 +928,41 @@ test("fillers vary and never repeat the previous one; failures are plain 'I don'
   assert.doesNotMatch(TOOL_FAILED_NOTE, /in a minute/);
   assert.match(TOOL_FAILED_NOTE, /don't have that information/);
   assert.match(CASCADE_VOICE_RULES, /friendly native speaker/);
+});
+
+
+test("Hebrew HD (Dragon) voice falls back to plain Hila when it errors, and stays off for a while", async () => {
+  clearAzureTtsCache();
+  resetHdVoices();
+  const voices = [];
+  const fallbacks = [];
+  const fetchImpl = async (_url, init) => {
+    const voice = init.body.match(/<voice name="([^"]+)"/)[1];
+    voices.push(voice);
+    if (voice.includes("Dragon")) return new Response("unsupported", { status: 400 });
+    return new Response(new Uint8Array([9, 9]), { status: 200 });
+  };
+  const audio = [];
+  const tts = openAzureTts({ language: "he", format: "pcm24k", apiKey: "az", region: "westeurope", fetchImpl, sleep: async () => {}, onRetry: (r) => fallbacks.push(r), onAudio: (b) => audio.push([...b]) });
+  tts.send("שלום, מה שלומך?");
+  tts.send("מחר יהיה נעים.");
+  tts.end();
+  await tts.done;
+  assert.deepEqual(voices, ["he-IL-Hila:DragonLatestNeural", "he-IL-HilaNeural", "he-IL-HilaNeural"]);
+  assert.equal(fallbacks[0].code, "voice_fallback");
+  assert.deepEqual(audio, [[9, 9], [9, 9]]);
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-HilaNeural"); // HD marked down
+  resetHdVoices();
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-Hila:DragonLatestNeural");
+});
+
+test("Hebrew HD voice: a throttle (429) falls back for that reply but does not mark HD down", async () => {
+  clearAzureTtsCache();
+  resetHdVoices();
+  const fetchImpl = async (_url, init) => (init.body.includes("Dragon") ? new Response("", { status: 429 }) : new Response(new Uint8Array([1, 1]), { status: 200 }));
+  const tts = openAzureTts({ language: "he", apiKey: "az", region: "westeurope", fetchImpl, sleep: async () => {} });
+  tts.send("שלום.");
+  tts.end();
+  await tts.done;
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-Hila:DragonLatestNeural");
 });

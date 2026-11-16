@@ -17,7 +17,8 @@ export const AZURE_STT_LANGUAGES = ["uk-UA", "he-IL", "en-US"];
 
 export const AZURE_VOICES = {
   uk: { locale: "uk-UA", female: "uk-UA-PolinaNeural", male: "uk-UA-OstapNeural" },
-  he: { locale: "he-IL", female: "he-IL-HilaNeural", male: "he-IL-AvriNeural" },
+  // hd: Azure's newer, more natural "Dragon" voice (preview); the plain neural voice is its fallback.
+  he: { locale: "he-IL", female: "he-IL-HilaNeural", male: "he-IL-AvriNeural", hd: "he-IL-Hila:DragonLatestNeural" },
   ru: { locale: "ru-RU", female: "ru-RU-SvetlanaNeural", male: "ru-RU-DmitryNeural" },
   es: { locale: "es-ES", female: "es-ES-ElviraNeural", male: "es-ES-AlvaroNeural" },
   en: { locale: "en-US", female: "en-US-AvaNeural", male: "en-US-AndrewNeural" },
@@ -25,12 +26,29 @@ export const AZURE_VOICES = {
   ar: { locale: "ar-SA", female: "ar-SA-ZariyahNeural", male: "ar-SA-HamedNeural" },
 };
 
-export function azureVoiceFor(language, env = process.env) {
+/** HD voices that failed recently: skipped (plain neural voice instead) until the time stored. */
+const hdDown = new Map();
+export const AZURE_HD_RETRY_AFTER_MS = 10 * 60 * 1000;
+export function markHdVoiceDown(voice, ms = AZURE_HD_RETRY_AFTER_MS, now = Date.now()) { hdDown.set(voice, now + ms); }
+export function resetHdVoices() { hdDown.clear(); }
+
+/**
+ * { locale, voice, fallback }. Hebrew (female) uses the HD "Dragon" voice
+ * with the plain neural voice as fallback. AZURE_TTS_HD=off turns HD off;
+ * AZURE_TTS_VOICE_<LANG> pins a voice.
+ */
+export function azureVoiceFor(language, env = process.env, now = Date.now()) {
   const code = normalizeLanguageCode(language) || "en";
   const entry = AZURE_VOICES[code] || AZURE_VOICES.en;
   const override = String(env[`AZURE_TTS_VOICE_${code.toUpperCase()}`] || "").trim();
   const gender = String(env.AZURE_TTS_GENDER || "female").toLowerCase() === "male" ? "male" : "female";
-  return { locale: entry.locale, voice: override || entry[gender] };
+  if (override) return { locale: entry.locale, voice: override, fallback: "" };
+  const plain = entry[gender];
+  const hdOff = /^(off|0|false|no)$/i.test(String(env.AZURE_TTS_HD || "").trim());
+  if (entry.hd && gender === "female" && !hdOff && !((hdDown.get(entry.hd) || 0) > now)) {
+    return { locale: entry.locale, voice: entry.hd, fallback: plain };
+  }
+  return { locale: entry.locale, voice: plain, fallback: "" };
 }
 
 function xmlEscape(text) {
@@ -46,8 +64,10 @@ export const AZURE_TTS_TAIL_MS = 100;
  * sentences, so the leading pad is removed and the trailing one set to a
  * natural sentence break.
  */
-export function azureSsml(text, language, { tailMs = AZURE_TTS_TAIL_MS } = {}) {
-  const { locale, voice } = azureVoiceFor(language);
+export function azureSsml(text, language, { tailMs = AZURE_TTS_TAIL_MS, voice: pinned = "" } = {}) {
+  const chosen = azureVoiceFor(language);
+  const locale = chosen.locale;
+  const voice = pinned || chosen.voice;
   return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${locale}"><voice name="${voice}"><mstts:silence type="Leading-exact" value="0ms"/><mstts:silence type="Tailing-exact" value="${Math.max(0, Math.round(tailMs))}ms"/>${xmlEscape(text)}</voice></speak>`;
 }
 
@@ -107,7 +127,9 @@ export function openAzureTts({
   const controller = new AbortController();
   const url = `https://${String(region || "").trim()}.tts.speech.microsoft.com/cognitiveservices/v1`;
   const outputFormat = AZURE_TTS_FORMATS[format] || AZURE_TTS_FORMATS.pcm16k;
-  const { voice } = azureVoiceFor(language);
+  const chosen = azureVoiceFor(language);
+  let voice = chosen.voice;
+  let fallbackVoice = chosen.fallback;
   let pendingText = "";
   let inflight = false;
   let aborted = false;
@@ -133,11 +155,25 @@ export function openAzureTts({
       "X-Microsoft-OutputFormat": outputFormat,
       "User-Agent": "voice-desk-cascade",
     },
-    body: azureSsml(text, language),
+    body: azureSsml(text, language, { voice }),
     signal: controller.signal,
   });
 
+  /** HD voice first; any failure switches this reply (and, unless just throttled, the next 10 min) to the plain voice. */
   async function synthesize(text) {
+    try {
+      await synthesizeWith(text, fallbackVoice ? [] : retryMs);
+    } catch (error) {
+      if (aborted || !fallbackVoice || error?.code === "azure_key_invalid" || error?.emitted) throw error;
+      if (error?.status !== 429) markHdVoiceDown(voice);
+      onRetry({ code: "voice_fallback", status: error?.status || 0, attempt: 0, waitMs: 0, from: voice, to: fallbackVoice });
+      voice = fallbackVoice;
+      fallbackVoice = "";
+      await synthesizeWith(text, retryMs);
+    }
+  }
+
+  async function synthesizeWith(text, retryMs) {
     const key = text.length <= TTS_CACHE_TEXT_MAX ? `${voice}|${outputFormat}|${text}` : "";
     if (key && ttsCache.has(key)) {
       const cached = ttsCache.get(key);
@@ -167,12 +203,22 @@ export function openAzureTts({
         const parts = [];
         if (res.body?.getReader) {
           const reader = res.body.getReader();
+          let emitted = false;
           for (;;) {
-            const { value, done: finished } = await reader.read();
+            let chunk;
+            try {
+              chunk = await reader.read();
+            } catch (e) {
+              if (aborted) return;
+              // Audio already played: do not start the sentence again in another voice.
+              throw Object.assign(providerError("azure_tts_error", e?.message || "Azure audio stream broke"), { emitted });
+            }
+            const { value, done: finished } = chunk;
             if (finished || aborted) break;
             if (value?.length) {
               const buf = Buffer.from(value);
               if (key) parts.push(buf);
+              emitted = true;
               onAudio(buf);
             }
           }
