@@ -19,15 +19,15 @@ import {
   runRealtimeTool,
   selectSessionTools,
 } from "../realtime.js";
-import { getCall, touchCall } from "../store.js";
+import { endCall, getCall, touchCall } from "../store.js";
 import { normalizeAgentsBaseUrl } from "../twilio/public-url.js";
 import { telephonySharedSecret } from "../twilio/public-list.js";
-import { openAzureStt, openAzureTts } from "./azure.js";
+import { azureCallLanguages, azureVoiceFor, openAzureStt, openAzureTts } from "./azure.js";
 import { cascadeStatus } from "./config.js";
 import { openDeepgramStt } from "./deepgram.js";
 import { openElevenTts, openScribeStt } from "./elevenlabs.js";
 import { chatTool, streamChat } from "./llm.js";
-import { CASCADE_VOICE_RULES, createCascadeSession } from "./session.js";
+import { CALL_GUARD_RULES, CALL_GUARD_SPEC, CASCADE_VOICE_RULES, createCascadeSession, voiceGenderRule } from "./session.js";
 
 export const CASCADE_WS_PATH = "/api/cascade/ws";
 const TICKET_TTL_MS = 60_000;
@@ -55,13 +55,33 @@ export function cascadeProvidersFor(status = cascadeStatus()) {
   };
 }
 
-/** Everything the session needs from the agent: stable instructions, tools, task line. */
-export async function cascadeAgentSetup(agent) {
+/** Everything the session needs from the agent: stable instructions, tools, task line, one voice per call. */
+export async function cascadeAgentSetup(agent, status = cascadeStatus(), env = process.env) {
   await ensureMcp();
   const specs = selectSessionTools(realtimeToolSpecs(), agent);
-  const tools = specs.map(chatTool);
-  const instructions = `${receptionistInstructions("multi", agent, { toolCount: tools.length })}\n\n${CASCADE_VOICE_RULES}`;
-  return { tools, instructions, botTask: botTaskLine(agent) };
+  const lookups = specs.map(chatTool);
+  const endOffTopic = agent?.endOffTopic !== false;
+  const tools = endOffTopic ? [...lookups, CALL_GUARD_SPEC] : lookups;
+  const azure = status?.tts === "azure";
+  const gender = String(env.AZURE_TTS_GENDER || "female").toLowerCase() === "male" ? "male" : "female";
+  const rules = [CASCADE_VOICE_RULES, azure ? voiceGenderRule(gender) : "", endOffTopic ? CALL_GUARD_RULES : ""].filter(Boolean).join("\n");
+  const instructions = `${receptionistInstructions("multi", agent, { toolCount: lookups.length })}\n\n${rules}`;
+  return {
+    tools,
+    instructions,
+    botTask: botTaskLine(agent),
+    endOffTopic,
+    pickVoice: azure ? (language) => azureVoiceFor(language, env) : null,
+    greetingVoiceLanguage: azure ? String(azureCallLanguages(env, agent?.language || "")[0] || "").slice(0, 2) : "",
+  };
+}
+
+/**
+ * Agent audio for the browser: Azure voices at their native 24 kHz when the
+ * page can play it (it asks with ?rate=24000); otherwise 16 kHz.
+ */
+export function browserTtsFormat(status, url) {
+  return status?.tts === "azure" && Number(url?.searchParams?.get("rate")) === 24000 ? "pcm24k" : "pcm16k";
 }
 
 function agentForCall(call) {
@@ -83,12 +103,13 @@ export async function handleBrowserCascade(ws, url, { status = cascadeStatus(), 
     return null;
   }
   const agent = agentForCall(call);
-  const setup = await cascadeAgentSetup(agent);
+  const setup = await cascadeAgentSetup(agent, status);
   let ticker = null;
   const session = createCascadeSession({
     callId,
     agent,
     format: "pcm16k",
+    ttsFormat: browserTtsFormat(status, url),
     ...setup,
     ...providers,
     llm,
@@ -101,6 +122,8 @@ export async function handleBrowserCascade(ws, url, { status = cascadeStatus(), 
       event: sendJson,
       end: (reason) => {
         if (ticker) clearInterval(ticker);
+        // The agent hung up: the call record keeps why (the page's own end request comes after and is a no-op).
+        if (String(reason).startsWith("agent-hangup")) { try { endCall(callId, reason); } catch { /* ignore */ } }
         sendJson({ type: "closed", reason });
         try { ws.close(); } catch { /* ignore */ }
       },
@@ -131,7 +154,7 @@ export async function handleBrowserCascade(ws, url, { status = cascadeStatus(), 
  * Returns { pushMulaw(base64), close() }.
  */
 export async function startTwilioCascade({ callId, agent, streamSid, send, closeAll, status = cascadeStatus(), providers = cascadeProvidersFor(status) }) {
-  const setup = await cascadeAgentSetup(agent);
+  const setup = await cascadeAgentSetup(agent, status);
   let ticker = null;
   const session = createCascadeSession({
     callId,
@@ -189,7 +212,7 @@ export function attachCascadeProxy(server, agentsPublicUrl) {
     try { url = new URL(req.url || "/", "http://localhost"); } catch { socket.destroy(); return; }
     if (url.pathname !== CASCADE_WS_PATH) { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (client) => {
-      const target = `${base.replace(/^http/, "ws")}${CASCADE_WS_PATH}?ticket=${encodeURIComponent(url.searchParams.get("ticket") || "")}`;
+      const target = `${base.replace(/^http/, "ws")}${CASCADE_WS_PATH}?ticket=${encodeURIComponent(url.searchParams.get("ticket") || "")}${url.searchParams.get("rate") ? `&rate=${encodeURIComponent(url.searchParams.get("rate"))}` : ""}`;
       const headers = {};
       const secret = telephonySharedSecret();
       if (secret) headers["X-Telephony-Secret"] = secret;

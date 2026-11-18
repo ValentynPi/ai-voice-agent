@@ -242,3 +242,14 @@ test("a custom agent drives the realtime greeting and knowledge", async () => {
     else process.env.OPENAI_API_KEY = previousKey;
   }
 });
+
+test("agents: 'end off-topic calls' defaults on, can be turned off, and survives a duplicate", async () => {
+  resetDatabase();
+  const desk = await import("../src/desk.js");
+  const created = desk.createAgent({ name: "Guarded", systemPrompt: "Weather only." });
+  assert.equal(created.endOffTopic, true);
+  const off = desk.updateAgent(created.id, { endOffTopic: false });
+  assert.equal(off.endOffTopic, false);
+  assert.equal(desk.updateAgent(created.id, { name: "Guarded 2" }).endOffTopic, false);
+  assert.equal(desk.duplicateAgent(created.id).endOffTopic, false);
+});

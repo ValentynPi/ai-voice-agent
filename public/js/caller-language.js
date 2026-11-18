@@ -17,14 +17,15 @@ const NAMES = {
 };
 
 const FAILURES = {
-  uk: { weather: "Зараз не можу дізнатися погоду.", other: "Зараз не можу це зробити." },
-  es: { weather: "Ahora no puedo consultar el tiempo.", other: "Ahora no puedo hacer eso." },
-  en: { weather: "I can't get the weather right now.", other: "I can't do that right now." },
-  ru: { weather: "Сейчас не могу узнать погоду.", other: "Сейчас не могу это сделать." },
-  fr: { weather: "Je ne peux pas avoir la météo pour le moment.", other: "Je ne peux pas faire ça maintenant." },
-  ar: { weather: "لا أستطيع معرفة الطقس الآن.", other: "لا أستطيع فعل ذلك الآن." },
-  // Impersonal forms: no masculine/feminine clash with the voice (marin is female, cedar male).
-  he: { weather: "כרגע אי אפשר לבדוק את מזג האוויר.", other: "כרגע אי אפשר לעשות את זה." },
+  // Plain "I don't have that" — no technical talk, no "try again later".
+  uk: { weather: "На жаль, такої інформації в мене немає.", other: "На жаль, із цим я не допоможу." },
+  es: { weather: "Lo siento, no tengo esa información.", other: "Lo siento, con eso no puedo ayudarte." },
+  en: { weather: "Sorry, I don't have that information.", other: "Sorry, I can't help with that." },
+  ru: { weather: "К сожалению, такой информации у меня нет.", other: "К сожалению, с этим я не помогу." },
+  fr: { weather: "Malheureusement, je n'ai pas cette information.", other: "Malheureusement, je ne peux pas aider avec ça." },
+  ar: { weather: "عذرًا، ليست لدي هذه المعلومة.", other: "عذرًا، لا أستطيع المساعدة في ذلك." },
+  // Ungendered first person: no masculine/feminine clash with the voice.
+  he: { weather: "סליחה, אין לי את המידע הזה.", other: "סליחה, בזה לא אוכל לעזור." },
 };
 
 const PLACE_NAME = /castell[oó]n(?:\s+de\s+la\s+plana)?|קסטי?ל?יון(?:\s+דה\s+לה\s+פלאנה)?|קסטלון|кастель[ойой]н\w*(?:-де-ла-плана)?|кастельйон\w*(?:-де-ла-плана)?/gi;

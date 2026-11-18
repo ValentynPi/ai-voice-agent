@@ -5,6 +5,7 @@ import { toolFollowUpEvent } from "../public/js/realtime-turn.js";
 import {
   canonicalPlaceQuery,
   choosePlace,
+  dailyFacts,
   shapePlaceSearch,
 } from "../src/mcp/place-weather.js";
 
@@ -130,7 +131,7 @@ test("a failed forecast is a short weather failure, not a place refusal", () => 
     weather: null,
   });
   assert.equal(shaped.isError, true);
-  assert.match(shaped.text, /can't get the weather right now/);
+  assert.match(shaped.text, /don't have the weather/);
   assert.doesNotMatch(shaped.text, /airport/i);
   assert.doesNotMatch(shaped.text, /Verify the coordinates/i);
 });
@@ -153,4 +154,48 @@ test("a Ukrainian Castellón question matches the city airport, not a refusal", 
   assert.match(shaped.text, /Кастельон-де-ла-Плана/);
   assert.match(shaped.text, /23\.1/);
   assert.doesNotMatch(shaped.text, /different place/i);
+});
+
+
+test("a found place with a dead forecast says so once and tells the model not to retry", () => {
+  const shaped = shapePlaceSearch({ query: "Castellón de la Plana", presented: airportSearch(), weather: null });
+  assert.equal(shaped.isError, true);
+  assert.match(shaped.text, /don't have that information/);
+  assert.match(shaped.text, /Do not call the weather tools again/);
+});
+
+test("the daily forecast rides along with current conditions (tomorrow questions)", () => {
+  const days = dailyFacts({
+    structured: {
+      daily: [
+        { time: "2026-11-15", weather_code: 1, temperature_2m_max: 21.4, temperature_2m_min: 11.2, precipitation_probability_max: 5, wind_speed_10m_max: 14 },
+        { time: "2026-11-16", weather_code: 61, temperature_2m_max: 18, temperature_2m_min: 10 },
+      ],
+      daily_units: { temperature_2m_max: "°C", wind_speed_10m_max: "km/h" },
+    },
+  });
+  assert.equal(days.length, 2);
+  assert.equal(days[0].high, 21.4);
+  assert.equal(days[1].condition, "light rain");
+  assert.deepEqual(dailyFacts({ structured: {} }), []);
+});
+
+test("forecast tables keep every day: filtered by days, or thinned to every 3 hours", async () => {
+  const { shapeForecast } = await import("../src/mcp/place-weather.js");
+  const hourly = [];
+  for (let d = 15; d <= 21; d += 1) for (let h = 0; h < 24; h += 1) {
+    hourly.push({ time: `2026-11-${d}T${String(h).padStart(2, "0")}:00`, temperature_2m: 10 + h / 2, weather_code: 3, precipitation_probability: 5, wind_speed_10m: 3.4 });
+  }
+  const presented = { text: "x".repeat(5000), isError: false, structured: { timezone: "Europe/Madrid", hourly, hourly_units: { temperature_2m: "°C" } } };
+  const all = shapeForecast(presented);
+  assert.ok(all.long);
+  assert.ok(all.text.length <= 3600);
+  assert.match(all.text, /11-21 18:00/);
+  assert.match(all.text, /every 3 hours/);
+  assert.match(all.text, /3=overcast/);
+  const sat = shapeForecast(presented, { days: ["2026-11-21"] });
+  assert.match(sat.text, /11-21 16:00 18 3 5 3.4/);
+  assert.doesNotMatch(sat.text, /11-20/);
+  const none = shapeForecast(presented, { days: ["2026-12-04"] });
+  assert.match(none.text, /No rows for 2026-12-04/);
 });

@@ -272,7 +272,7 @@ test("Hebrew: detection, per-reply note, transcription, native accent", async ()
   assert.ok(sent[0].item.content[0].text.length < 260);
   assert.equal(turn.stillLookingLine("he"), "עוד רגע, בודקים.");
   assert.match(turn.silenceFallbackEvent("שלום שלום", "he").response.instructions, /לא שמעתי/);
-  assert.match(lang.spokenFailure("weather", "מזג האוויר", "he"), /אי אפשר/);
+  assert.match(lang.spokenFailure("weather", "מזג האוויר", "he"), /אין לי את המידע/);
   assert.equal(turn.replyInLanguage("היום עשרים מעלות", "he"), true);
   const session = receptionistInstructions("en", weatherAgent, { toolCount: 2 });
   assert.match(session, /modern Israeli Hebrew with correct stress/);

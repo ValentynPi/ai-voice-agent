@@ -49,7 +49,7 @@ test("realtime session asks for marin, tools, and a speech model", () => {
   assert.equal(session.tools.some((tool) => tool.name === "get_weather"), false);
   assert.equal(session.tools.some((tool) => tool.name === "book_appointment"), false);
   assert.match(session.instructions, /Maison Sol/);
-  assert.match(session.instructions, /Never mention tools, functions, or MCP/);
+  assert.match(session.instructions, /never mention tools, functions, services/);
   assert.doesNotMatch(JSON.stringify(session), /sk-/);
 });
 
@@ -83,7 +83,7 @@ test("realtime instructions guard against ChatGPT-style capability claims", () =
   assert.match(weak.instructions, /^LANGUAGE \(most important rule\)/);
   assert.match(weak.instructions, /Bot task:\nYou are Weather/);
   assert.match(weak.instructions, /Never offer writing, presentations/i);
-  assert.match(weak.instructions, /Never mention tools, functions, or MCP/);
+  assert.match(weak.instructions, /never mention tools, functions, services/);
   assert.match(weak.instructions, /not a general assistant/i);
   assert.match(weak.instructions, /whatever they need/i);
   assert.match(weak.instructions, /outside the Bot task/i);

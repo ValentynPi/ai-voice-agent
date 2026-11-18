@@ -376,3 +376,7 @@ pre.snippet {
   .brand em { display: none; }
   .transcript-panel { min-height: 380px; }
 }
+
+/* Agent form: one-line checkbox setting */
+label.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+label.check-row input { width: auto; min-height: 0; margin: 0; }

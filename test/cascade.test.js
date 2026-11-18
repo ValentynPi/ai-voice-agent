@@ -5,12 +5,13 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import { cascadeStatus, normalizeLanguageCode, resolveVoiceEngine } from "../src/cascade/config.js";
 import { openElevenTts, openScribeStt } from "../src/cascade/elevenlabs.js";
-import { AZURE_STT_LANGUAGES, azureCallLanguages, azureSpeechContext, azureSsml, azureSttSilenceMs, azureVoiceFor, createSpeechSpans, frameAzureAudio, languageScore, lockedTrust, openAzureRecognizer, openAzureStt, openAzureTts, parseAzureMessage, pcmWavHeader } from "../src/cascade/azure.js";
+import { AZURE_STT_LANGUAGES, clearAzureTtsCache, resetHdVoices, azureCallLanguages, azureSpeechContext, azureSsml, azureSttSilenceMs, azureVoiceFor, createSpeechSpans, frameAzureAudio, languageScore, lockedTrust, openAzureRecognizer, openAzureStt, openAzureTts, parseAzureMessage, pcmWavHeader } from "../src/cascade/azure.js";
 import { mulawToPcm16 } from "../src/twilio/mulaw.js";
 import { openDeepgramStt } from "../src/cascade/deepgram.js";
 import { chatBody, chatTool, resetCascadeModel, streamChat, takeSentences } from "../src/cascade/llm.js";
-import { CASCADE_VOICE_RULES, createCascadeSession, pickReplyLanguage } from "../src/cascade/session.js";
-import { DUCK_CONFIRM_MS, DUCK_VOLUME, SILENCE_HANGUP_MS, TOOL_FILLER_AFTER_MS, createCallBudget } from "../public/js/realtime-turn.js";
+import { CALL_GUARD_SPEC, CALL_GUARD_TOOL, CASCADE_VOICE_RULES, TOOL_FAILED_NOTE, guardDecision, voiceGenderRule, bytesToMs, createCascadeSession, isFatalVoiceError, pickReplyLanguage } from "../src/cascade/session.js";
+import { browserTtsFormat } from "../src/cascade/transport.js";
+import { FILLERS, fillerLine, DUCK_CONFIRM_MS, DUCK_VOLUME, SILENCE_HANGUP_MS, TOOL_FILLER_AFTER_MS, createCallBudget } from "../public/js/realtime-turn.js";
 import { cascadeSessionFailure, cascadeWsUrl, pcm16ToFloat32 } from "../public/js/cascade-client.js";
 
 const KEYS = { OPENAI_API_KEY: "sk-test", ELEVENLABS_API_KEY: "el-test" };
@@ -235,7 +236,10 @@ test("Eleven v4 Turbo TTS: one voice, language pinned per reply, sentences flush
 });
 
 test("Azure TTS: native he-IL / uk-UA voices, audio emitted in sentence order", async () => {
-  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-HilaNeural");
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-Hila:DragonLatestNeural");
+  assert.equal(azureVoiceFor("he", {}).fallback, "he-IL-HilaNeural");
+  assert.equal(azureVoiceFor("he", { AZURE_TTS_HD: "off" }).voice, "he-IL-HilaNeural");
+  assert.equal(azureVoiceFor("he", { AZURE_TTS_GENDER: "male" }).voice, "he-IL-AvriNeural");
   assert.equal(azureVoiceFor("uk", {}).voice, "uk-UA-PolinaNeural");
   assert.equal(azureVoiceFor("uk", { AZURE_TTS_GENDER: "male" }).voice, "uk-UA-OstapNeural");
   assert.match(azureSsml("A & B", "uk"), /xml:lang="uk-UA".*A &amp; B/);
@@ -521,7 +525,7 @@ test("Azure message framing and wav headers stay parseable", () => {
 
 /* ----------------------------- session ----------------------------- */
 
-function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19 } }, toolDelayMs = 0, record } = {}) {
+function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19 } }, toolDelayMs = 0, record, ttsFail = null, extra = {} } = {}) {
   let clock = 1_000_000;
   const now = () => clock;
   const timers = [];
@@ -534,12 +538,14 @@ function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19
   const toolCalls = [];
   let stt = null;
   const openStt = (opts) => { stt = opts; return { ready: Promise.resolve(), send() {}, close() {} }; };
-  const openTts = ({ language, onAudio }) => {
-    const stream = { language, sent: [], aborted: false, ended: false };
+  const openTts = ({ language, onAudio, voice, fallbackVoice, onRetry }) => {
+    const stream = { language, voice, fallbackVoice, onRetry, sent: [], aborted: false, ended: false };
     let resolve;
-    stream.done = new Promise((r) => { resolve = r; });
+    let reject;
+    stream.done = new Promise((r, j) => { resolve = r; reject = j; });
+    stream.done.catch(() => {});
     stream.send = (text) => { stream.sent.push(text); onAudio(Buffer.alloc(3200)); }; // 100 ms per sentence
-    stream.end = () => { stream.ended = true; resolve(); };
+    stream.end = () => { stream.ended = true; const e = ttsFail?.(ttsStreams.indexOf(stream)); if (e) reject(e); else resolve(); };
     stream.abort = () => { stream.aborted = true; resolve(); };
     ttsStreams.push(stream);
     return stream;
@@ -578,6 +584,7 @@ function harness({ llmScript, toolResult = { ok: true, result: { temperature: 19
     clearTimer,
     log: (line) => logs.push(line),
     budget: createCallBudget({ now }),
+    ...extra,
   });
   const advance = (ms) => { clock += ms; runTimers(); session.tick(clock); };
   const settle = () => new Promise((r) => setImmediate(r));
@@ -721,7 +728,9 @@ test("MCP tool round: lookup runs, 'still looking' plays when slow, then the ans
   await h.settle();
   assert.deepEqual(h.toolCalls, [{ name: "openmeteo_get_forecast", args: { city: "Kyiv" } }]);
   const tts = h.ttsStreams.at(-1);
-  assert.deepEqual(tts.sent, ["Ще дивлюся.", "У Києві дев'ятнадцять градусів."]);
+  assert.equal(tts.sent.length, 2);
+  assert.ok(FILLERS.uk.includes(tts.sent[0]));
+  assert.equal(tts.sent[1], "У Києві дев'ятнадцять градусів.");
   const second = h.llmCalls[1].messages;
   assert.equal(second.at(-2).role, "assistant");
   assert.equal(second.at(-2).tool_calls[0].function.name, "openmeteo_get_forecast");
@@ -766,7 +775,7 @@ test("an empty model answer is never dead air", async () => {
   h.stt().onCommitted("Яка зараз погода в Києві?", "uk");
   await h.settle();
   await h.settle();
-  assert.deepEqual(h.ttsStreams.at(-1).sent, ["Вибачте, я не розчув. Повторіть, будь ласка."]);
+  assert.deepEqual(h.ttsStreams.at(-1).sent, ["Вибачте, погано чути. Повторіть, будь ласка."]);
 });
 
 /* ----------------------------- browser helpers ----------------------------- */
@@ -778,4 +787,285 @@ test("browser helpers: ws URL keeps the page origin, PCM16 decode, plain failure
   new DataView(buf).setInt16(2, -0x8000, true);
   assert.deepEqual([...pcm16ToFloat32(buf)], [0.5, -1]);
   assert.equal(cascadeSessionFailure(503, { code: "cascade_not_ready", error: "Needs ElevenLabs key" }), "Needs ElevenLabs key");
+});
+
+
+/* -------------------- Azure free tier: throttling, pauses -------------------- */
+
+test("Azure TTS: SSML trims the leading pad and keeps a short sentence break", () => {
+  const ssml = azureSsml("Привіт.", "uk");
+  assert.match(ssml, /xmlns:mstts="https:\/\/www\.w3\.org\/2001\/mstts"/);
+  assert.match(ssml, /<mstts:silence type="Leading-exact" value="0ms"\/>/);
+  assert.match(ssml, /<mstts:silence type="Tailing-exact" value="100ms"\/>/);
+  assert.match(ssml, /uk-UA-PolinaNeural/);
+});
+
+test("Azure TTS: sentences written while one is synthesized go out as ONE next request (fewer requests on F0)", async () => {
+  clearAzureTtsCache();
+  const bodies = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const fetchImpl = async (_url, init) => {
+    bodies.push(init.body);
+    if (bodies.length === 1) await gate;
+    return new Response(new Uint8Array([bodies.length, 0]), { status: 200 });
+  };
+  const audio = [];
+  const tts = openAzureTts({ language: "uk", format: "pcm24k", apiKey: "az", region: "westeurope", fetchImpl, onAudio: (b) => audio.push(b[0]) });
+  tts.send("Сьогодні в Сагунто сонячно.");
+  tts.send("Вдень до двадцяти градусів.");
+  tts.send("Вітер слабкий.");
+  tts.end();
+  release();
+  await tts.done;
+  assert.equal(bodies.length, 2);
+  assert.match(bodies[1], /Вдень до двадцяти градусів\. Вітер слабкий\./);
+  assert.deepEqual(audio, [1, 2]);
+});
+
+test("Azure TTS: a 429 is retried with backoff (Retry-After honoured) and the audio still plays", async () => {
+  clearAzureTtsCache();
+  let n = 0;
+  const waits = [];
+  const retries = [];
+  const fetchImpl = async () => {
+    n += 1;
+    if (n === 1) return new Response("busy", { status: 429, headers: { "Retry-After": "1" } });
+    return new Response(new Uint8Array([7, 7]), { status: 200 });
+  };
+  const audio = [];
+  const tts = openAzureTts({ language: "en", apiKey: "az", region: "westeurope", fetchImpl, sleep: async (ms) => { waits.push(ms); }, onRetry: (r) => retries.push(r), onAudio: (b) => audio.push([...b]) });
+  tts.send("שלום.");
+  tts.end();
+  await tts.done;
+  assert.equal(n, 2);
+  assert.deepEqual(waits, [1000]);
+  assert.equal(retries[0].code, "azure_busy");
+  assert.deepEqual(audio, [[7, 7]]);
+});
+
+test("Azure TTS: still busy after retries rejects as azure_busy (not fatal); a bad key is fatal", async () => {
+  clearAzureTtsCache();
+  const busy = openAzureTts({ apiKey: "az", region: "westeurope", fetchImpl: async () => new Response("", { status: 429 }), sleep: async () => {}, retryMs: [1, 1] });
+  busy.send("Hi.");
+  busy.end();
+  await assert.rejects(busy.done, (e) => e.code === "azure_busy");
+  assert.equal(isFatalVoiceError({ code: "azure_busy" }), false);
+  assert.equal(isFatalVoiceError({ code: "azure_key_invalid" }), true);
+  assert.equal(isFatalVoiceError({ code: "openai_quota" }), true);
+  let calls = 0;
+  const bad = openAzureTts({ apiKey: "bad", region: "westeurope", fetchImpl: async () => { calls += 1; return new Response("", { status: 401 }); }, sleep: async () => {} });
+  bad.send("Hi.");
+  bad.end();
+  await assert.rejects(bad.done, (e) => e.code === "azure_key_invalid");
+  assert.equal(calls, 1);
+});
+
+test("Azure TTS: a short fixed line is synthesized once and reused", async () => {
+  clearAzureTtsCache();
+  let calls = 0;
+  const fetchImpl = async () => { calls += 1; return new Response(new Uint8Array([5, 5]), { status: 200 }); };
+  for (let i = 0; i < 3; i += 1) {
+    const audio = [];
+    const tts = openAzureTts({ language: "uk", apiKey: "az", region: "westeurope", fetchImpl, onAudio: (b) => audio.push([...b]) });
+    tts.send("Ще дивлюся.");
+    tts.end();
+    await tts.done;
+    assert.deepEqual(audio, [[5, 5]]);
+  }
+  assert.equal(calls, 1);
+});
+
+test("cascade: a busy voice service never ends the call", async () => {
+  const h = harness({ ttsFail: (i) => (i === 1 ? Object.assign(new Error("busy"), { code: "azure_busy" }) : null) });
+  await h.session.start();
+  h.session.onCommitted("Яка погода в Києві?", "uk");
+  await h.settle();
+  await h.settle();
+  assert.equal(h.out.ended, null);
+  assert.ok(h.logs.some((l) => /tts-error azure_busy/.test(l)));
+  assert.ok(h.out.events.some((e) => e.type === "notice" && e.code === "azure_busy"));
+  assert.ok(h.out.events.some((e) => e.type === "transcript" && e.role === "assistant"));
+});
+
+test("cascade: when every lookup fails, the model answers at once instead of retrying the tool", async () => {
+  const h = harness({
+    toolResult: { ok: false, result: { error: "I can't get the weather right now." } },
+    llmScript: (n) => (n === 1
+      ? [{ type: "tool_calls", calls: [{ id: "c1", name: "openmeteo_get_forecast", arguments: "{}" }] }]
+      : [{ type: "text", delta: "Зараз не можу отримати погоду, спробуйте за хвилину." }]),
+  });
+  await h.session.start();
+  h.session.onCommitted("Яка погода в Сагунто?", "uk");
+  for (let i = 0; i < 6; i += 1) await h.settle();
+  assert.equal(h.toolCalls.length, 1);
+  assert.equal(h.llmCalls.length, 2);
+  assert.equal(h.llmCalls[1].tools.length, 0);
+  assert.equal(h.llmCalls[1].toolChoice, "none");
+  assert.ok(h.llmCalls[1].messages.some((m) => m.role === "system" && m.content === TOOL_FAILED_NOTE));
+});
+
+test("browser playback: Azure at 24 kHz only when the page asks for it", () => {
+  const url = (q) => new URL(`http://x/api/cascade/ws?ticket=t${q}`);
+  assert.equal(browserTtsFormat({ tts: "azure" }, url("&rate=24000")), "pcm24k");
+  assert.equal(browserTtsFormat({ tts: "azure" }, url("")), "pcm16k");
+  assert.equal(browserTtsFormat({ tts: "elevenlabs" }, url("&rate=24000")), "pcm16k");
+  assert.equal(bytesToMs("pcm24k", 4800), 100);
+  assert.equal(bytesToMs("pcm16k", 3200), 100);
+  assert.equal(bytesToMs("mulaw8k", 800), 100);
+  assert.match(cascadeWsUrl("/api/cascade/ws", "abc", { protocol: "https:", host: "h" }, { rate: 24000 }), /^wss:\/\/h\/api\/cascade\/ws\?ticket=abc&rate=24000$/);
+});
+
+test("fillers vary and never repeat the previous one; failures are plain 'I don't have that'", async () => {
+  for (const code of ["uk", "he", "en"]) {
+    let prev = "";
+    for (let i = 0; i < 20; i += 1) {
+      const line = fillerLine(code, prev);
+      assert.notEqual(line, prev);
+      assert.ok(FILLERS[code].includes(line));
+      prev = line;
+    }
+  }
+  assert.doesNotMatch(TOOL_FAILED_NOTE, /in a minute/);
+  assert.match(TOOL_FAILED_NOTE, /don't have that information/);
+  assert.match(CASCADE_VOICE_RULES, /friendly native speaker/);
+});
+
+
+test("Hebrew HD (Dragon) voice falls back to plain Hila when it errors, and stays off for a while", async () => {
+  clearAzureTtsCache();
+  resetHdVoices();
+  const voices = [];
+  const fallbacks = [];
+  const fetchImpl = async (_url, init) => {
+    const voice = init.body.match(/<voice name="([^"]+)"/)[1];
+    voices.push(voice);
+    if (voice.includes("Dragon")) return new Response("unsupported", { status: 400 });
+    return new Response(new Uint8Array([9, 9]), { status: 200 });
+  };
+  const audio = [];
+  const tts = openAzureTts({ language: "he", format: "pcm24k", apiKey: "az", region: "westeurope", fetchImpl, sleep: async () => {}, onRetry: (r) => fallbacks.push(r), onAudio: (b) => audio.push([...b]) });
+  tts.send("שלום, מה שלומך?");
+  tts.send("מחר יהיה נעים.");
+  tts.end();
+  await tts.done;
+  assert.deepEqual(voices, ["he-IL-Hila:DragonLatestNeural", "he-IL-HilaNeural", "he-IL-HilaNeural"]);
+  assert.equal(fallbacks[0].code, "voice_fallback");
+  assert.deepEqual(audio, [[9, 9], [9, 9]]);
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-HilaNeural"); // HD marked down
+  resetHdVoices();
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-Hila:DragonLatestNeural");
+});
+
+test("Hebrew HD voice: a throttle (429) falls back for that reply but does not mark HD down", async () => {
+  clearAzureTtsCache();
+  resetHdVoices();
+  const fetchImpl = async (_url, init) => (init.body.includes("Dragon") ? new Response("", { status: 429 }) : new Response(new Uint8Array([1, 1]), { status: 200 }));
+  const tts = openAzureTts({ language: "he", apiKey: "az", region: "westeurope", fetchImpl, sleep: async () => {} });
+  tts.send("שלום.");
+  tts.end();
+  await tts.done;
+  assert.equal(azureVoiceFor("he", {}).voice, "he-IL-Hila:DragonLatestNeural");
+});
+
+
+/* ------------------------- one voice per call ------------------------- */
+
+test("cascade: one voice per language for the whole call; after an HD fallback the plain voice stays", async () => {
+  const picks = [];
+  const h = harness({ extra: { pickVoice: (lang) => { picks.push(lang); return lang === "he" ? { voice: "he-IL-Hila:DragonLatestNeural", fallback: "he-IL-HilaNeural" } : { voice: "uk-UA-PolinaNeural", fallback: "" }; }, greetingVoiceLanguage: "uk" } });
+  await h.session.start();
+  h.session.onCommitted("מה מזג האוויר בתל אביב?", "he", { locked: true });
+  await h.settle(); await h.settle();
+  const first = h.ttsStreams.at(-1);
+  assert.equal(first.voice, "he-IL-Hila:DragonLatestNeural");
+  first.onRetry({ code: "voice_fallback", to: "he-IL-HilaNeural" });
+  h.advance(5000);
+  h.session.onCommitted("ומחר?", "he", { locked: true });
+  await h.settle(); await h.settle();
+  const second = h.ttsStreams.at(-1);
+  assert.equal(second.voice, "he-IL-HilaNeural");
+  assert.equal(second.fallbackVoice, "");
+  assert.deepEqual(picks, ["en", "he"]); // chosen once per language
+  assert.match(voiceGenderRule("female"), /знайшла/);
+  assert.match(voiceGenderRule("male"), /знайшов/);
+});
+
+/* ------------------------------ call guard ------------------------------ */
+
+function guardScript(reasonByTurn) {
+  // Odd LLM calls: decide (tool call or plain answer); even: the spoken text after a tool round.
+  let turn = 0;
+  return (n, request) => {
+    const last = request.messages.at(-1);
+    if (last.role === "tool" || (last.role === "system" && request.messages.at(-2)?.role === "tool")) {
+      const result = JSON.parse(request.messages.filter((m) => m.role === "tool").at(-1).content);
+      return [{ type: "text", delta: result.status === "ending_call" ? "Добре, до побачення!" : "Я допомагаю лише з погодою. Яке місто вас цікавить?" }];
+    }
+    const reason = reasonByTurn[turn++];
+    if (!reason) return [{ type: "text", delta: "У Києві дев'ятнадцять градусів." }];
+    return [{ type: "tool_calls", calls: [{ id: `g${n}`, name: CALL_GUARD_TOOL, arguments: JSON.stringify({ reason }) }] }];
+  };
+}
+
+async function say(h, text) {
+  h.session.onCommitted(text, "uk", { locked: true });
+  for (let i = 0; i < 6; i += 1) await h.settle();
+  h.advance(5000);
+}
+
+test("call guard: decision is the server's (redirect once, end on the 2nd in a row, abuse at once)", () => {
+  assert.equal(guardDecision(1, "off_topic"), "redirect");
+  assert.equal(guardDecision(2, "trolling"), "end");
+  assert.equal(guardDecision(1, "abuse"), "end");
+  assert.equal(CALL_GUARD_SPEC.function.name, "call_guard");
+});
+
+test("call guard: off-topic twice in a row -> redirect, then goodbye and the agent hangs up", async () => {
+  const h = harness({ llmScript: guardScript(["off_topic", "trolling"]), extra: { endOffTopic: true } });
+  await h.session.start();
+  h.advance(3000);
+  await say(h, "Де мені підстригти кота?");
+  assert.equal(h.out.ended, null);
+  assert.match(h.ttsStreams.at(-1).sent.join(" "), /лише з погодою/);
+  await say(h, "Але мені треба постригти кота!");
+  h.advance(100);
+  assert.equal(h.out.ended, "agent-hangup:trolling");
+  assert.match(h.ttsStreams.at(-1).sent.join(" "), /до побачення/);
+  assert.ok(h.out.events.some((e) => e.type === "ended" && e.reason === "agent-hangup:trolling"));
+});
+
+test("call guard: a real weather question in between resets the count; nothing ends when the setting is off", async () => {
+  const h = harness({ llmScript: guardScript(["off_topic", null, "off_topic"]), extra: { endOffTopic: true } });
+  await h.session.start();
+  h.advance(3000);
+  await say(h, "Розкажи анекдот");
+  await say(h, "Яка погода в Києві?");
+  await say(h, "А анекдот?");
+  h.advance(100);
+  assert.equal(h.out.ended, null);
+
+  const off = harness({ llmScript: guardScript(["abuse", "abuse"]), extra: { endOffTopic: false } });
+  await off.session.start();
+  off.advance(3000);
+  await say(off, "ти дурна");
+  await say(off, "ти дурна");
+  off.advance(100);
+  assert.equal(off.out.ended, null);
+});
+
+test("call guard: clear abuse ends the call at once, after a goodbye", async () => {
+  const h = harness({ llmScript: guardScript(["abuse"]), extra: { endOffTopic: true } });
+  await h.session.start();
+  h.advance(3000);
+  await say(h, "образа");
+  h.advance(100);
+  assert.equal(h.out.ended, "agent-hangup:abuse");
+});
+
+test("cascade: a one-word English greeting is said by the call's main voice", async () => {
+  const h = harness({ extra: { agent: { id: "agt_w", greeting: "Hello" }, pickVoice: (lang) => ({ voice: `${lang}-voice`, fallback: "" }), greetingVoiceLanguage: "uk" } });
+  await h.session.start();
+  assert.equal(h.ttsStreams[0].voice, "uk-voice");
+  assert.deepEqual(h.ttsStreams[0].sent, ["Hello"]);
 });

@@ -76,8 +76,8 @@ export function createResponseGate() {
 }
 
 export function failureLine(name, userText = "") {
-  if (isWeatherTopic(name) || isWeatherTopic(userText)) return "I can't get the weather right now.";
-  return "I can't do that right now.";
+  if (isWeatherTopic(name) || isWeatherTopic(userText)) return "I don't have that information.";
+  return "I can't help with that.";
 }
 
 export function isWeatherTopic(value) {
@@ -295,6 +295,24 @@ const LOOKING = {
 
 export function stillLookingLine(code) {
   return LOOKING[code] || LOOKING.en;
+}
+
+/** Spoken while a lookup runs (cascade): varied, short, ungendered. Each is cached as audio once. */
+export const FILLERS = {
+  uk: ["Хвилинку, зараз гляну.", "Секундочку, перевіряю.", "Так, зараз подивлюся.", "Одну мить."],
+  es: ["Un momento, lo miro.", "Déjame ver.", "Un segundito, lo compruebo."],
+  en: ["One moment, let me check.", "Just a sec, looking that up.", "Let me have a look."],
+  ru: ["Минутку, сейчас гляну.", "Секундочку, проверяю.", "Одну минуту."],
+  fr: ["Un instant, je regarde.", "Une petite seconde, je vérifie."],
+  ar: ["لحظة، أتحقق من ذلك.", "ثانية واحدة."],
+  he: ["רק רגע, בודקים.", "שנייה, מסתכלים.", "רגע אחד, בודקים את זה."],
+};
+
+/** A filler different from the previous one (`previous` = the line said last time). */
+export function fillerLine(code, previous = "", random = Math.random) {
+  const list = FILLERS[code] || FILLERS.en;
+  const options = list.length > 1 ? list.filter((line) => line !== previous) : list;
+  return options[Math.floor(random() * options.length) % options.length];
 }
 
 export function toolFillerEvent(userText = "", established = "") {
@@ -821,6 +839,7 @@ export function createCallBudget({ now = () => Date.now(), silenceMs = SILENCE_H
 export function budgetEndMessage(reason) {
   if (reason === "max") return "Call ended: the 10-minute limit for a voice call was reached.";
   if (reason === "silence") return "Call ended after 30 seconds of silence.";
+  if (String(reason || "").startsWith("agent-hangup")) return "The agent ended the call: the caller stayed off-topic.";
   return "";
 }
 
